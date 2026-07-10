@@ -1,0 +1,4 @@
+margin = 100
+indent = 4
+always_for_in = true
+whitespace_in_kwargs = false
