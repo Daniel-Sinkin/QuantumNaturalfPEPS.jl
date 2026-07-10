@@ -9,11 +9,11 @@ const SampleResult = @NamedTuple{
 function _unpack_samples(
     bytes::Vector{UInt8},
     config::QnpepsConfig,
-    count::Integer,
+    n_samples::Integer,
 )::Vector{Matrix{UInt8}}
     lx, ly = Int(config.lx), Int(config.ly)
-    out = Vector{Matrix{UInt8}}(undef, count)
-    @inbounds for sample in 1:count
+    out = Vector{Matrix{UInt8}}(undef, n_samples)
+    @inbounds for sample in 1:n_samples
         config_matrix = Matrix{UInt8}(undef, lx, ly)
         base = (sample - 1) * lx * ly
         for row in 1:lx, col in 1:ly
@@ -27,14 +27,14 @@ end
 function _sample_all(
     device_peps::CuPeps,
     dlenv::CuDlenv,
-    count::Integer;
+    n_samples::Integer;
     gpus::Integer,
     seed::Integer,
 )::SampleResult
     config = _cfg_of(dlenv; seed=seed)
-    samples = CUDA.zeros(UInt8, _sample_bytes(config, count))
-    log_prob_config = CUDA.zeros(Float64, count)
-    log_gauge = CUDA.zeros(Float64, count)
+    samples = CUDA.zeros(UInt8, _sample_bytes(config, n_samples))
+    log_prob_config = CUDA.zeros(Float64, n_samples)
+    log_gauge = CUDA.zeros(Float64, n_samples)
     if gpus > 1
         GC.@preserve device_peps dlenv samples log_prob_config log_gauge begin
             _ffi_sample(
@@ -47,7 +47,7 @@ function _sample_all(
                 pointer(samples),
                 pointer(log_prob_config),
                 pointer(log_gauge),
-                count,
+                n_samples,
                 0,
                 0,
             )
@@ -65,7 +65,7 @@ function _sample_all(
                 pointer(samples),
                 pointer(log_prob_config),
                 pointer(log_gauge),
-                count,
+                n_samples,
                 0,
                 0,
             )
@@ -73,7 +73,7 @@ function _sample_all(
     end
     CUDA.synchronize()
     return (
-        configs=_unpack_samples(Array(samples), config, count),
+        configs=_unpack_samples(Array(samples), config, n_samples),
         log_prob_config=Array(log_prob_config),
         log_gauge=Array(log_gauge),
     )
@@ -82,7 +82,7 @@ end
 function sample_peps(
     peps::Union{Peps,CuPeps},
     dlenv::CuDlenv,
-    count::Integer;
+    n_samples::Integer;
     gpus::Integer=CUDA.ndevices(),
     seed::Integer=0,
 )::SampleResult
@@ -100,7 +100,7 @@ function sample_peps(
             "$(dlenv.lx)x$(dlenv.ly), " * "dim_phys=$(dlenv.dim_phys), dim_bond=$(dlenv.dim_bond)"
         throw(PepsError("peps ($peps_desc) and dlenv ($dlenv_desc) disagree"))
     end
-    return _sample_all(device_peps, dlenv, count; gpus, seed)
+    return _sample_all(device_peps, dlenv, n_samples; gpus, seed)
 end
 
 function sample_peps!(
@@ -113,7 +113,7 @@ function sample_peps!(
     log_gauge=nothing,
 )::CuArray{UInt8}
     seeded = _reseed(config, seed)
-    count = length(samples) ÷ (Int(seeded.lx) * Int(seeded.ly))
+    n_samples = length(samples) ÷ (Int(seeded.lx) * Int(seeded.ly))
     scratch = CUDA.zeros(UInt8, _scratch_bytes(seeded))
     log_prob_config_ptr = log_prob_config === nothing ? CuPtr{Float64}(0) : pointer(log_prob_config)
     log_gauge_ptr = log_gauge === nothing ? CuPtr{Float64}(0) : pointer(log_gauge)
@@ -128,7 +128,7 @@ function sample_peps!(
             pointer(samples),
             log_prob_config_ptr,
             log_gauge_ptr,
-            count,
+            n_samples,
             0,
             0,
         )

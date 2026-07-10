@@ -153,12 +153,12 @@ peps_bytes(config)::Int64 = @ccall $(_sym(:qnpeps_peps_bytes))(config::Ref{Qnpep
 
 dlenv_bytes(config)::Int64 = @ccall $(_sym(:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
 
-sample_bytes(config, count)::Int64 =
-    @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, count::UInt64)::Int64
+sample_bytes(config, n_samples)::Int64 =
+    @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 
-function sample_footprint_bytes(config, count)::Int64
+function sample_footprint_bytes(config, n_samples)::Int64
     fn = _sym(:qnpeps_sample_footprint_bytes)
-    return @ccall $fn(config::Ref{QnpepsConfig}, count::UInt64)::Int64
+    return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
 sample_scratch_bytes(config)::Int64 =

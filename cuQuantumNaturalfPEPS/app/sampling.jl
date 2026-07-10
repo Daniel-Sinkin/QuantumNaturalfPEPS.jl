@@ -12,7 +12,7 @@ function sampling()::Nothing
     dlenv = double_layer(device_peps)
 
     result = sample_peps(device_peps, dlenv, NS; gpus=1, seed=SEED_SAMPLE)
-    println("count $NS config_dims $(size(result.configs[1]))")
+    println("n_samples $NS config_dims $(size(result.configs[1]))")
     println("first_config $(result.configs[1])")
     println("first_log_prob_config $(result.log_prob_config[1])")
     println("first_log_gauge $(result.log_gauge[1])")

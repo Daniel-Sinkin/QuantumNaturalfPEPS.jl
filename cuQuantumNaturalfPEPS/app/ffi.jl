@@ -14,7 +14,7 @@ function ffi()::Nothing
     end
     println("capi_version $(unsafe_string(FFI.capi_version()))")
 
-    count = 8
+    n_samples = 8
 
     device_peps = upload_peps(load_peps(grid_peps(LX, LY, DIM_BOND)))
     peps_data = device_peps.data
@@ -41,9 +41,9 @@ function ffi()::Nothing
     @assert build_status == 0
 
     scratch = CUDA.zeros(UInt8, FFI.sample_scratch_bytes(config))
-    samples = CUDA.zeros(UInt8, FFI.sample_bytes(config, count))
-    log_prob_config = CUDA.zeros(Float64, count)
-    log_gauge = CUDA.zeros(Float64, count)
+    samples = CUDA.zeros(UInt8, FFI.sample_bytes(config, n_samples))
+    log_prob_config = CUDA.zeros(Float64, n_samples)
+    log_gauge = CUDA.zeros(Float64, n_samples)
     sample_bufs = (peps_data, dlenv, scratch, samples, log_prob_config, log_gauge)
     sample_status = GC.@preserve sample_bufs FFI.sample(
         config,
@@ -55,7 +55,7 @@ function ffi()::Nothing
         samples_out=raw_bytes(samples),
         log_prob_config=raw_f64(log_prob_config),
         log_gauge=raw_f64(log_gauge),
-        n_samples=count,
+        n_samples=n_samples,
         batch_base=0,
         dim_batch=0,
         stream=stream,
@@ -79,26 +79,26 @@ function ffi()::Nothing
     )
     @assert ctx_build_status == 0
 
-    samples_base0 = CUDA.zeros(UInt8, FFI.sample_bytes(config, count))
-    log_prob_base0 = CUDA.zeros(Float64, count)
+    samples_base0 = CUDA.zeros(UInt8, FFI.sample_bytes(config, n_samples))
+    log_prob_base0 = CUDA.zeros(Float64, n_samples)
     status_base0 = GC.@preserve samples_base0 log_prob_base0 FFI.ctx_sample(
         ctx,
         raw_bytes(samples_base0);
         log_prob_config=raw_f64(log_prob_base0),
         log_gauge=C_NULL,
-        n_samples=count,
+        n_samples=n_samples,
         batch_base=0,
     )
     @assert status_base0 == 0
 
-    samples_base4096 = CUDA.zeros(UInt8, FFI.sample_bytes(config, count))
-    log_prob_base4096 = CUDA.zeros(Float64, count)
+    samples_base4096 = CUDA.zeros(UInt8, FFI.sample_bytes(config, n_samples))
+    log_prob_base4096 = CUDA.zeros(Float64, n_samples)
     status_base4096 = GC.@preserve samples_base4096 log_prob_base4096 FFI.ctx_sample(
         ctx,
         raw_bytes(samples_base4096);
         log_prob_config=raw_f64(log_prob_base4096),
         log_gauge=C_NULL,
-        n_samples=count,
+        n_samples=n_samples,
         batch_base=4096,
     )
     @assert status_base4096 == 0

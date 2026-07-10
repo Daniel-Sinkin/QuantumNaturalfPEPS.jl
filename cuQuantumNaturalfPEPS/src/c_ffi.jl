@@ -58,17 +58,17 @@ function _dlenv_bytes(config::QnpepsConfig)::Int64
     return @ccall $(_sym(:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
 end
 
-function _sample_bytes(config::QnpepsConfig, count::Integer)::Int64
-    return @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, count::UInt64)::Int64
+function _sample_bytes(config::QnpepsConfig, n_samples::Integer)::Int64
+    return @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
 function _scratch_bytes(config::QnpepsConfig)::Int64
     return @ccall $(_sym(:qnpeps_sample_scratch_bytes))(config::Ref{QnpepsConfig})::Int64
 end
 
-function _sample_footprint_bytes(config::QnpepsConfig, count::Integer)::Int64
+function _sample_footprint_bytes(config::QnpepsConfig, n_samples::Integer)::Int64
     fn = _sym(:qnpeps_sample_footprint_bytes)
-    return @ccall $fn(config::Ref{QnpepsConfig}, count::UInt64)::Int64
+    return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
 function _peps_bytes(config::QnpepsConfig)::Int64
@@ -129,7 +129,7 @@ function _ffi_sample(
     samples::CuPtr,
     log_prob_config::CuPtr,
     log_gauge::CuPtr,
-    count::Integer,
+    n_samples::Integer,
     batch_base::Integer,
     dim_batch::Integer,
 )::Nothing
@@ -143,7 +143,7 @@ function _ffi_sample(
         UInt(samples),
         UInt(log_prob_config),
         UInt(log_gauge),
-        UInt64(count),
+        UInt64(n_samples),
         UInt64(batch_base),
         UInt64(dim_batch),
         UInt(CUDA.stream().handle),
