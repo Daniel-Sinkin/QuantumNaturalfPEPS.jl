@@ -26,9 +26,9 @@ using qnpeps::DeviceTensor;
 
 struct Arenas
 {
-    BumpArena& known;
-    BumpArena& rolling_r;
-    BumpArena& scratch;
+    Carver& known;
+    Carver& rolling_r;
+    Carver& scratch;
 };
 
 auto build_dlenv_row(

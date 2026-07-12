@@ -172,33 +172,44 @@ struct DeviceTensor
     [[nodiscard]] auto num_elems() const noexcept -> usize { return dim.num_elems(); }
 };
 
-struct BumpArena
+class Carver
 {
-    char* base{};
-    usize cap{};
-    usize cursor{};
-
-    auto bump(usize bytes, usize align = k_device_malloc_align) -> void*;
-    [[nodiscard]] auto mark() const noexcept -> usize { return cursor; }
-    auto reset(usize marker) noexcept -> void { cursor = marker; }
-};
-
-class ArenaScope
-{
-    BumpArena& arena_;
-    usize saved_;
-
   public:
-    explicit ArenaScope(BumpArena& arena) : arena_(arena), saved_(arena.mark()) {}
-    ~ArenaScope() { arena_.reset(saved_); }
-    ArenaScope(const ArenaScope&) = delete;
-    auto operator=(const ArenaScope&) -> ArenaScope& = delete;
+    Carver() = default;
+    Carver(char* base, usize capacity) : base_(base), capacity_(capacity) {}
+
+    [[nodiscard]] auto base() const noexcept -> char* { return base_; }
+    [[nodiscard]] auto capacity() const noexcept -> usize { return capacity_; }
+    [[nodiscard]] auto offset() const noexcept -> usize { return offset_; }
+    auto offset() noexcept -> usize& { return offset_; }
+
+    template <typename T>
+    auto take(usize count) -> T*
+    {
+        offset_ = device_align(offset_);
+        const auto begin = offset_;
+        offset_ += sizeof(T) * count;
+        if (not base_) return nullptr;
+        if (capacity_ and offset_ > capacity_)
+        {
+            set_err(QNPEPS_ERR_OOM);
+            return nullptr;
+        }
+        return reinterpret_cast<T*>(base_ + begin);
+    }
+
+    [[nodiscard]] auto total() const noexcept -> usize { return device_align(offset_); }
+
+  private:
+    char* base_{};
+    usize capacity_{};
+    usize offset_{};
 };
 
 auto set_stream(cudaStream_t new_stream) -> void;
 auto stream() -> cudaStream_t;
 
-auto alloc(BumpArena& arena, const Shape& dim) -> DeviceTensor;
+auto alloc(Carver& carver, const Shape& dim) -> DeviceTensor;
 auto free(DeviceTensor& tensor) -> void;
 
 auto view(cuFloatComplex* data, Shape dim) -> DeviceTensor;
@@ -206,7 +217,7 @@ auto view(cuFloatComplex* data, Shape dim) -> DeviceTensor;
 auto permute_axes(
     const DeviceTensor& tensor, const Permutation& perm, bool conj, cuFloatComplex* out
 ) -> void;
-auto permute_axes(BumpArena& arena, const DeviceTensor& tensor, const Permutation& perm, bool conj)
+auto permute_axes(Carver& carver, const DeviceTensor& tensor, const Permutation& perm, bool conj)
     -> DeviceTensor;
 
 struct ContractFlags
@@ -252,7 +263,7 @@ auto contract(
     cuFloatComplex* out
 ) -> void;
 auto contract(
-    BumpArena& arena,
+    Carver& carver,
     Linalg& la,
     const DeviceTensor& tensor_a,
     const std::vector<int>& contracted_a,

@@ -246,7 +246,7 @@ rangefinder(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DlRangefinderAr
     }
 
     const auto qr_layout = qr_scratch(la, m_y);
-    void* qr_scratch_mem{ar.scratch.bump(qr_layout.total())};
+    void* qr_scratch_mem{ar.scratch.take<char>(qr_layout.total())};
     qr(la, m_y, qr_scratch_mem, qr_layout);
     if (fail_flag)
     {
@@ -345,19 +345,21 @@ double_layer_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DoubleLaye
     for (auto col = 0_uz; col < num_cols; ++col)
     {
         if (err_state() != QNPEPS_OK) return out;
-        ArenaScope col_scratch(ar.scratch);
+        Carver col_scratch{ar.scratch};
+        const Arenas col_ar{ar.known, ar.rolling_r, col_scratch};
 
         const DeviceTensor& ket = row_ket[col];
         const DeviceTensor& env = env_below ? (*env_below)[col] : triv;
 
-        auto r_env = contract(ar.scratch, la, carried_r, {3}, env, {0}, {});
+        auto r_env = contract(col_scratch, la, carried_r, {3}, env, {0}, {});
         DEFER([&] { free(r_env); });
-        auto r_env_ket = contract(ar.scratch, la, r_env, {1, 3}, ket, {4, 3}, {});
+        auto r_env_ket = contract(col_scratch, la, r_env, {1, 3}, ket, {4, 3}, {});
         DEFER([&] { free(r_env_ket); });
-        auto rab = contract(ar.scratch, la, r_env_ket, {1, 2, 4}, ket, {4, 3, 0}, {.conj_b = true});
+        auto rab =
+            contract(col_scratch, la, r_env_ket, {1, 2, 4}, ket, {4, 3, 0}, {.conj_b = true});
         DEFER([&] { free(rab); });
 
-        auto rab_mat = permute_axes(ar.scratch, rab, {0, 2, 4, 1, 3, 5}, false);
+        auto rab_mat = permute_axes(col_scratch, rab, {0, 2, 4, 1, 3, 5}, false);
         DEFER([&] { free(rab_mat); });
         const int bond_left{rab.dim[0]};
         const int bond_right{rab.dim[1]};
@@ -374,7 +376,7 @@ double_layer_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DoubleLaye
         rangefinder(
             ctx,
             la,
-            ar,
+            col_ar,
             {
                 .input = rab_mat,
                 .rows = rows,
@@ -389,7 +391,7 @@ double_layer_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DoubleLaye
 
         {
             const auto nR = static_cast<i64>(rank) * cols;
-            auto* device_inverse_scale = static_cast<f32*>(ar.scratch.bump(sizeof(f32)));
+            auto* device_inverse_scale = col_scratch.take<f32>(1);
             cu_absmax_inverse<<<1, 256, 0, stream()>>>(
                 r_factor.d, nR, device_inverse_scale, device_scales + col
             );
@@ -403,7 +405,7 @@ double_layer_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DoubleLaye
         out[col] = DeviceTensor{{bond_left, ket_vertical, bra_vertical, rank}, q.d};
 
         auto r_reshaped = view(r_factor.d, {rank, bond_right, ket_horizontal, bra_horizontal});
-        ar.rolling_r.reset(0);
+        ar.rolling_r.offset() = 0;
         carried_r = permute_axes(ar.rolling_r, r_reshaped, {0, 2, 3, 1}, false);
     }
 
@@ -547,6 +549,20 @@ static auto plan_dl_arena(Linalg& la, const Dims& dims, int maxdim) -> DlSizes
     return DlSizes{known, rolling_r, scratch};
 }
 
+static auto
+carve_dl_arena(qnpeps_ctx::DlBuild& dl, const DlSizes& sz, usize scales_count, Carver carver)
+    -> Carver
+{
+    dl.fail = carver.take<int>(1);
+    dl.scales_all = carver.take<f64>(scales_count);
+    dl.triv = carver.take<cf>(1);
+    dl.scalar_r = carver.take<cf>(1);
+    dl.known = Carver{carver.take<char>(sz.known), sz.known};
+    dl.rolling_r = Carver{carver.take<char>(sz.rolling_r), sz.rolling_r};
+    dl.scratch = Carver{carver.take<char>(sz.scratch), sz.scratch};
+    return carver;
+}
+
 static auto dl_ensure_allocated(qnpeps_ctx& ctx, Linalg& la) -> void
 {
     if (ctx.dl.allocated) return;
@@ -573,30 +589,14 @@ static auto dl_ensure_allocated(qnpeps_ctx& ctx, Linalg& la) -> void
 
     const auto num_env_rows = static_cast<usize>(lx - 1);
     const auto num_cols = static_cast<usize>(ly);
-    const auto fixed_fail = device_align(sizeof(int));
-    const auto fixed_scales = device_align(num_env_rows * num_cols * sizeof(f64));
-    const auto fixed_triv = device_align(sizeof(cf));
-    const auto fixed_scalar_r = device_align(sizeof(cf));
-    const auto fixed_total = fixed_fail + fixed_scales + fixed_triv + fixed_scalar_r;
+    const usize scales_count{num_env_rows * num_cols};
+    const auto measured = carve_dl_arena(ctx.dl, sz, scales_count, Carver{});
 
     if (not ctx.dl.arena)
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ctx.dl.arena), fixed_total + sz.total()));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ctx.dl.arena), measured.total()));
     if (err_state() != QNPEPS_OK) return;
 
-    char* cursor{ctx.dl.arena};
-    ctx.dl.fail = reinterpret_cast<int*>(cursor);
-    cursor += fixed_fail;
-    ctx.dl.scales_all = reinterpret_cast<f64*>(cursor);
-    cursor += fixed_scales;
-    ctx.dl.triv = reinterpret_cast<cf*>(cursor);
-    cursor += fixed_triv;
-    ctx.dl.scalar_r = reinterpret_cast<cf*>(cursor);
-    cursor += fixed_scalar_r;
-    ctx.dl.known = BumpArena{cursor, sz.known, 0};
-    cursor += sz.known;
-    ctx.dl.rolling_r = BumpArena{cursor, sz.rolling_r, 0};
-    cursor += sz.rolling_r;
-    ctx.dl.scratch = BumpArena{cursor, sz.scratch, 0};
+    carve_dl_arena(ctx.dl, sz, scales_count, Carver{ctx.dl.arena, measured.total()});
 
     const auto dlenv_bytes = qnpeps_dlenv_bytes(&cfg);
     if (not ctx.dlenv.buf[0])
@@ -717,9 +717,9 @@ auto ctx_build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_r
         }
     }
 
-    ctx.dl.known.reset(0);
-    ctx.dl.rolling_r.reset(0);
-    ctx.dl.scratch.reset(0);
+    ctx.dl.known.offset() = 0;
+    ctx.dl.rolling_r.offset() = 0;
+    ctx.dl.scratch.offset() = 0;
     CUDA_CHECK(cudaMemsetAsync(ctx.dl.fail, 0, sizeof(int), la.stream()));
 
     const int chi_c{std::min(cfg.chi_dl, dim_bond * dim_bond)};
@@ -797,9 +797,9 @@ auto ctx_build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_r
             cudaGetLastError();
             ctx.dlenv.graph[target] = nullptr;
             if (graph) CUDA_NOCHECK(cudaGraphDestroy(graph));
-            ctx.dl.known.reset(0);
-            ctx.dl.rolling_r.reset(0);
-            ctx.dl.scratch.reset(0);
+            ctx.dl.known.offset() = 0;
+            ctx.dl.rolling_r.offset() = 0;
+            ctx.dl.scratch.offset() = 0;
             CUDA_CHECK(cudaMemsetAsync(ctx.dl.fail, 0, sizeof(int), la.stream()));
             build_region();
         }
@@ -933,18 +933,18 @@ auto build_dlenv_row(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&arena_base), sz.total()));
     if (err_state() != QNPEPS_OK) return err_state();
     DEFER([&] { CUDA_NOCHECK(cudaFree(arena_base)); });
-    BumpArena known{arena_base, sz.known, 0};
-    BumpArena rolling_r{arena_base + sz.known, sz.rolling_r, 0};
-    BumpArena scratch{arena_base + sz.known + sz.rolling_r, sz.scratch, 0};
+    Carver known{arena_base, sz.known};
+    Carver rolling_r{arena_base + sz.known, sz.rolling_r};
+    Carver scratch{arena_base + sz.known + sz.rolling_r, sz.scratch};
     const Arenas ar{known, rolling_r, scratch};
 
     qnpeps_ctx tmp{};
     DEFER([&] { dl_free(tmp); });
     tmp.cfg = cfg;
-    tmp.dl.fail = static_cast<int*>(known.bump(sizeof(int)));
-    tmp.dl.scales_all = static_cast<f64*>(known.bump(num_cols * sizeof(f64)));
-    tmp.dl.triv = static_cast<cf*>(known.bump(sizeof(cf)));
-    tmp.dl.scalar_r = static_cast<cf*>(known.bump(sizeof(cf)));
+    tmp.dl.fail = known.take<int>(1);
+    tmp.dl.scales_all = known.take<f64>(num_cols);
+    tmp.dl.triv = known.take<cf>(1);
+    tmp.dl.scalar_r = known.take<cf>(1);
     init_dl_units(la, tmp.dl.triv, tmp.dl.scalar_r);
     CUDA_CHECK(cudaMemsetAsync(tmp.dl.fail, 0, sizeof(int), la.stream()));
 

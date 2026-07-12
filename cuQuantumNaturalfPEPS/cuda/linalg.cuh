@@ -294,13 +294,6 @@ class Linalg
         ));
     }
 
-    auto cholesky_upper_batched(int n, cf** as, int lda, int* info, int batch_size) -> void
-    {
-        CUSOLVER_CHECK(cusolverDnCpotrfBatched(
-            sol_, CUBLAS_FILL_MODE_UPPER, n, cu_cast(as), lda, info, batch_size
-        ));
-    }
-
     auto triangular_solve_batched(
         cf* const* as,
         int lda,

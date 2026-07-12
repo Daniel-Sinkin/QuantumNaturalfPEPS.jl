@@ -42,7 +42,7 @@ struct DlEnvView
     const cuFloatComplex* values{};
 };
 
-auto arena_upload(BumpArena& arena, const HostTensor& host_tensor) -> cf*;
+auto arena_upload(Carver& carver, const HostTensor& host_tensor) -> cf*;
 
 class Sampler
 {
@@ -50,10 +50,10 @@ class Sampler
     auto cfg() -> SamplerConfig& { return cfg_; }
     auto linalg() -> Linalg& { return *linalg_; }
     auto permutation_cache() -> PermutationCache& { return permutation_cache_; }
-    auto bind(Linalg& linalg, BumpArena& arena) -> void
+    auto bind(Linalg& linalg, Carver& carver) -> void
     {
         linalg_ = &linalg;
-        arena_ = &arena;
+        carver_ = &carver;
     }
 
     auto mpo() -> std::vector<std::vector<cf*>>& { return mpo_; }
@@ -118,7 +118,7 @@ class Sampler
         host.alloc();
         for (auto& value : host.v)
             value = chost{gauss(rng), gauss(rng)};
-        auto* device_ptr = arena_upload(*arena_, host);
+        auto* device_ptr = arena_upload(*carver_, host);
         omegas_.emplace(key, device_ptr);
         return device_ptr;
     }
@@ -155,7 +155,7 @@ class Sampler
     SamplerConfig cfg_{};
     Linalg* linalg_{};
     PermutationCache permutation_cache_{};
-    BumpArena* arena_{};
+    Carver* carver_{};
 
     std::vector<std::vector<cf*>> mpo_{};
     std::vector<std::vector<HostTensor>> mpo_host_{};

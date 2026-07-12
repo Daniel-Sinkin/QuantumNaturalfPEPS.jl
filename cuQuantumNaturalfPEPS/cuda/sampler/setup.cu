@@ -9,84 +9,49 @@
 
 namespace qnpeps
 {
-auto arena_upload(BumpArena& arena, const HostTensor& host_tensor) -> cf*
+static auto upload_tensor(cf* device_ptr, const HostTensor& host_tensor) -> void
 {
     const auto bytes = static_cast<usize>(host_tensor.n()) * sizeof(cf);
-    auto* device_ptr = static_cast<cf*>(arena.bump(bytes));
     CUDA_CHECK(cudaMemcpy(device_ptr, host_tensor.v.data(), bytes, cudaMemcpyHostToDevice));
+}
+
+auto arena_upload(Carver& carver, const HostTensor& host_tensor) -> cf*
+{
+    auto* device_ptr = carver.take<cf>(static_cast<usize>(host_tensor.n()));
+    upload_tensor(device_ptr, host_tensor);
     return device_ptr;
 }
 
-static auto bump_device_buffer(BumpArena& arena, usize stride, usize dim_batch) -> CuArray
+[[nodiscard]] static auto
+carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, Carver carver)
+    -> Carver
 {
-    CuArray buffer{};
-    buffer.stride = static_cast<i64>(stride);
-    buffer.p = static_cast<cf*>(arena.bump(stride * dim_batch * sizeof(cf)));
-    return buffer;
-}
+    Sampler& samp = state.samp;
 
-[[nodiscard]] static auto arena_bytes(const SamplerConfig& cfg) -> usize
-{
     const auto dim_bond = static_cast<i64>(cfg.dim_bond);
     const auto dim_phys = static_cast<i64>(cfg.dim_phys);
-
     const auto chi_s = static_cast<i64>(cfg.chi_s);
     const auto chi_dl = static_cast<i64>(cfg.chi_dl);
     const auto chi_env_max = std::max(chi_s, dim_bond);
     const auto chi_aux_bond = chi_env_max * dim_bond;
-
-    const auto max_env_above_site = chi_aux_bond * chi_env_max;
-    const auto max_ket_site = chi_s * dim_phys * dim_bond * chi_s;
-    const auto max_env_unsampled = chi_s * chi_dl * chi_s;
-
     const auto max_reduced_n = std::max(chi_aux_bond, chi_dl * dim_bond * dim_bond);
     const auto max_reduced_m = std::max(chi_s * dim_phys * dim_bond, chi_aux_bond);
-
-    const auto max_reduce_input = max_reduced_m * max_reduced_n;
-    const auto max_rfactor = chi_env_max * max_reduced_n;
-    const auto max_sketch = max_reduced_m * chi_env_max;
     const auto max_tmp_env = chi_s * chi_dl * chi_s * dim_phys * dim_bond;
-    const auto max_tmp = std::max(max_tmp_env, max_reduce_input);
 
-    const auto max_sigma = chi_s * chi_dl * chi_s;
-    const auto max_sigma_full = dim_phys * dim_phys * max_sigma;
-    const auto max_rho = dim_phys * dim_phys;
+    samp.max_env_above_site() = chi_aux_bond * chi_env_max;
+    samp.max_ket_site() = chi_s * dim_phys * dim_bond * chi_s;
+    samp.max_env_unsampled() = chi_s * chi_dl * chi_s;
+    samp.max_reduce_input() = max_reduced_m * max_reduced_n;
+    samp.max_rfactor() = chi_env_max * max_reduced_n;
+    samp.max_sketch() = max_reduced_m * chi_env_max;
+    samp.max_tmp() = std::max(max_tmp_env, samp.max_reduce_input());
+    samp.max_sigma() = chi_s * chi_dl * chi_s;
+    samp.max_sigma_full() = dim_phys * dim_phys * samp.max_sigma();
+    samp.max_rho() = dim_phys * dim_phys;
 
-    const usize csz{sizeof(cf)};
     const auto dim_batch = static_cast<usize>(cfg.dim_batch);
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
-    usize total{};
-    auto add_buf = [&](i64 stride)
-    { total += device_align(static_cast<usize>(stride) * dim_batch * csz); };
-
-    add_buf(max_env_above_site * cfg.ly);
-    add_buf(max_env_above_site * cfg.ly);
-    add_buf(max_ket_site * cfg.ly);
-    add_buf(max_env_unsampled * (cfg.ly + 1));
-    add_buf(max_sigma);
-    add_buf(max_sigma_full);
-    add_buf(max_sigma_full);
-    add_buf(max_rho);
-    add_buf(max_rfactor);
-    add_buf(max_tmp);
-    add_buf(max_tmp);
-    add_buf(max_reduce_input);
-    add_buf(max_sketch);
-    add_buf(max_rfactor);
-    add_buf(max_rfactor);
-    add_buf(chi_env_max * chi_env_max);
-
-    total += device_align(dim_batch * sizeof(cf*));
-    total += device_align(dim_batch * sizeof(cf*));
-    total += device_align(dim_batch * sizeof(int));
-    total += device_align(sizeof(int));
-    total += device_align(dim_batch * sizeof(int));
-    total += device_align(dim_batch * num_cols * sizeof(int));
-    total += device_align(dim_batch * sizeof(f64));
-    total += device_align(dim_batch * sizeof(f64));
-    total += device_align(dim_batch * num_rows * num_cols * sizeof(u8));
-    total += device_align(sizeof(u64));
 
     const auto peps_site_elems = [&](int row, int col) -> usize
     {
@@ -94,61 +59,109 @@ static auto bump_device_buffer(BumpArena& arena, usize stride, usize dim_batch) 
         const auto bond_down = static_cast<usize>(bond_dim(cfg.lx, row + 1, cfg.dim_bond));
         const auto bond_right = static_cast<usize>(bond_dim(cfg.ly, col + 1, cfg.dim_bond));
         const auto bond_up = static_cast<usize>(bond_dim(cfg.lx, row, cfg.dim_bond));
-        return bond_left * bond_down * bond_right * bond_up * static_cast<usize>(dim_phys);
+        return bond_left * bond_down * bond_right * bond_up * static_cast<usize>(cfg.dim_phys);
     };
+
+    samp.mpo().assign(num_rows, std::vector<cf*>(num_cols, nullptr));
     for (auto row = 0; row < cfg.lx; ++row)
         for (auto col = 0; col < cfg.ly; ++col)
-            total += device_align(peps_site_elems(row, col) * csz);
+            samp.mpo()[static_cast<usize>(row)][static_cast<usize>(col)] =
+                carver.take<cf>(peps_site_elems(row, col));
+    samp.ket_row0().assign(num_cols, nullptr);
     for (auto col = 0; col < cfg.ly; ++col)
-        total += device_align(peps_site_elems(0, col) * csz);
-    total += device_align(csz);
+        samp.ket_row0()[static_cast<usize>(col)] = carver.take<cf>(peps_site_elems(0, col));
+    state.unit = carver.take<cf>(1);
 
+    const auto take_array = [&](i64 stride)
     {
-        const auto ptr_capacity = static_cast<usize>(k_max_batch_size);
-        const auto num_env = static_cast<usize>(cfg.lx - 1);
-        const usize ptr_slots{
-            2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1 + 2 * num_env * num_cols
-        };
-        total += device_align(ptr_slots * ptr_capacity * sizeof(cf*));
-    }
+        CuArray buffer{};
+        buffer.stride = stride;
+        buffer.p = carver.take<cf>(static_cast<usize>(stride) * dim_batch);
+        return buffer;
+    };
 
+    // clang-format off
+    samp.env_above()[0]       = take_array(samp.max_env_above_site() * cfg.ly);
+    samp.env_above()[1]       = take_array(samp.max_env_above_site() * cfg.ly);
+    samp.ket()                = take_array(samp.max_ket_site() * cfg.ly);
+    samp.env_unsampled()      = take_array(samp.max_env_unsampled() * (cfg.ly + 1));
+    samp.sigma()              = take_array(samp.max_sigma());
+    samp.sigma_full()         = take_array(samp.max_sigma_full());
+    samp.sigma_full_scratch() = take_array(samp.max_sigma_full());
+    samp.rho()                = take_array(samp.max_rho());
+    samp.rfactor()            = take_array(samp.max_rfactor());
+    samp.tmp_a()              = take_array(samp.max_tmp());
+    samp.tmp_b()              = take_array(samp.max_tmp());
+    samp.reduce_input()       = take_array(samp.max_reduce_input());
+    samp.sketch()             = take_array(samp.max_sketch());
+    samp.proj()               = take_array(samp.max_rfactor());
+    samp.rfactor_next()       = take_array(samp.max_rfactor());
+    samp.gram()               = take_array(chi_env_max * chi_env_max);
+    // clang-format on
+
+    samp.gram_ptrs() = carver.take<cf*>(dim_batch);
+    samp.sketch_ptrs() = carver.take<cf*>(dim_batch);
+    samp.info() = carver.take<int>(dim_batch);
+    samp.fail() = carver.take<int>(1);
+
+    const auto ptr_capacity = static_cast<usize>(k_max_batch_size);
+    const auto num_env = num_rows - 1;
+    const usize ptr_slots{
+        2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1 + 2 * num_env * num_cols
+    };
+    state.ptr_region = carver.take<cf*>(ptr_slots * ptr_capacity);
+
+    samp.drawn_spin() = carver.take<int>(dim_batch);
+    samp.row_spins() = carver.take<int>(dim_batch * num_cols);
+    samp.logpc() = carver.take<f64>(dim_batch);
+    samp.lognorm() = carver.take<f64>(dim_batch);
+    samp.samples() = carver.take<u8>(dim_batch * num_rows * num_cols);
+    state.device_seed = carver.take<u64>(1);
+
+    return carver;
+}
+
+[[nodiscard]] static auto omega_region_bytes(const SamplerConfig& cfg) -> usize
+{
+    const auto num_rows = static_cast<usize>(cfg.lx);
+    const auto num_cols = static_cast<usize>(cfg.ly);
+    usize total{};
+
+    std::map<std::pair<int, int>, char> seen;
+    std::vector<int> bond_above{};
+    bond_above.assign(num_cols + 1, 1);
+    for (auto col = 0_uz; col <= num_cols; ++col)
+        bond_above[col] = bond_dim(cfg.ly, static_cast<int>(col), cfg.dim_bond);
+
+    for (auto row = 1_uz; row < num_rows; ++row)
     {
-        std::map<std::pair<int, int>, char> seen;
-        std::vector<int> bond_above{};
-        bond_above.assign(num_cols + 1, 1);
-        for (auto col = 0_uz; col <= num_cols; ++col)
-            bond_above[col] = bond_dim(cfg.ly, static_cast<int>(col), cfg.dim_bond);
-
-        for (auto row = 1_uz; row < num_rows; ++row)
+        std::vector<int> ket_bonds{};
+        ket_bonds.assign(num_cols + 1, 1);
+        int k{1};
+        for (auto col = 0_uz; col < num_cols; ++col)
         {
-            std::vector<int> ket_bonds{};
-            ket_bonds.assign(num_cols + 1, 1);
-            int k{1};
-            for (auto col = 0_uz; col < num_cols; ++col)
-            {
-                const int bond_down{bond_dim(cfg.lx, static_cast<int>(row) + 1, cfg.dim_bond)};
-                const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
-                const int reduce_rows{k * cfg.dim_phys * bond_down};
-                const auto reduce_cols = bond_above[col + 1] * bond_right;
-                const int k_next{std::max(1, std::min({cfg.chi_s, reduce_rows, reduce_cols}))};
-                ket_bonds[col + 1] = k_next;
-                k = k_next;
-            }
-            ket_bonds[num_cols] = 1;
-            for (auto col = 0_uz; col < num_cols; ++col)
-            {
-                const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
-                const auto omega_rows = bond_above[col + 1] * bond_right;
-                const auto omega_cols = ket_bonds[col + 1];
-                if (seen.emplace(std::make_pair(omega_rows, omega_cols), 0).second)
-                {
-                    total += device_align(
-                        static_cast<usize>(omega_rows) * static_cast<usize>(omega_cols) * csz
-                    );
-                }
-            }
-            bond_above = ket_bonds;
+            const int bond_down{bond_dim(cfg.lx, static_cast<int>(row) + 1, cfg.dim_bond)};
+            const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
+            const int reduce_rows{k * cfg.dim_phys * bond_down};
+            const auto reduce_cols = bond_above[col + 1] * bond_right;
+            const int k_next{std::max(1, std::min({cfg.chi_s, reduce_rows, reduce_cols}))};
+            ket_bonds[col + 1] = k_next;
+            k = k_next;
         }
+        ket_bonds[num_cols] = 1;
+        for (auto col = 0_uz; col < num_cols; ++col)
+        {
+            const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
+            const auto omega_rows = bond_above[col + 1] * bond_right;
+            const auto omega_cols = ket_bonds[col + 1];
+            if (seen.emplace(std::make_pair(omega_rows, omega_cols), 0).second)
+            {
+                total += device_align(
+                    static_cast<usize>(omega_rows) * static_cast<usize>(omega_cols) * sizeof(cf)
+                );
+            }
+        }
+        bond_above = ket_bonds;
     }
     return total;
 }
@@ -179,37 +192,10 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     cfg.dim_batch = ctx.sampler.dim_batch;
     samp.cfg() = cfg;
 
-    const auto dim_bond = static_cast<i64>(cfg.dim_bond);
-    const auto dim_phys = static_cast<i64>(cfg.dim_phys);
-
-    const auto chi_s = static_cast<i64>(cfg.chi_s);
-    const auto chi_dl = static_cast<i64>(cfg.chi_dl);
-    const auto chi_env_max = std::max(chi_s, dim_bond);
-    const auto chi_aux_bond = chi_env_max * dim_bond;
-
-    samp.max_env_above_site() = chi_aux_bond * chi_env_max;
-
-    samp.max_ket_site() = chi_s * dim_phys * dim_bond * chi_s;
-    samp.max_env_unsampled() = chi_s * chi_dl * chi_s;
-
-    const auto max_reduced_n = std::max(chi_aux_bond, chi_dl * dim_bond * dim_bond);
-    const auto max_reduced_m = std::max(chi_s * dim_phys * dim_bond, chi_aux_bond);
-
-    samp.max_reduce_input() = max_reduced_m * max_reduced_n;
-    samp.max_rfactor() = chi_env_max * max_reduced_n;
-    samp.max_sketch() = max_reduced_m * chi_env_max;
-
-    const auto max_tmp_env = chi_s * chi_dl * chi_s * dim_phys * dim_bond;
-    samp.max_tmp() = std::max(max_tmp_env, max_reduced_m * max_reduced_n);
-
-    samp.max_sigma() = chi_s * chi_dl * chi_s;
-    samp.max_sigma_full() = dim_phys * dim_phys * samp.max_sigma();
-
-    samp.max_rho() = dim_phys * dim_phys;
-
     SamplerConfig capacity_cfg{cfg};
     capacity_cfg.dim_batch = k_max_batch_size;
-    const usize total{arena_bytes(capacity_cfg)};
+    const auto measured = carve_sampler_arena(ctx.sampler, capacity_cfg, Carver{});
+    const usize total{measured.total() + omega_region_bytes(capacity_cfg)};
 
     char* base{};
     if (scratch)
@@ -233,32 +219,29 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
         ctx.sampler.arena_owned = true;
     }
     ctx.sampler.arena = base;
-    ctx.sampler.arena_view = BumpArena{base, total, 0};
+    ctx.sampler.arena_view = carve_sampler_arena(ctx.sampler, capacity_cfg, Carver{base, total});
     samp.bind(ctx.linalg, ctx.sampler.arena_view);
 
     const auto dim_batch = static_cast<usize>(k_max_batch_size);
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
-    samp.mpo().resize(num_rows);
     samp.mpo_host().resize(num_rows);
     for (auto row = 0_uz; row < num_rows; ++row)
     {
-        samp.mpo()[row].resize(num_cols);
         samp.mpo_host()[row].resize(num_cols);
         for (auto col = 0_uz; col < num_cols; ++col)
         {
             auto permuted = hpermute(ctx.host_peps[row][col], {0, 3, 4, 1, 2});
-            samp.mpo()[row][col] = arena_upload(ctx.sampler.arena_view, permuted);
+            upload_tensor(samp.mpo()[row][col], permuted);
             samp.mpo_host()[row][col] = std::move(permuted);
         }
     }
 
-    samp.ket_row0().resize(num_cols);
     samp.ket_row0_host().resize(num_cols);
     for (auto col = 0_uz; col < num_cols; ++col)
     {
         auto permuted = hpermute(ctx.host_peps[0][col], {0, 4, 1, 2, 3});
-        samp.ket_row0()[col] = arena_upload(ctx.sampler.arena_view, permuted);
+        upload_tensor(samp.ket_row0()[col], permuted);
         samp.ket_row0_host()[col] = std::move(permuted);
     }
 
@@ -288,34 +271,8 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     unit.dim = {1, 1, 1, 1};
     unit.alloc();
     unit.v[0] = chost{1.0f, 0.0f};
-    ctx.sampler.unit = arena_upload(ctx.sampler.arena_view, unit);
+    upload_tensor(ctx.sampler.unit, unit);
 
-    const auto allocb = [&](i64 stride)
-    { return bump_device_buffer(ctx.sampler.arena_view, static_cast<usize>(stride), dim_batch); };
-
-    // clang-format off
-    samp.env_above()[0]       = allocb(samp.max_env_above_site() * cfg.ly);
-    samp.env_above()[1]       = allocb(samp.max_env_above_site() * cfg.ly);
-    samp.ket()                = allocb(samp.max_ket_site() * cfg.ly);
-    samp.env_unsampled()      = allocb(samp.max_env_unsampled() * (cfg.ly + 1));
-    samp.sigma()              = allocb(samp.max_sigma());
-    samp.sigma_full()         = allocb(samp.max_sigma_full());
-    samp.sigma_full_scratch() = allocb(samp.max_sigma_full());
-    samp.rho()                = allocb(samp.max_rho());
-    samp.rfactor()            = allocb(samp.max_rfactor());
-    samp.tmp_a()              = allocb(samp.max_tmp());
-    samp.tmp_b()              = allocb(samp.max_tmp());
-    samp.reduce_input()       = allocb(samp.max_reduce_input());
-    samp.sketch()             = allocb(samp.max_sketch());
-    samp.proj()               = allocb(samp.max_rfactor());
-    samp.rfactor_next()       = allocb(samp.max_rfactor());
-    samp.gram()               = allocb(chi_env_max * chi_env_max);
-    // clang-format on
-
-    samp.gram_ptrs() = static_cast<cf**>(ctx.samp_bump(dim_batch * sizeof(cf*)));
-    samp.sketch_ptrs() = static_cast<cf**>(ctx.samp_bump(dim_batch * sizeof(cf*)));
-    samp.info() = static_cast<int*>(ctx.samp_bump(dim_batch * sizeof(int)));
-    samp.fail() = static_cast<int*>(ctx.samp_bump(sizeof(int)));
     {
         std::vector<cf*> host_ptrs{};
         host_ptrs.resize(dim_batch);
@@ -336,9 +293,7 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
         const auto cap = dim_batch;
         const auto num_env = num_rows - 1;
         const usize fixed_slots{2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1};
-        const usize dlenv_slots{2 * num_env * num_cols};
-        const usize region_bytes{(fixed_slots + dlenv_slots) * cap * sizeof(cf*)};
-        auto* region = static_cast<cf**>(ctx.samp_bump(region_bytes));
+        auto* region = ctx.sampler.ptr_region;
 
         std::vector<cf*> host{};
         host.resize(fixed_slots * cap);
@@ -393,22 +348,6 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
             for (auto col = 0_uz; col < num_cols; ++col)
                 place(samp.dlenv_sigma_ptrs()[row][col]);
     }
-    {
-        // clang-format off
-        const usize drawn_spin_bytes = dim_batch * sizeof(int);
-        const usize row_spins_bytes  = dim_batch * num_cols * sizeof(int);
-        const usize logpc_bytes      = dim_batch * sizeof(f64);
-        const usize lognorm_bytes    = dim_batch * sizeof(f64);
-        const usize samples_bytes    = dim_batch * num_rows * num_cols * sizeof(u8);
-        const usize seed_bytes       = sizeof(u64);
-        samp.drawn_spin()       = static_cast<int*>(ctx.samp_bump(drawn_spin_bytes));
-        samp.row_spins()        = static_cast<int*>(ctx.samp_bump(row_spins_bytes));
-        samp.logpc()            = static_cast<f64*>(ctx.samp_bump(logpc_bytes));
-        samp.lognorm()          = static_cast<f64*>(ctx.samp_bump(lognorm_bytes));
-        samp.samples()          = static_cast<u8*>(ctx.samp_bump(samples_bytes));
-        ctx.sampler.device_seed = static_cast<u64*>(ctx.samp_bump(seed_bytes));
-        // clang-format on
-    }
 
     const i64 lane_samples{static_cast<i64>(dim_batch) * cfg.lx * cfg.ly};
     const auto lane_samples_u = static_cast<usize>(lane_samples);
@@ -458,7 +397,9 @@ auto sample_arena_bytes(const QnpepsConfig& config, int max_dim_batch) -> int64_
     cfg.chi_s = config.chi_s;
     cfg.chi_dl = std::min(config.chi_dl, config.dim_bond * config.dim_bond);
     cfg.dim_batch = std::max(max_dim_batch, 1);
-    return static_cast<int64_t>(arena_bytes(cfg));
+    qnpeps_ctx::SamplerState state{};
+    const auto measured = carve_sampler_arena(state, cfg, Carver{});
+    return static_cast<int64_t>(measured.total() + omega_region_bytes(cfg));
 }
 }
 }

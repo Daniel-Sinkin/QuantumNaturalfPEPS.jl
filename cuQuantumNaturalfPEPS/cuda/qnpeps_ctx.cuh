@@ -28,9 +28,9 @@ struct qnpeps_ctx
         bool allocated{};
         cf* peps_buf{};
         char* arena{};
-        BumpArena known{};
-        BumpArena rolling_r{};
-        BumpArena scratch{};
+        Carver known{};
+        Carver rolling_r{};
+        Carver scratch{};
         int* fail{};
         f64* scales_all{};
         cf* triv{};
@@ -62,9 +62,10 @@ struct qnpeps_ctx
     {
         Sampler samp{};
         char* arena{};
-        BumpArena arena_view{};
+        Carver arena_view{};
         bool arena_owned{};
         cf* unit{};
+        cf** ptr_region{};
         u8* h_samples{};
         f64* h_logpc{};
         f64* h_lognorm{};
@@ -82,8 +83,6 @@ struct qnpeps_ctx
 
     std::vector<std::vector<HostTensor>> host_peps{};
     bool use_graph{true};
-
-    auto samp_bump(usize bytes) -> void* { return sampler.arena_view.bump(bytes); }
 };
 
 namespace qnpeps::dlenv
