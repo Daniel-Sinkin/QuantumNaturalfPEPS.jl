@@ -139,7 +139,7 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
     const auto num_cols = static_cast<usize>(cfg.ly);
     usize total{};
 
-    std::map<std::pair<int, int>, char> seen;
+    std::map<std::pair<usize, usize>, char> seen;
     std::vector<int> bond_above{};
     bond_above.assign(num_cols + 1, 1);
     for (auto col = 0_uz; col <= num_cols; ++col)
@@ -164,13 +164,12 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
         for (auto col = 0_uz; col < num_cols; ++col)
         {
             const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
-            const auto omega_rows = bond_above[col + 1] * bond_right;
-            const auto omega_cols = ket_bonds[col + 1];
+            const auto omega_rows =
+                static_cast<usize>(bond_above[col + 1]) * static_cast<usize>(bond_right);
+            const auto omega_cols = static_cast<usize>(ket_bonds[col + 1]);
             if (seen.emplace(std::make_pair(omega_rows, omega_cols), 0).second)
             {
-                total += device_align(
-                    sizeof(cf) * static_cast<usize>(omega_rows) * static_cast<usize>(omega_cols)
-                );
+                total += device_align(omega_rows * omega_cols * sizeof(cf));
             }
         }
         bond_above = ket_bonds;

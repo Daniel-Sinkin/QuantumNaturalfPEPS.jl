@@ -2,9 +2,11 @@
 #include "cuda_utils.cuh"
 #include "dlenv/build.cuh"
 #include "linalg.cuh"
+#include "peps.cuh"
 #include "qnpeps_ctx.cuh"
 #include "sampler/draw.cuh"
 
+#include <algorithm>
 #include <cstdint>
 #include <new>
 #include <random>
@@ -225,7 +227,7 @@ extern "C" int64_t qnpeps_dlenv_row_bytes(const QnpepsConfig* config, int maxdim
     const auto int32_bytes = static_cast<i64>(sizeof(int32_t));
     const auto f32_bytes = static_cast<i64>(sizeof(f32));
     const auto bond_pair = dim_bond * dim_bond;
-    const auto capped_dim = maxdim_i64 < bond_pair ? maxdim_i64 : bond_pair;
+    const auto capped_dim = std::min(maxdim_i64, bond_pair);
     const auto header = ly * 4 * int32_bytes;
     const auto values = ly * capped_dim * capped_dim * bond_pair;
     return header + values * 2 * f32_bytes;
@@ -250,6 +252,7 @@ extern "C" int64_t qnpeps_batched_rangefinder_scratch_bytes(int rows, int cols, 
     total += device_align(ptr_bytes * batch_u);
     total += device_align(ptr_bytes * batch_u);
     total += device_align(int_bytes * batch_u);
+    total += device_align(int_bytes);
     return static_cast<int64_t>(total);
 }
 
@@ -307,6 +310,7 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
     auto* gram_ptrs = carve_cfp(batch_i);
     auto* sketch_ptrs = carve_cfp(batch_i);
     auto* info = static_cast<int*>(carve(batch_i, sizeof(int)));
+    auto* fail_flag = static_cast<int*>(carve(1, sizeof(int)));
 
     std::mt19937_64 rng(seed ^ (static_cast<uint64_t>(cols) << 20));
     std::normal_distribution<f32> gauss(0.0f, 1.0f);
@@ -342,6 +346,7 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
 
     Linalg linalg{};
     linalg.create(static_cast<cudaStream_t>(stream));
+    CUDA_CHECK(cudaMemsetAsync(fail_flag, 0, sizeof(int), linalg.stream()));
     batched_rangefinder(
         linalg,
         {
@@ -357,10 +362,13 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
             .gram_ptrs = gram_ptrs,
             .sketch_ptrs = sketch_ptrs,
             .info = info,
-            .fail_flag = nullptr,
+            .fail_flag = fail_flag,
         }
     );
     CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
+    int fail_host{};
+    CUDA_CHECK(cudaMemcpy(&fail_host, fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
+    if (fail_host != 0) qnpeps::set_err(QNPEPS_ERR_CUDA);
     linalg.destroy();
     return qnpeps::err_state();
 }
@@ -368,15 +376,8 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
 extern "C" int64_t qnpeps_peps_bytes(const QnpepsConfig* config)
 {
     if (check_cfg(config) != QNPEPS_OK) return -1;
-    const i64 dim_phys{config->dim_phys};
-    const i64 dim_bond{config->dim_bond};
-    const i64 lx{config->lx};
-    const i64 ly{config->ly};
-    const i64 ly_chain = ly <= 1 ? ly : 2 * dim_bond + (ly - 2) * dim_bond * dim_bond;
-    const i64 lx_chain = lx <= 1 ? lx : 2 * dim_bond + (lx - 2) * dim_bond * dim_bond;
-    const auto f32_bytes = static_cast<i64>(sizeof(f32));
-    const auto params = dim_phys * ly_chain * lx_chain;
-    return params * 2 * f32_bytes;
+    const PepsDims dims{config->lx, config->ly, config->dim_phys, config->dim_bond};
+    return peps_elems(dims) * static_cast<i64>(sizeof(cf));
 }
 
 extern "C" int64_t qnpeps_sample_bytes(const QnpepsConfig* config, uint64_t count)
@@ -401,7 +402,7 @@ extern "C" int64_t qnpeps_dlenv_bytes(const QnpepsConfig* config)
     const auto rows_below = lx - 1;
     const auto sites = rows_below * ly;
     const auto bond_pair = dim_bond * dim_bond;
-    const auto chi_c = chi_dl < bond_pair ? chi_dl : bond_pair;
+    const auto chi_c = std::min(chi_dl, bond_pair);
     const auto header = sites * 4 * int32_bytes;
     const auto values = sites * chi_c * chi_c * bond_pair;
     return header + values * 2 * f32_bytes;
