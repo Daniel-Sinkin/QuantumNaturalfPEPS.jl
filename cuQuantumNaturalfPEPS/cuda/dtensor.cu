@@ -186,7 +186,7 @@ auto contract(
 {
     const auto lhs_rows = static_cast<usize>(plan.M);
     const auto inner_dim = static_cast<usize>(plan.K);
-    const auto a_perm_bytes = device_align(lhs_rows * inner_dim * sizeof(cuFloatComplex));
+    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
     auto* a_perm = byte_offset<cuFloatComplex>(scratch, 0);
     auto* b_perm = byte_offset<cuFloatComplex>(scratch, a_perm_bytes);
     permute_axes(tensor_a, plan.perm_a, flags.conj_a, a_perm);
@@ -231,8 +231,8 @@ auto contract(
     const auto lhs_rows = static_cast<usize>(plan.M);
     const auto inner_dim = static_cast<usize>(plan.K);
     const auto rhs_cols = static_cast<usize>(plan.N);
-    const auto a_perm_bytes = device_align(lhs_rows * inner_dim * sizeof(cuFloatComplex));
-    const auto b_perm_bytes = device_align(inner_dim * rhs_cols * sizeof(cuFloatComplex));
+    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
+    const auto b_perm_bytes = device_align(sizeof(cuFloatComplex) * inner_dim * rhs_cols);
     const auto scratch_bytes = a_perm_bytes + b_perm_bytes;
     auto* scratch = scratch_frame.take<char>(scratch_bytes);
     contract(la, tensor_a, tensor_b, flags, plan, scratch, result.d);

@@ -42,6 +42,12 @@ struct DlEnvView
     const cuFloatComplex* values{};
 };
 
+enum class PepsLayout
+{
+    canonical,
+    reverse_packed
+};
+
 auto arena_upload(Carver& carver, const HostTensor& host_tensor) -> cf*;
 
 class Sampler
@@ -57,10 +63,9 @@ class Sampler
     }
 
     auto mpo() -> std::vector<std::vector<cf*>>& { return mpo_; }
-    auto mpo_host() -> std::vector<std::vector<HostTensor>>& { return mpo_host_; }
+    auto peps_shapes() -> std::vector<std::vector<Shape>>& { return peps_shapes_; }
     auto dlenv_host() -> std::vector<HostEnvRow>& { return dlenv_host_; }
     auto ket_row0() -> std::vector<cf*>& { return ket_row0_; }
-    auto ket_row0_host() -> std::vector<HostTensor>& { return ket_row0_host_; }
 
     auto env_above() -> CuArray (&)[2] { return env_above_; }
     auto ket() -> CuArray& { return ket_; }
@@ -158,10 +163,9 @@ class Sampler
     Carver* carver_{};
 
     std::vector<std::vector<cf*>> mpo_{};
-    std::vector<std::vector<HostTensor>> mpo_host_{};
+    std::vector<std::vector<Shape>> peps_shapes_{};
     std::vector<HostEnvRow> dlenv_host_{};
     std::vector<cf*> ket_row0_{};
-    std::vector<HostTensor> ket_row0_host_{};
     std::map<std::pair<int, int>, cf*> omegas_{};
 
     CuArray env_above_[2]{};

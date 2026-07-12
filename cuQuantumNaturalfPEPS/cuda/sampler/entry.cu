@@ -68,7 +68,7 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
 
     if (ctx.sampler.refresh_gen != ctx.dlenv.build_count)
     {
-        ctx_sample_refresh(ctx);
+        ctx_sample_refresh(ctx, ctx.dl.peps_buf, PepsLayout::reverse_packed);
         ctx.sampler.refresh_gen = ctx.dlenv.build_count;
     }
 
@@ -125,7 +125,6 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
 
     const auto lx = config.lx;
     const auto ly = config.ly;
-    const auto dim_phys = config.dim_phys;
     const auto dim_bond = config.dim_bond;
     const auto chi_dl = std::min(config.chi_dl, dim_bond * dim_bond);
 
@@ -156,52 +155,6 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     ctx.dlenv.active = 0;
     ctx.dlenv.valid[0] = true;
 
-    i64 total{0};
-    for (auto row = 0; row < lx; ++row)
-    {
-        for (auto col = 0; col < ly; ++col)
-        {
-            const auto bond_left = bond_dim(ly, col, dim_bond);
-            const auto bond_right = bond_dim(ly, col + 1, dim_bond);
-            const auto bond_up = bond_dim(lx, row, dim_bond);
-            const auto bond_down = bond_dim(lx, row + 1, dim_bond);
-            total += static_cast<i64>(bond_left) * bond_down * bond_right * bond_up * dim_phys;
-        }
-    }
-    std::vector<chost> host_peps_buf{};
-    host_peps_buf.resize(static_cast<usize>(total));
-    CUDA_CHECK(cudaMemcpy(
-        host_peps_buf.data(),
-        device_peps,
-        static_cast<usize>(total) * sizeof(chost),
-        cudaMemcpyDeviceToHost
-    ));
-    const auto num_rows = static_cast<usize>(lx);
-    const auto num_cols = static_cast<usize>(ly);
-    ctx.host_peps.resize(num_rows);
-    for (auto& peps_row : ctx.host_peps)
-        peps_row.resize(num_cols);
-    i64 off{0};
-    for (auto row = 0_uz; row < num_rows; ++row)
-    {
-        const auto row_i = static_cast<int>(row);
-        for (auto col = 0_uz; col < num_cols; ++col)
-        {
-            const auto col_i = static_cast<int>(col);
-            const auto bond_left = bond_dim(ly, col_i, dim_bond);
-            const auto bond_right = bond_dim(ly, col_i + 1, dim_bond);
-            const auto bond_up = bond_dim(lx, row_i, dim_bond);
-            const auto bond_down = bond_dim(lx, row_i + 1, dim_bond);
-            HostTensor& h = ctx.host_peps[row][col];
-            h.dim = {bond_left, bond_down, bond_right, bond_up, dim_phys};
-            h.alloc();
-            std::copy(
-                host_peps_buf.begin() + off, host_peps_buf.begin() + off + h.n(), h.v.begin()
-            );
-            off += h.n();
-        }
-    }
-
     cudaStream_t stream_use{};
     if (stream)
     {
@@ -229,7 +182,7 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     if (err_state() != QNPEPS_OK) return err_state();
     ctx.sampler.samp.cfg().batch_base = batch_base;
 
-    ctx_sample_refresh(ctx);
+    ctx_sample_refresh(ctx, device_peps, PepsLayout::canonical);
 
     std::vector<int> all_batch_ids{};
     all_batch_ids.resize(static_cast<usize>(batches));
@@ -326,7 +279,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         cudaMemcpyDeviceToHost
     ));
 
-    i64 total{0};
+    i64 peps_elems{};
     for (auto row = 0; row < lx; ++row)
     {
         for (auto col = 0; col < ly; ++col)
@@ -335,43 +288,17 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             const auto bond_right = bond_dim(ly, col + 1, dim_bond);
             const auto bond_up = bond_dim(lx, row, dim_bond);
             const auto bond_down = bond_dim(lx, row + 1, dim_bond);
-            total += static_cast<i64>(bond_left) * bond_down * bond_right * bond_up * dim_phys;
+            peps_elems += static_cast<i64>(bond_left) * bond_down * bond_right * bond_up * dim_phys;
         }
     }
-    std::vector<chost> host_peps_buf{};
-    host_peps_buf.resize(static_cast<usize>(total));
+    std::vector<cf> peps_staging{};
+    peps_staging.resize(static_cast<usize>(peps_elems));
     CUDA_CHECK(cudaMemcpy(
-        host_peps_buf.data(),
+        peps_staging.data(),
         device_peps,
-        static_cast<usize>(total) * sizeof(chost),
+        sizeof(cf) * static_cast<usize>(peps_elems),
         cudaMemcpyDeviceToHost
     ));
-    const auto num_rows = static_cast<usize>(lx);
-    const auto num_cols = static_cast<usize>(ly);
-    std::vector<std::vector<HostTensor>> peps{};
-    peps.resize(num_rows);
-    for (auto& peps_row : peps)
-        peps_row.resize(num_cols);
-    i64 off{0};
-    for (auto row = 0_uz; row < num_rows; ++row)
-    {
-        const auto row_i = static_cast<int>(row);
-        for (auto col = 0_uz; col < num_cols; ++col)
-        {
-            const auto col_i = static_cast<int>(col);
-            const auto bond_left = bond_dim(ly, col_i, dim_bond);
-            const auto bond_right = bond_dim(ly, col_i + 1, dim_bond);
-            const auto bond_up = bond_dim(lx, row_i, dim_bond);
-            const auto bond_down = bond_dim(lx, row_i + 1, dim_bond);
-            HostTensor& h = peps[row][col];
-            h.dim = {bond_left, bond_down, bond_right, bond_up, dim_phys};
-            h.alloc();
-            std::copy(
-                host_peps_buf.begin() + off, host_peps_buf.begin() + off + h.n(), h.v.begin()
-            );
-            off += h.n();
-        }
-    }
 
     struct GpuShard
     {
@@ -392,7 +319,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
     std::vector<GpuShard> shards{};
     shards.resize(gpu_count);
 
-    const auto dlenv_values_bytes = static_cast<usize>(dlenv_nvals) * sizeof(cuFloatComplex);
+    const auto dlenv_values_bytes = sizeof(cuFloatComplex) * static_cast<usize>(dlenv_nvals);
+    const auto peps_bytes = sizeof(cf) * static_cast<usize>(peps_elems);
     auto run_gpu = [&](usize g)
     {
         err_state() = QNPEPS_OK;
@@ -409,6 +337,13 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             shard.err = QNPEPS_ERR_OOM;
             return;
         }
+        cf* device_peps_copy{};
+        if (cudaMalloc(&device_peps_copy, peps_bytes) != cudaSuccess)
+        {
+            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
+            shard.err = QNPEPS_ERR_OOM;
+            return;
+        }
         const cudaError_t header_rc{
             cudaMemcpy(device_dlenv_copy, dims.data(), header_bytes, cudaMemcpyHostToDevice)
         };
@@ -418,9 +353,13 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             dlenv_values_bytes,
             cudaMemcpyHostToDevice
         )};
-        if (header_rc != cudaSuccess or values_rc != cudaSuccess)
+        const cudaError_t peps_rc{
+            cudaMemcpy(device_peps_copy, peps_staging.data(), peps_bytes, cudaMemcpyHostToDevice)
+        };
+        if (header_rc != cudaSuccess or values_rc != cudaSuccess or peps_rc != cudaSuccess)
         {
             CUDA_NOCHECK(cudaFree(device_dlenv_copy));
+            CUDA_NOCHECK(cudaFree(device_peps_copy));
             shard.err = QNPEPS_ERR_CUDA;
             return;
         }
@@ -428,7 +367,6 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         qnpeps_ctx ctx{};
         ctx.cfg = config;
         ctx.sampler.dim_batch = dim_batch_i;
-        ctx.host_peps = peps;
         ctx.dlenv.dims = dims;
         ctx.dlenv.buf[0] = device_dlenv_copy;
         ctx.dlenv.active = 0;
@@ -438,6 +376,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         if (cudaStreamCreate(&stream_use) != cudaSuccess)
         {
             cudaFree(device_dlenv_copy);
+            cudaFree(device_peps_copy);
             shard.err = QNPEPS_ERR_CUDA;
             return;
         }
@@ -452,7 +391,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         ctx_sampler_setup(ctx, &view, nullptr, 0);
         if (err_state() == QNPEPS_OK)
         {
-            ctx_sample_refresh(ctx);
+            ctx_sample_refresh(ctx, device_peps_copy, PepsLayout::canonical);
             ctx_sample_run(ctx, batches_of_gpu[g]);
         }
         cudaStreamSynchronize(ctx.linalg.stream());
@@ -463,6 +402,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
 
         ctx_sampler_free(ctx);
         dlenv::dl_free(ctx);
+        CUDA_NOCHECK(cudaFree(device_peps_copy));
         ctx.linalg.destroy();
         if (ctx.stream_owned and ctx.stream) CUDA_NOCHECK(cudaStreamDestroy(ctx.stream));
     };

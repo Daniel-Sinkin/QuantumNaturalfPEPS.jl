@@ -151,20 +151,6 @@ struct HostTensor
     return index_map;
 }
 
-[[nodiscard]] inline auto
-hpermute(const HostTensor& tensor, const Permutation& perm, bool conj = false) -> HostTensor
-{
-    const auto index_map = permutation_index_map(tensor.dim, perm);
-    HostTensor out{.dim = perm.apply(tensor.dim)};
-    out.alloc();
-    for (auto i = 0_uz; i < index_map.size(); ++i)
-    {
-        const auto source_value = tensor.v[static_cast<usize>(index_map[i])];
-        out.v[i] = conj ? std::conj(source_value) : source_value;
-    }
-    return out;
-}
-
 struct DeviceTensor
 {
     Shape dim{};

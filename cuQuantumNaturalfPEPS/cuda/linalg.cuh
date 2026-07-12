@@ -370,9 +370,9 @@ struct QrScratch
     );
     const auto workspace_count = static_cast<usize>(std::max({geqrf_size, ungqr_size, 1}));
     return QrScratch{
-        .reflector_bytes = device_align(static_cast<usize>(n) * sizeof(cuFloatComplex)),
+        .reflector_bytes = device_align(sizeof(cuFloatComplex) * static_cast<usize>(n)),
         .status_bytes = device_align(sizeof(int)),
-        .workspace_bytes = device_align(workspace_count * sizeof(cuFloatComplex)),
+        .workspace_bytes = device_align(sizeof(cuFloatComplex) * workspace_count),
     };
 }
 

@@ -53,23 +53,35 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
 
-    const auto peps_site_elems = [&](int row, int col) -> usize
+    const auto peps_site_shape = [&](int row, int col) -> Shape
     {
-        const auto bond_left = static_cast<usize>(bond_dim(cfg.ly, col, cfg.dim_bond));
-        const auto bond_down = static_cast<usize>(bond_dim(cfg.lx, row + 1, cfg.dim_bond));
-        const auto bond_right = static_cast<usize>(bond_dim(cfg.ly, col + 1, cfg.dim_bond));
-        const auto bond_up = static_cast<usize>(bond_dim(cfg.lx, row, cfg.dim_bond));
-        return bond_left * bond_down * bond_right * bond_up * static_cast<usize>(cfg.dim_phys);
+        return Shape{
+            bond_dim(cfg.ly, col, cfg.dim_bond),
+            bond_dim(cfg.lx, row + 1, cfg.dim_bond),
+            bond_dim(cfg.ly, col + 1, cfg.dim_bond),
+            bond_dim(cfg.lx, row, cfg.dim_bond),
+            cfg.dim_phys
+        };
     };
 
     samp.mpo().assign(num_rows, std::vector<cf*>(num_cols, nullptr));
+    samp.peps_shapes().assign(num_rows, std::vector<Shape>(num_cols));
     for (auto row = 0; row < cfg.lx; ++row)
+    {
         for (auto col = 0; col < cfg.ly; ++col)
+        {
+            const auto row_u = static_cast<usize>(row);
+            const auto col_u = static_cast<usize>(col);
+            const auto shape = peps_site_shape(row, col);
+            samp.peps_shapes()[row_u][col_u] = shape;
             samp.mpo()[static_cast<usize>(row)][static_cast<usize>(col)] =
-                carver.take<cf>(peps_site_elems(row, col));
+                carver.take<cf>(shape.num_elems());
+        }
+    }
     samp.ket_row0().assign(num_cols, nullptr);
     for (auto col = 0; col < cfg.ly; ++col)
-        samp.ket_row0()[static_cast<usize>(col)] = carver.take<cf>(peps_site_elems(0, col));
+        samp.ket_row0()[static_cast<usize>(col)] =
+            carver.take<cf>(samp.peps_shapes()[0][static_cast<usize>(col)].num_elems());
     state.unit = carver.take<cf>(1);
 
     const auto take_array = [&](i64 stride)
@@ -157,7 +169,7 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
             if (seen.emplace(std::make_pair(omega_rows, omega_cols), 0).second)
             {
                 total += device_align(
-                    static_cast<usize>(omega_rows) * static_cast<usize>(omega_cols) * sizeof(cf)
+                    sizeof(cf) * static_cast<usize>(omega_rows) * static_cast<usize>(omega_cols)
                 );
             }
         }
@@ -225,25 +237,6 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     const auto dim_batch = static_cast<usize>(k_max_batch_size);
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
-    samp.mpo_host().resize(num_rows);
-    for (auto row = 0_uz; row < num_rows; ++row)
-    {
-        samp.mpo_host()[row].resize(num_cols);
-        for (auto col = 0_uz; col < num_cols; ++col)
-        {
-            auto permuted = hpermute(ctx.host_peps[row][col], {0, 3, 4, 1, 2});
-            upload_tensor(samp.mpo()[row][col], permuted);
-            samp.mpo_host()[row][col] = std::move(permuted);
-        }
-    }
-
-    samp.ket_row0_host().resize(num_cols);
-    for (auto col = 0_uz; col < num_cols; ++col)
-    {
-        auto permuted = hpermute(ctx.host_peps[0][col], {0, 4, 1, 2, 3});
-        upload_tensor(samp.ket_row0()[col], permuted);
-        samp.ket_row0_host()[col] = std::move(permuted);
-    }
 
     const auto num_dl_envs = num_rows - 1;
     samp.dlenv_host().resize(num_dl_envs);

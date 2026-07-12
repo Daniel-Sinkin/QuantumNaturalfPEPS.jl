@@ -82,7 +82,7 @@ qnpeps_ctx_build_dlenv(qnpeps_ctx* ctx, const qnpeps_device_peps* peps, double* 
 {
     if (not ctx or not peps) return QNPEPS_ERR_NULL_ARG;
     qnpeps::err_state() = QNPEPS_OK;
-    qnpeps::dlenv::ctx_build_dlenv(*ctx, peps, cumulative_row_logs);
+    qnpeps::dlenv::build_dlenv(*ctx, peps, cumulative_row_logs);
     return qnpeps::err_state();
 }
 
@@ -243,13 +243,13 @@ extern "C" int64_t qnpeps_batched_rangefinder_scratch_bytes(int rows, int cols, 
     const auto ptr_bytes = sizeof(cf*);
     const auto int_bytes = sizeof(int);
     usize total{};
-    total += device_align(rows_u * rank_u * batch_u * cf_bytes);
-    total += device_align(cols_u * rank_u * batch_u * cf_bytes);
-    total += device_align(rank_u * rank_u * batch_u * cf_bytes);
-    total += device_align(cols_u * rank_u * cf_bytes);
-    total += device_align(batch_u * ptr_bytes);
-    total += device_align(batch_u * ptr_bytes);
-    total += device_align(batch_u * int_bytes);
+    total += device_align(cf_bytes * rows_u * rank_u * batch_u);
+    total += device_align(cf_bytes * cols_u * rank_u * batch_u);
+    total += device_align(cf_bytes * rank_u * rank_u * batch_u);
+    total += device_align(cf_bytes * cols_u * rank_u);
+    total += device_align(ptr_bytes * batch_u);
+    total += device_align(ptr_bytes * batch_u);
+    total += device_align(int_bytes * batch_u);
     return static_cast<int64_t>(total);
 }
 
@@ -293,7 +293,7 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
     auto carve = [&cursor](i64 count, usize elem_size) -> void*
     {
         void* slot{cursor};
-        cursor += device_align(static_cast<usize>(count) * elem_size);
+        cursor += device_align(elem_size * static_cast<usize>(count));
         return slot;
     };
     auto carve_cf = [&carve](i64 count) -> cf*
