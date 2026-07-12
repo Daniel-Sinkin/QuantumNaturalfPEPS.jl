@@ -975,7 +975,7 @@ auto build_dlenv_row(
     {  // Copy finished dlenv out
         auto* header_ptr = reinterpret_cast<int32_t*>(dlenv_row_out);
         std::vector<int32_t> header{};
-        header.resize(num_cols);
+        header.resize(num_cols * k_dl_axis_count);
         auto* values_ptr = reinterpret_cast<cuFloatComplex*>(header_ptr + header.size());
         i64 values_offset{};
         for (auto col = 0_uz; col < num_cols; ++col)
