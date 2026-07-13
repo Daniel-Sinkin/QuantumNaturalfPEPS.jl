@@ -11,19 +11,6 @@ namespace qnpeps
 {
 static thread_local cudaStream_t g_dlenv_stream{};
 
-auto BumpArena::bump(usize bytes, usize align) -> void*
-{
-    cursor = (cursor + (align - 1)) & ~(align - 1);
-    auto* result = base + cursor;
-    cursor += bytes;
-    if (cursor > cap)
-    {
-        qnpeps::set_err(QNPEPS_ERR_OOM);
-        return nullptr;
-    }
-    return result;
-}
-
 auto set_stream(cudaStream_t new_stream) -> void
 {
     g_dlenv_stream = new_stream;
@@ -33,12 +20,11 @@ auto stream() -> cudaStream_t
     return g_dlenv_stream;
 }
 
-auto alloc(BumpArena& arena, const Shape& dim) -> DeviceTensor
+auto alloc(Carver& carver, const Shape& dim) -> DeviceTensor
 {
     DeviceTensor tensor{};
     tensor.dim = dim;
-    tensor.d =
-        static_cast<cuFloatComplex*>(arena.bump(tensor.num_elems() * sizeof(cuFloatComplex)));
+    tensor.d = carver.take<cuFloatComplex>(tensor.num_elems());
     return tensor;
 }
 
@@ -126,10 +112,10 @@ auto permute_axes(
     CUDA_CHECK(cudaGetLastError());
 }
 
-auto permute_axes(BumpArena& arena, const DeviceTensor& tensor, const Permutation& perm, bool conj)
+auto permute_axes(Carver& carver, const DeviceTensor& tensor, const Permutation& perm, bool conj)
     -> DeviceTensor
 {
-    auto result = alloc(arena, perm.apply(tensor.dim));
+    auto result = alloc(carver, perm.apply(tensor.dim));
     permute_axes(tensor, perm, conj, result.d);
     return result;
 }
@@ -200,7 +186,7 @@ auto contract(
 {
     const auto lhs_rows = static_cast<usize>(plan.M);
     const auto inner_dim = static_cast<usize>(plan.K);
-    const auto a_perm_bytes = device_align(lhs_rows * inner_dim * sizeof(cuFloatComplex));
+    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
     auto* a_perm = byte_offset<cuFloatComplex>(scratch, 0);
     auto* b_perm = byte_offset<cuFloatComplex>(scratch, a_perm_bytes);
     permute_axes(tensor_a, plan.perm_a, flags.conj_a, a_perm);
@@ -229,7 +215,7 @@ auto contract(
 }
 
 auto contract(
-    BumpArena& arena,
+    Carver& carver,
     Linalg& la,
     const DeviceTensor& tensor_a,
     const std::vector<int>& contracted_a,
@@ -239,16 +225,16 @@ auto contract(
 ) -> DeviceTensor
 {
     const auto plan = contract_plan(tensor_a.dim, contracted_a, tensor_b.dim, contracted_b);
-    auto result = alloc(arena, plan.result_dim);
+    auto result = alloc(carver, plan.result_dim);
 
-    ArenaScope scratch_frame(arena);
+    Carver scratch_frame{carver};
     const auto lhs_rows = static_cast<usize>(plan.M);
     const auto inner_dim = static_cast<usize>(plan.K);
     const auto rhs_cols = static_cast<usize>(plan.N);
-    const auto a_perm_bytes = device_align(lhs_rows * inner_dim * sizeof(cuFloatComplex));
-    const auto b_perm_bytes = device_align(inner_dim * rhs_cols * sizeof(cuFloatComplex));
+    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
+    const auto b_perm_bytes = device_align(sizeof(cuFloatComplex) * inner_dim * rhs_cols);
     const auto scratch_bytes = a_perm_bytes + b_perm_bytes;
-    const auto scratch = arena.bump(scratch_bytes);
+    auto* scratch = scratch_frame.take<char>(scratch_bytes);
     contract(la, tensor_a, tensor_b, flags, plan, scratch, result.d);
     return result;
 }

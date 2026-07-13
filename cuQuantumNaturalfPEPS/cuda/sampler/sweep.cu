@@ -34,12 +34,12 @@ static auto build_ket_row(
     for (auto col = 0_uz; col < num_cols; ++col)
     {
         const auto col_i = static_cast<i64>(col);
-        const HostTensor& mpo_site = samp.mpo_host()[row_u][col];
-        const auto bond_left = mpo_site.dim[0];
-        const auto bond_up = mpo_site.dim[1];
-        const auto phys_site = mpo_site.dim[2];
-        const auto bond_down = mpo_site.dim[3];
-        const auto bond_right = mpo_site.dim[4];
+        const Shape& peps_shape = samp.peps_shapes()[row_u][col];
+        const auto bond_left = peps_shape[0];
+        const auto bond_up = peps_shape[3];
+        const auto phys_site = peps_shape[4];
+        const auto bond_down = peps_shape[1];
+        const auto bond_right = peps_shape[2];
         const auto bond_above_l = bond_above[col];
         const auto bond_above_r = bond_above[col + 1];
         const auto ket_bond_l = ket_bonds[col];
@@ -504,37 +504,55 @@ static auto build_env_above(
 }
 namespace sampler
 {
-auto ctx_sample_refresh(qnpeps_ctx& ctx) -> void
+auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout layout) -> void
 {
+    if (not device_peps)
+    {
+        set_err(QNPEPS_ERR_NULL_ARG);
+        return;
+    }
+
     Sampler& samp = ctx.sampler.samp;
     const auto num_rows = static_cast<usize>(ctx.cfg.lx);
     const auto num_cols = static_cast<usize>(ctx.cfg.ly);
     const auto stream = ctx.linalg.stream();
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
+    set_stream(stream);
 
-    const auto reupload = [&](cf* dst, const HostTensor& host)
+    Permutation mpo_permutation{};
+    Permutation ket_row0_permutation{};
+    if (layout == PepsLayout::canonical)
     {
-        CUDA_CHECK(cudaMemcpyAsync(
-            dst,
-            host.v.data(),
-            static_cast<usize>(host.n()) * sizeof(cf),
-            cudaMemcpyHostToDevice,
-            stream
-        ));
-    };
+        mpo_permutation = Permutation{0, 3, 4, 1, 2};
+        ket_row0_permutation = Permutation{0, 4, 1, 2, 3};
+    }
+    else
+    {
+        mpo_permutation = Permutation{4, 1, 0, 3, 2};
+        ket_row0_permutation = Permutation{4, 0, 3, 2, 1};
+    }
+
+    const auto reverse = Permutation::reverse(5);
+    const auto* peps_base = static_cast<const cuFloatComplex*>(device_peps);
+    usize offset{};
     for (auto row = 0_uz; row < num_rows; ++row)
     {
         for (auto col = 0_uz; col < num_cols; ++col)
         {
-            samp.mpo_host()[row][col] = hpermute(ctx.host_peps[row][col], {0, 3, 4, 1, 2});
-            reupload(samp.mpo()[row][col], samp.mpo_host()[row][col]);
+            const Shape& canonical_shape = samp.peps_shapes()[row][col];
+            const auto source_shape =
+                layout == PepsLayout::canonical ? canonical_shape : reverse.apply(canonical_shape);
+            const DeviceTensor source{
+                source_shape, const_cast<cuFloatComplex*>(peps_base + offset)
+            };
+            permute_axes(source, mpo_permutation, false, cu_cast(samp.mpo()[row][col]));
+            if (row == 0)
+            {
+                permute_axes(source, ket_row0_permutation, false, cu_cast(samp.ket_row0()[col]));
+            }
+            offset += canonical_shape.num_elems();
         }
-    }
-    for (auto col = 0_uz; col < num_cols; ++col)
-    {
-        samp.ket_row0_host()[col] = hpermute(ctx.host_peps[0][col], {0, 4, 1, 2, 3});
-        reupload(samp.ket_row0()[col], samp.ket_row0_host()[col]);
     }
 }
 
@@ -615,9 +633,9 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
         int k{1};
         for (auto col = 0_uz; col < num_cols; ++col)
         {
-            const HostTensor& mpo_site = samp.mpo_host()[row][col];
-            const int M{k * mpo_site.dim[2] * mpo_site.dim[3]};
-            const int N{bond_above[col + 1] * mpo_site.dim[4]};
+            const Shape& peps_shape = samp.peps_shapes()[row][col];
+            const int M{k * peps_shape[4] * peps_shape[1]};
+            const int N{bond_above[col + 1] * peps_shape[2]};
             const int k2{std::max(1, std::min({chi_s, M, N}))};
             b[col + 1] = k2;
             k = k2;
@@ -699,8 +717,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
             enqueue_batch();
             const cudaError_t cap_rc = cudaStreamEndCapture(la.stream(), &graph);
             if (cap_rc == cudaSuccess
-                and cudaGraphInstantiate(&ctx.sampler.graph, graph, nullptr, nullptr, 0)
-                        == cudaSuccess)
+                and instantiate_graph(ctx.sampler.graph, graph) == cudaSuccess)
             {
                 CUDA_CHECK(cudaGraphDestroy(graph));
                 if (std::getenv("QNPEPS_GRAPH_LOG"))

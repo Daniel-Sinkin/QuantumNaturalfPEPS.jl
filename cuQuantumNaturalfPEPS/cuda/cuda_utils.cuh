@@ -10,6 +10,8 @@
 
 namespace qnpeps
 {
+constexpr i64 k_tree_reduce_threads{256};
+
 inline auto err_state() -> qnpeps_status&
 {
     static thread_local auto state = QNPEPS_OK;
@@ -115,6 +117,12 @@ template <class T>
 [[nodiscard]] inline auto cf_cast(const cuFloatComplex* p) noexcept -> const cf*
 {
     return reinterpret_cast<const cf*>(p);
+}
+
+[[nodiscard]] inline auto instantiate_graph(cudaGraphExec_t& executable, cudaGraph_t graph)
+    -> cudaError_t
+{
+    return cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0);
 }
 }
 

@@ -19,7 +19,7 @@ enum class BlasOp
     conj
 };
 
-[[nodiscard]] inline constexpr auto to_blas(BlasOp op) -> cublasOperation_t
+[[nodiscard]] inline constexpr auto to_cublas(BlasOp op) -> cublasOperation_t
 {
     // clang-format off
     switch (op) {
@@ -32,13 +32,13 @@ enum class BlasOp
     __builtin_unreachable();
 }
 
-[[nodiscard]] inline constexpr auto from_blas(cublasOperation_t op) -> BlasOp
+[[nodiscard]] inline constexpr auto from_cublas(cublasOperation_t op) -> BlasOp
 {
     // clang-format off
     switch (op) {
-        case CUBLAS_OP_N: return BlasOp::none;
-        case CUBLAS_OP_T: return BlasOp::trans;
-        case CUBLAS_OP_C: return BlasOp::conj_trans;
+        case CUBLAS_OP_N    : return BlasOp::none;
+        case CUBLAS_OP_T    : return BlasOp::trans;
+        case CUBLAS_OP_C    : return BlasOp::conj_trans;
         case CUBLAS_OP_CONJG: return BlasOp::conj;
     }
     // clang-format on
@@ -52,7 +52,7 @@ enum class BlasFillMode
     full
 };
 
-[[nodiscard]] inline constexpr auto to_blas(BlasFillMode mode) -> cublasFillMode_t
+[[nodiscard]] inline constexpr auto to_cublas(BlasFillMode mode) -> cublasFillMode_t
 {
     // clang-format off
     switch (mode) {
@@ -64,7 +64,7 @@ enum class BlasFillMode
     __builtin_unreachable();
 }
 
-[[nodiscard]] inline constexpr auto from_blas(cublasFillMode_t mode) -> BlasFillMode
+[[nodiscard]] inline constexpr auto from_cublas(cublasFillMode_t mode) -> BlasFillMode
 {
     // clang-format off
     switch (mode) {
@@ -163,8 +163,8 @@ class Linalg
         const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
         CUBLAS_CHECK(cublasCgemm(
             h_,
-            to_blas(cfg.op_a),
-            to_blas(cfg.op_b),
+            to_cublas(cfg.op_a),
+            to_cublas(cfg.op_b),
             shape.m,
             shape.n,
             shape.k,
@@ -203,8 +203,8 @@ class Linalg
         const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
         CUBLAS_CHECK(cublasCgemmStridedBatched(
             h_,
-            to_blas(cfg.op_a),
-            to_blas(cfg.op_b),
+            to_cublas(cfg.op_a),
+            to_cublas(cfg.op_b),
             shape.m,
             shape.n,
             shape.k,
@@ -270,8 +270,8 @@ class Linalg
         const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
         CUBLAS_CHECK(cublasCgemmBatched(
             h_,
-            to_blas(cfg.op_a),
-            to_blas(cfg.op_b),
+            to_cublas(cfg.op_a),
+            to_cublas(cfg.op_b),
             shape.m,
             shape.n,
             shape.k,
@@ -294,13 +294,6 @@ class Linalg
         ));
     }
 
-    auto cholesky_upper_batched(int n, cf** as, int lda, int* info, int batch_size) -> void
-    {
-        CUSOLVER_CHECK(cusolverDnCpotrfBatched(
-            sol_, CUBLAS_FILL_MODE_UPPER, n, cu_cast(as), lda, info, batch_size
-        ));
-    }
-
     auto triangular_solve_batched(
         cf* const* as,
         int lda,
@@ -316,8 +309,8 @@ class Linalg
         CUBLAS_CHECK(cublasCtrsmBatched(
             h_,
             cfg.side_right ? CUBLAS_SIDE_RIGHT : CUBLAS_SIDE_LEFT,
-            to_blas(cfg.fill_mode),
-            to_blas(cfg.op),
+            to_cublas(cfg.fill_mode),
+            to_cublas(cfg.op),
             cfg.has_diag ? CUBLAS_DIAG_NON_UNIT : CUBLAS_DIAG_UNIT,
             m,
             n,
@@ -367,19 +360,22 @@ struct QrScratch
     }
 };
 
-[[nodiscard]] inline auto qr_scratch(Linalg& la, int m, int n) -> QrScratch
+[[nodiscard]] inline auto qr_scratch(Linalg& la, int rows, int cols) -> QrScratch
 {
     int geqrf_size{};
-    CUSOLVER_CHECK(cusolverDnCgeqrf_bufferSize(la.cusolver(), m, n, nullptr, m, &geqrf_size));
-    int ungqr_size{};
     CUSOLVER_CHECK(
-        cusolverDnCungqr_bufferSize(la.cusolver(), m, n, n, nullptr, m, nullptr, &ungqr_size)
+        cusolverDnCgeqrf_bufferSize(la.cusolver(), rows, cols, nullptr, rows, &geqrf_size)
     );
+    int ungqr_size{};
+    CUSOLVER_CHECK(cusolverDnCungqr_bufferSize(
+        la.cusolver(), rows, cols, cols, nullptr, rows, nullptr, &ungqr_size
+    ));
+    const auto num_cols = static_cast<usize>(cols);
     const auto workspace_count = static_cast<usize>(std::max({geqrf_size, ungqr_size, 1}));
     return QrScratch{
-        .reflector_bytes = device_align(static_cast<usize>(n) * sizeof(cuFloatComplex)),
+        .reflector_bytes = device_align(num_cols * sizeof(cuFloatComplex)),
         .status_bytes = device_align(sizeof(int)),
-        .workspace_bytes = device_align(workspace_count * sizeof(cuFloatComplex)),
+        .workspace_bytes = device_align(sizeof(cuFloatComplex) * workspace_count),
     };
 }
 

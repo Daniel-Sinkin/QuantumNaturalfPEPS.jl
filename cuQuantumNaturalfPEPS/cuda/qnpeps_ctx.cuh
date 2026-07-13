@@ -28,9 +28,9 @@ struct qnpeps_ctx
         bool allocated{};
         cf* peps_buf{};
         char* arena{};
-        BumpArena known{};
-        BumpArena rolling_r{};
-        BumpArena scratch{};
+        Carver known{};
+        Carver rolling_r{};
+        Carver scratch{};
         int* fail{};
         f64* scales_all{};
         cf* triv{};
@@ -62,9 +62,10 @@ struct qnpeps_ctx
     {
         Sampler samp{};
         char* arena{};
-        BumpArena arena_view{};
+        Carver arena_view{};
         bool arena_owned{};
         cf* unit{};
+        cf** ptr_region{};
         u8* h_samples{};
         f64* h_logpc{};
         f64* h_lognorm{};
@@ -80,10 +81,7 @@ struct qnpeps_ctx
         bool allocated{};
     } sampler{};
 
-    std::vector<std::vector<HostTensor>> host_peps{};
     bool use_graph{true};
-
-    auto samp_bump(usize bytes) -> void* { return sampler.arena_view.bump(bytes); }
 };
 
 namespace qnpeps::dlenv
@@ -93,14 +91,14 @@ auto set_dl_capturing(qnpeps_ctx& ctx, bool on) -> void;
 auto ensure_dlenv_views(qnpeps_ctx& ctx) -> void;
 auto materialize_dlenv_views(qnpeps_ctx& ctx, const cf* raw_values, cf* views_out) -> void;
 auto dl_free(qnpeps_ctx& ctx) -> void;
-auto ctx_build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int;
+auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int;
 }
 
 namespace qnpeps::sampler
 {
 auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, usize scratch_bytes)
     -> void;
-auto ctx_sample_refresh(qnpeps_ctx& ctx) -> void;
+auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout layout) -> void;
 auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void;
 auto ctx_sampler_free(qnpeps_ctx& ctx) -> void;
 
