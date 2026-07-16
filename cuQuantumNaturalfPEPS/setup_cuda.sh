@@ -13,8 +13,24 @@ if ! command -v cmake >/dev/null 2>&1; then
     exit 1
 fi
 if ! command -v nvcc >/dev/null 2>&1; then
-    echo "setup_cuda.sh: nvcc not found (load the CUDA toolkit, e.g. source setup.sh)" >&2
+    echo "setup_cuda.sh: nvcc not found (source util/load_modules.sh first)" >&2
     exit 1
+fi
+
+echo "CUDA build architectures: $ARCH"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    if gpu_info="$(nvidia-smi --query-gpu=index,name,compute_cap,driver_version --format=csv,noheader 2>&1)"; then
+        echo "NVIDIA GPUs (index, name, compute capability, driver):"
+        printf '%s\n' "$gpu_info"
+    elif gpu_info="$(nvidia-smi -L 2>&1)"; then
+        echo "NVIDIA GPUs:"
+        printf '%s\n' "$gpu_info"
+    else
+        echo "NVIDIA GPUs: unavailable ($gpu_info)" >&2
+    fi
+else
+    echo "NVIDIA GPUs: nvidia-smi not found"
 fi
 
 cmake -S "$root/cuda" -B "$root/cuda/build" -DCMAKE_CUDA_ARCHITECTURES="$ARCH" || exit 1
@@ -22,4 +38,8 @@ cmake --build "$root/cuda/build" -j"$JOBS" || exit 1
 
 so="$root/cuda/build/libpeps_sampler.so"
 echo "$so"
-strings "$so" | grep cuQuantumNaturalfPEPS
+if ! version="$(strings "$so" | grep -m1 -E '^cuQuantumNaturalfPEPS [0-9.]+ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$')"; then
+    echo "setup_cuda.sh: ABI version string not found in $so" >&2
+    exit 1
+fi
+printf '%s\n' "$version"

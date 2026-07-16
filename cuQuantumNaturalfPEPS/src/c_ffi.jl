@@ -4,7 +4,7 @@ using Libdl
 const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_CACHE = Dict{Symbol,Ptr{Cvoid}}()
 
-const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.1 (2026-07-09)"
+const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.2 (2026-07-14)"
 
 function _lib_path()::String
     override = get(ENV, "QNPEPS_LIB", "")
@@ -49,9 +49,20 @@ function _strerror(status::Integer)::String
     return unsafe_string(@ccall $(_sym(:qnpeps_strerror))(status::Cint)::Cstring)
 end
 
+function _last_error_location()::String
+    file_ptr = @ccall $(_sym(:qnpeps_last_error_file))()::Cstring
+    line = @ccall $(_sym(:qnpeps_last_error_line))()::Cint
+    (file_ptr == C_NULL || line <= 0) && return ""
+    file = unsafe_string(file_ptr)
+    isempty(file) && return ""
+    return "$file:$line"
+end
+
 @inline function _check(status::Integer, what::AbstractString)::Nothing
     status == 0 && return
-    error("cuQuantumNaturalfPEPS: $what failed (status $status: $(_strerror(status)))")
+    location = _last_error_location()
+    at = isempty(location) ? "" : " at $location"
+    error("cuQuantumNaturalfPEPS: $what failed$at (status $status: $(_strerror(status)))")
 end
 
 function _dlenv_bytes(config::QnpepsConfig)::Int64
