@@ -37,14 +37,14 @@ auto check_cfg(const QnpepsConfig* config) -> qnpeps_status
 extern "C" qnpeps_status
 qnpeps_ctx_create(const QnpepsConfig* config, void* stream, qnpeps_ctx** out)
 {
-    if (not out) return QNPEPS_ERR_NULL_ARG;
+    qnpeps::reset_err();
+    if (not out) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
     *out = nullptr;
     const auto config_status = check_cfg(config);
-    if (config_status != QNPEPS_OK) return config_status;
+    if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
 
-    qnpeps::err_state() = QNPEPS_OK;
     auto* ctx = new (std::nothrow) qnpeps_ctx{};
-    if (not ctx) return QNPEPS_ERR_OOM;
+    if (not ctx) return qnpeps::set_err(QNPEPS_ERR_OOM);
     ctx->cfg = *config;
     if (stream)
     {
@@ -82,18 +82,19 @@ extern "C" void qnpeps_ctx_destroy(qnpeps_ctx* ctx)
 extern "C" qnpeps_status
 qnpeps_ctx_build_dlenv(qnpeps_ctx* ctx, const qnpeps_device_peps* peps, double* cumulative_row_logs)
 {
-    if (not ctx or not peps) return QNPEPS_ERR_NULL_ARG;
-    qnpeps::err_state() = QNPEPS_OK;
+    qnpeps::reset_err();
+    if (not ctx or not peps) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
     qnpeps::dlenv::build_dlenv(*ctx, peps, cumulative_row_logs);
     return qnpeps::err_state();
 }
 
 extern "C" qnpeps_status qnpeps_ctx_sample(qnpeps_ctx* ctx, const QnpepsCtxSampleArgs* args)
 {
-    if (not ctx or not args) return QNPEPS_ERR_NULL_ARG;
-    if (args->struct_size != sizeof(QnpepsCtxSampleArgs)) return QNPEPS_ERR_BAD_VERSION;
-    if (not args->samples_out) return QNPEPS_ERR_NULL_ARG;
-    qnpeps::err_state() = QNPEPS_OK;
+    qnpeps::reset_err();
+    if (not ctx or not args) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
+    if (args->struct_size != sizeof(QnpepsCtxSampleArgs))
+        return qnpeps::set_err(QNPEPS_ERR_BAD_VERSION);
+    if (not args->samples_out) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
     return qnpeps::sampler::ctx_sample(
         *ctx,
         {
@@ -114,9 +115,10 @@ extern "C" qnpeps_status qnpeps_build_dlenv(
     void* stream
 )
 {
+    qnpeps::reset_err();
     const auto config_status = check_cfg(config);
-    if (config_status != QNPEPS_OK) return config_status;
-    if (not device_peps or not dlenv_out) return QNPEPS_ERR_NULL_ARG;
+    if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
+    if (not device_peps or not dlenv_out) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
 
     qnpeps_ctx* ctx{};
     const auto create_status = qnpeps_ctx_create(config, stream, &ctx);
@@ -140,18 +142,19 @@ extern "C" qnpeps_status qnpeps_build_dlenv(
 
 extern "C" qnpeps_status qnpeps_sample(const QnpepsConfig* config, const QnpepsSampleArgs* args)
 {
-    if (not config or not args) return QNPEPS_ERR_NULL_ARG;
-    if (args->struct_size != sizeof(QnpepsSampleArgs)) return QNPEPS_ERR_BAD_VERSION;
-    if (not args->peps or not args->dlenv or not args->samples_out) return QNPEPS_ERR_NULL_ARG;
-
-    qnpeps::err_state() = QNPEPS_OK;
+    qnpeps::reset_err();
+    if (not config or not args) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
+    if (args->struct_size != sizeof(QnpepsSampleArgs))
+        return qnpeps::set_err(QNPEPS_ERR_BAD_VERSION);
+    if (not args->peps or not args->dlenv or not args->samples_out)
+        return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
 
     const auto config_status = check_cfg(config);
-    if (config_status != QNPEPS_OK) return config_status;
+    if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
 
     if (args->gpus > 1)
     {
-        if (args->scratch) return QNPEPS_ERR_BAD_CONFIG;
+        if (args->scratch) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
         if (args->n_samples == 0) return QNPEPS_OK;
         qnpeps::sampler::sample_multigpu(
             *config,
@@ -168,7 +171,8 @@ extern "C" qnpeps_status qnpeps_sample(const QnpepsConfig* config, const QnpepsS
         return qnpeps::err_state();
     }
 
-    if (args->dim_batch > static_cast<uint64_t>(k_max_batch_size)) return QNPEPS_ERR_BAD_CONFIG;
+    if (args->dim_batch > static_cast<uint64_t>(k_max_batch_size))
+        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     if (args->n_samples == 0) return QNPEPS_OK;
     qnpeps::sampler::sample(
         *config,
@@ -200,13 +204,13 @@ extern "C" qnpeps_status qnpeps_double_layer_row(
     void* stream
 )
 {
+    qnpeps::reset_err();
     const auto config_status = check_cfg(config);
-    if (config_status != QNPEPS_OK) return config_status;
-    if (not device_peps_row or not dlenv_row_out) return QNPEPS_ERR_NULL_ARG;
-    if (row < 1 or row > config->lx) return QNPEPS_ERR_BAD_CONFIG;
-    if (maxdim < 1) return QNPEPS_ERR_BAD_CONFIG;
+    if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
+    if (not device_peps_row or not dlenv_row_out) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
+    if (row < 1 or row > config->lx) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
+    if (maxdim < 1) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
 
-    qnpeps::err_state() = QNPEPS_OK;
     Linalg linalg{};
     linalg.create(static_cast<cudaStream_t>(stream));
     qnpeps::dlenv::build_dlenv_row(
@@ -273,9 +277,12 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
     void* stream
 )
 {
-    if (not input or not q_out or not r_out or not scratch) return QNPEPS_ERR_NULL_ARG;
-    if (rows < 1 or cols < 1 or rank < 1 or batch < 1) return QNPEPS_ERR_BAD_CONFIG;
-    if (rank > rows or rank > cols) return QNPEPS_ERR_BAD_CONFIG;
+    qnpeps::reset_err();
+    if (not input or not q_out or not r_out or not scratch)
+        return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
+    if (rows < 1 or cols < 1 or rank < 1 or batch < 1)
+        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
+    if (rank > rows or rank > cols) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
 
     const i64 rows_i{rows};
     const i64 cols_i{cols};
@@ -283,14 +290,13 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
     const i64 batch_i{batch};
     if (input_stride < rows_i * cols_i or q_stride < rows_i * rank_i or r_stride < rank_i * cols_i)
     {
-        return QNPEPS_ERR_BAD_CONFIG;
+        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     }
 
     const auto needed = qnpeps_batched_rangefinder_scratch_bytes(rows, cols, rank, batch);
-    if (needed < 0) return QNPEPS_ERR_BAD_CONFIG;
-    if (scratch_bytes < static_cast<uint64_t>(needed)) return QNPEPS_ERR_OOM;
-
-    qnpeps::err_state() = QNPEPS_OK;
+    if (needed < 0) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
+    if (scratch_bytes < static_cast<uint64_t>(needed))
+        return qnpeps::set_err(QNPEPS_ERR_OOM);
 
     auto* cursor = static_cast<char*>(scratch);
     auto carve = [&cursor](i64 count, usize elem_size) -> void*
@@ -430,6 +436,16 @@ extern "C" int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config)
 
 extern "C" void qnpeps_sampler_pool_release(void) {}
 
+extern "C" const char* qnpeps_last_error_file(void)
+{
+    return qnpeps::err_file();
+}
+
+extern "C" int32_t qnpeps_last_error_line(void)
+{
+    return qnpeps::err_line();
+}
+
 extern "C" const char* qnpeps_strerror(qnpeps_status status)
 {
     switch (status)
@@ -456,5 +472,5 @@ extern "C" const char* qnpeps_strerror(qnpeps_status status)
 
 extern "C" const char* qnpeps_capi_version(void)
 {
-    return "cuQuantumNaturalfPEPS 0.1 (2026-07-09)";
+    return "cuQuantumNaturalfPEPS 0.2 (2026-07-14)";
 }

@@ -120,6 +120,8 @@ extern "C"
 
     void qnpeps_sampler_pool_release(void);
     const char* qnpeps_strerror(qnpeps_status status);
+    const char* qnpeps_last_error_file(void);
+    int32_t qnpeps_last_error_line(void);
     const char* qnpeps_capi_version(void);
 
 #ifdef __cplusplus

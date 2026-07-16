@@ -306,6 +306,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         std::vector<f64> logpc{};
         std::vector<f64> lognorm{};
         qnpeps_status err{QNPEPS_OK};
+        const char* err_file{};
+        int32_t err_line{};
     };
     using BatchIds = std::vector<int>;
 
@@ -323,25 +325,34 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
     const auto peps_bytes = sizeof(cf) * static_cast<usize>(peps_elems);
     auto run_gpu = [&](usize g)
     {
-        err_state() = QNPEPS_OK;
+        reset_err();
         GpuShard& shard = shards[g];
+        const auto capture_error = [&]
+        {
+            shard.err = err_state();
+            shard.err_file = err_file();
+            shard.err_line = err_line();
+        };
         if (cudaSetDevice(static_cast<int>(g)) != cudaSuccess)
         {
-            shard.err = QNPEPS_ERR_CUDA;
+            set_err(QNPEPS_ERR_CUDA);
+            capture_error();
             return;
         }
         void* device_dlenv_copy{};
         const auto dlenv_total_bytes = header_bytes + dlenv_values_bytes;
         if (cudaMalloc(&device_dlenv_copy, dlenv_total_bytes) != cudaSuccess)
         {
-            shard.err = QNPEPS_ERR_OOM;
+            set_err(QNPEPS_ERR_OOM);
+            capture_error();
             return;
         }
         cf* device_peps_copy{};
         if (cudaMalloc(&device_peps_copy, peps_bytes) != cudaSuccess)
         {
             CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            shard.err = QNPEPS_ERR_OOM;
+            set_err(QNPEPS_ERR_OOM);
+            capture_error();
             return;
         }
         const cudaError_t header_rc{
@@ -360,7 +371,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         {
             CUDA_NOCHECK(cudaFree(device_dlenv_copy));
             CUDA_NOCHECK(cudaFree(device_peps_copy));
-            shard.err = QNPEPS_ERR_CUDA;
+            set_err(QNPEPS_ERR_CUDA);
+            capture_error();
             return;
         }
 
@@ -377,7 +389,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         {
             cudaFree(device_dlenv_copy);
             cudaFree(device_peps_copy);
-            shard.err = QNPEPS_ERR_CUDA;
+            set_err(QNPEPS_ERR_CUDA);
+            capture_error();
             return;
         }
         ctx.stream = stream_use;
@@ -398,7 +411,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         shard.samples = std::move(ctx.sampler.all_samples);
         shard.logpc = std::move(ctx.sampler.all_logpc);
         shard.lognorm = std::move(ctx.sampler.all_lognorm);
-        shard.err = err_state();
+        capture_error();
 
         ctx_sampler_free(ctx);
         dlenv::dl_free(ctx);
@@ -416,7 +429,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
 
     CUDA_CHECK(cudaSetDevice(0));
     for (const auto& shard : shards)
-        if (shard.err != QNPEPS_OK) return set_err(shard.err);
+        if (shard.err != QNPEPS_OK)
+            return set_err_at(shard.err, shard.err_file, shard.err_line);
 
     const i64 sample_len{static_cast<i64>(lx) * ly};
     const auto sample_len_u = static_cast<usize>(sample_len);
