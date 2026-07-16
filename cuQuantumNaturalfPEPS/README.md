@@ -47,13 +47,14 @@ the CUDA sources or ABI.
 
 ## Running the examples
 
-You are now ready to run the examples, they should cover all functionality
-```
-julia --project=. app/load_peps.jl
-julia --project=. app/double_layer.jl
-julia --project=. app/double_layer_step.jl
-julia --project=. app/sampling.jl
-julia --project=. app/sampling_multigpu.jl
-julia --project=. app/batched_rangefinder.jl
-julia --project=. app/ffi.jl
+From the repository root, run:
+
+```bash
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/load_peps.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/double_layer.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/double_layer_step.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/sampling.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/sampling_multigpu.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/batched_rangefinder.jl
+julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/ffi.jl
 ```
