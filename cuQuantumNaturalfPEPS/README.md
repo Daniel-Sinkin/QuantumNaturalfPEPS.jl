@@ -10,7 +10,7 @@ git clone git@github.com:Daniel-Sinkin/QuantumNaturalfPEPS.jl.git
 The following command sets up the project and the CUDA dependencies.
 
 ```bash
-source cuQuantumNaturalfPEPS/util/bootstrap_jureca.sh
+source cuQuantumNaturalfPEPS/setup.sh
 ```
 
 By default the julia packaging information is placed at `$SCRATCH/$USER/julia-peps-cuda`. You can
@@ -18,13 +18,13 @@ set teh `QNPEPS_JULIA_DEPOT=...` environment variable beforehand to change that 
 
 You have to run this command in every new shell (terminal) to have all modules ready to use.
 ```bash
-source cuQuantumNaturalfPEPS/util/load_modules.sh
+source cuQuantumNaturalfPEPS/activate.sh
 ```
 
-Run this to re-compile the .so file of the library (80 here refers to the compute capability,
-basically the Nvidia GPU generation, A100 has 80, H100/200 has 90).
+Run the setup command again to re-compile the .so file of the library (80 here refers to the
+compute capability, basically the Nvidia GPU generation, A100 has 80, H100/200 has 90).
 ```bash
-cuQuantumNaturalfPEPS/setup_cuda.sh 80
+source cuQuantumNaturalfPEPS/setup.sh 80
 ```
 
 It should print this version string

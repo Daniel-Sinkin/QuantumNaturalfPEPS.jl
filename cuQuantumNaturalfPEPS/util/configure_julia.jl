@@ -1,7 +1,7 @@
 using Pkg
 using TOML
 
-const package_dir = abspath(@__DIR__)
+const package_dir = dirname(abspath(@__DIR__))
 const cuda_version = get(ENV, "QNPEPS_CUDA_VERSION", "13.0")
 const cuda_runtime_name = "CUDA_Runtime_jll"
 const cuda_runtime_uuid = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"

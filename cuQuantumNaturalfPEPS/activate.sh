@@ -9,7 +9,7 @@ _qnpeps_load_modules() {
         fi
     fi
     if ! type module >/dev/null 2>&1; then
-        echo "load_modules.sh: JURECA's module command is unavailable" >&2
+        echo "activate.sh: JURECA's module command is unavailable" >&2
         return 1
     fi
 
@@ -25,7 +25,7 @@ _qnpeps_load_modules() {
     elif [ -n "${SCRATCH:-}" ] && [ -n "${USER:-}" ]; then
         export QNPEPS_JULIA_DEPOT="$SCRATCH/$USER/julia-peps-cuda"
     else
-        echo "load_modules.sh: set QNPEPS_JULIA_DEPOT because SCRATCH or USER is unavailable" >&2
+        echo "activate.sh: set QNPEPS_JULIA_DEPOT because SCRATCH or USER is unavailable" >&2
         return 1
     fi
     export JULIA_DEPOT_PATH="$QNPEPS_JULIA_DEPOT"
@@ -34,7 +34,7 @@ _qnpeps_load_modules() {
     local nvcc_release
     nvcc_release="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
     if [ "$nvcc_release" != "$QNPEPS_CUDA_VERSION" ]; then
-        echo "load_modules.sh: expected CUDA $QNPEPS_CUDA_VERSION, nvcc reports $nvcc_release" >&2
+        echo "activate.sh: expected CUDA $QNPEPS_CUDA_VERSION, nvcc reports $nvcc_release" >&2
         return 1
     fi
 

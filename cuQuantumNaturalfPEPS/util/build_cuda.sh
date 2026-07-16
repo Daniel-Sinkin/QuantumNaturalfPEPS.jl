@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 ARCH="${1:-${ARCH:-80}}"
 JOBS="${JOBS:-8}"
-root="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="${QNPEPS_CUDA_BUILD_DIR:-$root/cuda/build}"
 
 if ! command -v cmake >/dev/null 2>&1 || ! command -v nvcc >/dev/null 2>&1; then
-    if [ -r "$root/util/load_modules.sh" ]; then
-        source "$root/util/load_modules.sh" || exit 1
+    if [ -r "$root/activate.sh" ]; then
+        source "$root/activate.sh" || exit 1
     fi
 fi
 if ! command -v cmake >/dev/null 2>&1; then
@@ -15,11 +15,11 @@ if ! command -v cmake >/dev/null 2>&1; then
     fi
 fi
 if ! command -v cmake >/dev/null 2>&1; then
-    echo "setup_cuda.sh: cmake not found (install CMake or run: module load CMake)" >&2
+    echo "build_cuda.sh: cmake not found (install CMake or run: module load CMake)" >&2
     exit 1
 fi
 if ! command -v nvcc >/dev/null 2>&1; then
-    echo "setup_cuda.sh: nvcc not found (install or load a CUDA toolkit)" >&2
+    echo "build_cuda.sh: nvcc not found (install or load a CUDA toolkit)" >&2
     exit 1
 fi
 
@@ -45,7 +45,7 @@ cmake --build "$build_dir" -j"$JOBS" || exit 1
 so="$build_dir/libpeps_sampler.so"
 echo "$so"
 if ! version="$(strings "$so" | grep -m1 -E '^cuQuantumNaturalfPEPS [0-9.]+ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$')"; then
-    echo "setup_cuda.sh: ABI version string not found in $so" >&2
+    echo "build_cuda.sh: ABI version string not found in $so" >&2
     exit 1
 fi
 printf '%s\n' "$version"
