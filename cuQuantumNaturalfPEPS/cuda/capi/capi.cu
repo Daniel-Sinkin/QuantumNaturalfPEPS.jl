@@ -472,5 +472,5 @@ extern "C" const char* qnpeps_strerror(qnpeps_status status)
 
 extern "C" const char* qnpeps_capi_version(void)
 {
-    return "cuQuantumNaturalfPEPS 0.2 (2026-07-14)";
+    return "cuQuantumNaturalfPEPS 0.3 (2026-07-14)";
 }

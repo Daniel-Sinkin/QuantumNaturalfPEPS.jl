@@ -4,7 +4,7 @@ using Libdl
 const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_CACHE = Dict{Symbol,Ptr{Cvoid}}()
 
-const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.2 (2026-07-14)"
+const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.3 (2026-07-14)"
 
 function _lib_path()::String
     override = get(ENV, "QNPEPS_LIB", "")

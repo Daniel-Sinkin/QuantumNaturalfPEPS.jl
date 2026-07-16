@@ -39,7 +39,7 @@ The build prints the selected architecture, visible GPUs when available, compile
 path, and ABI version. This branch must report:
 
 ```text
-cuQuantumNaturalfPEPS 0.2 (2026-07-14)
+cuQuantumNaturalfPEPS 0.3 (2026-07-14)
 ```
 
 Julia checks that ABI string when it loads the library. Rebuild the shared library after changing
