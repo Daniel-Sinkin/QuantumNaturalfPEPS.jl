@@ -2,53 +2,40 @@
 
 ## Setup on JURECA
 
-If needed, clone the fork:
-
+If not done already clone the forked repo
 ```
 git clone git@github.com:Daniel-Sinkin/QuantumNaturalfPEPS.jl.git
 ```
 
-On JURECA, the `CUDA/13` module is the toolkit-provisioning mechanism: it makes `nvcc`, headers,
-and runtime libraries available without requiring root access or a separate CUDA download.
-
-Run the fresh Julia instantiation and precompilation on a CPU compute node. From the repository
-root, one sourced command configures the module toolchain, places the Julia depot under project
-scratch, pins CUDA.jl to the module-provided CUDA 13 runtime, instantiates both Julia projects, and
-builds the A100 library:
+The following command sets up the project and the CUDA dependencies.
 
 ```bash
 source cuQuantumNaturalfPEPS/util/bootstrap_jureca.sh
 ```
 
-The default depot is `$SCRATCH/$USER/julia-peps-cuda`. Set
-`QNPEPS_JULIA_DEPOT=/path/on/scratch` before sourcing the bootstrap to override it.
+By default the julia packaging information is placed at `$SCRATCH/$USER/julia-peps-cuda`. You can
+set teh `QNPEPS_JULIA_DEPOT=...` environment variable beforehand to change that location.
 
-In each later shell, restore the runtime environment before running Julia:
-
+You have to run this command in every new shell (terminal) to have all modules ready to use.
 ```bash
 source cuQuantumNaturalfPEPS/util/load_modules.sh
 ```
 
-To rebuild only the native library after the environment is loaded:
-
+Run this to re-compile the .so file of the library (80 here refers to the compute capability,
+basically the Nvidia GPU generation, A100 has 80, H100/200 has 90).
 ```bash
 cuQuantumNaturalfPEPS/setup_cuda.sh 80
 ```
 
-The build prints the selected architecture, visible GPUs when available, compiler output, library
-path, and ABI version. This branch must report:
-
+It should print this version string
 ```text
 cuQuantumNaturalfPEPS 0.3 (2026-07-14)
 ```
-
-Julia checks that ABI string when it loads the library. Rebuild the shared library after changing
-the CUDA sources or ABI.
+This string is checked to make sure that the compiled binary .so matches the program's requirements,
+in general we'll just check that the versions are identical instead of supporting backward compatibility.
 
 ## Running the examples
-
-From the repository root, run:
-
+The following are the examples which show off most of the functionality of this library so far.
 ```bash
 julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/load_peps.jl
 julia --project=cuQuantumNaturalfPEPS cuQuantumNaturalfPEPS/app/double_layer.jl
