@@ -1,4 +1,5 @@
 Manifest.toml
+/LocalPreferences.toml
 cuQuantumNaturalfPEPS/cuda/build*/
 *.so
 *.jld2

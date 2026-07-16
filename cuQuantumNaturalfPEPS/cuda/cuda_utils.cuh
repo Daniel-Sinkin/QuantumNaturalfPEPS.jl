@@ -8,20 +8,64 @@
 #include <cuda_runtime.h>
 #include <cusolverDn.h>
 
+#include <cstdint>
+#include <source_location>
+
 namespace qnpeps
 {
 constexpr i64 k_tree_reduce_threads{256};
 
-inline auto err_state() -> qnpeps_status&
+struct ErrorState
 {
-    static thread_local auto state = QNPEPS_OK;
+    qnpeps_status status{QNPEPS_OK};
+    const char* file{};
+    int32_t line{};
+};
+
+inline auto error_state() -> ErrorState&
+{
+    static thread_local ErrorState state{};
     return state;
 }
 
-inline auto set_err(qnpeps_status status) -> qnpeps_status
+inline auto err_state() -> qnpeps_status&
 {
-    if (err_state() == QNPEPS_OK) err_state() = status;
-    return err_state();
+    return error_state().status;
+}
+
+inline auto reset_err() -> void
+{
+    error_state() = {};
+}
+
+inline auto set_err_at(qnpeps_status status, const char* file, int32_t line) -> qnpeps_status
+{
+    auto& state = error_state();
+    if (state.status == QNPEPS_OK)
+    {
+        state.status = status;
+        state.file = file;
+        state.line = line;
+    }
+    return state.status;
+}
+
+inline auto set_err(
+    qnpeps_status status,
+    std::source_location where = std::source_location::current()
+) -> qnpeps_status
+{
+    return set_err_at(status, where.file_name(), static_cast<int32_t>(where.line()));
+}
+
+inline auto err_file() -> const char*
+{
+    return error_state().file;
+}
+
+inline auto err_line() -> int32_t
+{
+    return error_state().line;
 }
 }
 

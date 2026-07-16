@@ -30,6 +30,9 @@ ITensorMPS = "=0.2.2"
 ITensors = "=0.6.23"
 julia = "1.11"
 
+[extras]
+CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
+
 [sources]
 cuQuantumNaturalfPEPS = {path = "cuQuantumNaturalfPEPS"}
 ParallelGradient = {url = "https://github.com/NeTeNeSyQuMa/ParallelGradient.jl"}

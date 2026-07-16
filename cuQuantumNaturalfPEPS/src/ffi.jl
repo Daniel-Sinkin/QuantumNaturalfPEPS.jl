@@ -9,6 +9,10 @@ capi_version()::Cstring = @ccall $(_sym(:qnpeps_capi_version))()::Cstring
 
 strerror(status)::Cstring = @ccall $(_sym(:qnpeps_strerror))(status::Cint)::Cstring
 
+last_error_file()::Cstring = @ccall $(_sym(:qnpeps_last_error_file))()::Cstring
+
+last_error_line()::Cint = @ccall $(_sym(:qnpeps_last_error_line))()::Cint
+
 function ctx_create(config, out; stream)::Cint
     return @ccall $(_sym(:qnpeps_ctx_create))(
         config::Ref{QnpepsConfig},
