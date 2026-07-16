@@ -2,7 +2,13 @@
 ARCH="${1:-${ARCH:-80}}"
 JOBS="${JOBS:-8}"
 root="$(cd "$(dirname "$0")" && pwd)"
+build_dir="${QNPEPS_CUDA_BUILD_DIR:-$root/cuda/build}"
 
+if ! command -v cmake >/dev/null 2>&1 || ! command -v nvcc >/dev/null 2>&1; then
+    if [ -r "$root/util/load_modules.sh" ]; then
+        source "$root/util/load_modules.sh" || exit 1
+    fi
+fi
 if ! command -v cmake >/dev/null 2>&1; then
     if command -v module >/dev/null 2>&1; then
         module load CMake >/dev/null 2>&1
@@ -13,7 +19,7 @@ if ! command -v cmake >/dev/null 2>&1; then
     exit 1
 fi
 if ! command -v nvcc >/dev/null 2>&1; then
-    echo "setup_cuda.sh: nvcc not found (source util/load_modules.sh first)" >&2
+    echo "setup_cuda.sh: nvcc not found (install or load a CUDA toolkit)" >&2
     exit 1
 fi
 
@@ -33,10 +39,10 @@ else
     echo "NVIDIA GPUs: nvidia-smi not found"
 fi
 
-cmake -S "$root/cuda" -B "$root/cuda/build" -DCMAKE_CUDA_ARCHITECTURES="$ARCH" || exit 1
-cmake --build "$root/cuda/build" -j"$JOBS" || exit 1
+cmake -S "$root/cuda" -B "$build_dir" -DCMAKE_CUDA_ARCHITECTURES="$ARCH" || exit 1
+cmake --build "$build_dir" -j"$JOBS" || exit 1
 
-so="$root/cuda/build/libpeps_sampler.so"
+so="$build_dir/libpeps_sampler.so"
 echo "$so"
 if ! version="$(strings "$so" | grep -m1 -E '^cuQuantumNaturalfPEPS [0-9.]+ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$')"; then
     echo "setup_cuda.sh: ABI version string not found in $so" >&2
