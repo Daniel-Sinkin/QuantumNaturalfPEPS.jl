@@ -13,7 +13,7 @@ function double_layer()::Nothing
 
     chi_dl_exact = DIM_BOND * DIM_BOND
     println("chi_dl caps the bond dimension of the double-layer row MPS.")
-    println("chi_dl = dim_bond^2 = $chi_dl_exact is exact; default chi_dl = dim_bond truncates.")
+    println("chi_dl = dim_bond^2 = $chi_dl_exact is exact, while default chi_dl = dim_bond truncates.")
 
     untruncated = cuQuantumNaturalfPEPS.double_layer(device_peps; chi_dl=chi_dl_exact)
     truncated = cuQuantumNaturalfPEPS.double_layer(device_peps)

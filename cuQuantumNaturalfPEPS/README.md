@@ -56,7 +56,7 @@ You should see this output
 ```bash
 peps: 4 x 4 lattice, dim_bond 4, dim_phys 2
 chi_dl caps the bond dimension of the double-layer row MPS.
-chi_dl = dim_bond^2 = 16 is exact; default chi_dl = dim_bond truncates.
+chi_dl = dim_bond^2 = 16 is exact, while default chi_dl = dim_bond truncates.
 untruncated: chi_dl 16, env bytes 393408
 truncated: chi_dl 4, env bytes 24768
 cumulative row log-norms untruncated: [-3.9403818791584007, -3.0956433956063267, -1.0088134003043083]
