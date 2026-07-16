@@ -149,6 +149,46 @@ struct PermuteOp
 
 auto permute_batched(Linalg& linalg, PermutationCache& permutation_cache, const PermuteOp& op)
     -> void;
+
+struct ContractSpec
+{
+    Shape dims_a{};
+    std::vector<int> contracted_a{};
+    Shape dims_b{};
+    std::vector<int> contracted_b{};
+    int conj_b{};
+    int dim_batch{};
+};
+
+struct ContractOperand
+{
+    CuArrayConst src{};
+    CuArray scratch{};
+    cf* const* ptrs{};
+};
+
+struct ContractOut
+{
+    CuArray view{};
+    cf* const* ptrs{};
+};
+
+auto contract_batched(
+    Linalg& la,
+    PermutationCache& cache,
+    const ContractSpec& spec,
+    const ContractOperand& a,
+    const ContractOperand& b,
+    const ContractOut& out
+) -> void;
+auto contract_strided_batched(
+    Linalg& la,
+    PermutationCache& cache,
+    const ContractSpec& spec,
+    const ContractOperand& a,
+    const ContractOperand& b,
+    const ContractOut& out
+) -> void;
 }
 
 #endif

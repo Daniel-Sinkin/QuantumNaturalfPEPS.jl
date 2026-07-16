@@ -249,4 +249,136 @@ auto permute_batched(Linalg& linalg, PermutationCache& permutation_cache, const 
     };
     cu_gather<<<blocks, k_threads_per_block, 0, linalg.stream()>>>(gather_args);
 }
+
+namespace
+{
+[[nodiscard]] auto is_identity(const std::vector<int>& order) -> bool
+{
+    for (auto i = 0_uz; i < order.size(); ++i)
+        if (order[i] != static_cast<int>(i)) return false;
+    return true;
+}
+
+[[nodiscard]] auto swapped_groups(const std::vector<int>& order, usize first_group_size)
+    -> std::vector<int>
+{
+    std::vector<int> out{};
+    out.reserve(order.size());
+    for (auto i = first_group_size; i < order.size(); ++i)
+        out.push_back(order[i]);
+    for (auto i = 0_uz; i < first_group_size; ++i)
+        out.push_back(order[i]);
+    return out;
+}
+
+struct PreparedContract
+{
+    int m{};
+    int k{};
+    int n{};
+    int b_rows{};
+    int b_cols{};
+    MatmulConfig op{};
+    bool a_permuted{};
+    bool b_permuted{};
+};
+
+[[nodiscard]] auto prepare_contract(
+    Linalg& la,
+    PermutationCache& cache,
+    const ContractSpec& spec,
+    const ContractOperand& a,
+    const ContractOperand& b
+) -> PreparedContract
+{
+    const auto plan = contract_plan(spec.dims_a, spec.contracted_a, spec.dims_b, spec.contracted_b);
+
+    const auto a_permuted = not is_identity(plan.perm_a.get());
+    if (a_permuted)
+    {
+        permute_batched(
+            la,
+            cache,
+            {
+                .dst = a.scratch,
+                .src = a.src,
+                .dims_in = spec.dims_a,
+                .perm = plan.perm_a,
+                .batch = spec.dim_batch,
+            }
+        );
+    }
+
+    MatmulConfig op{};
+    bool b_permuted{false};
+    if (is_identity(plan.perm_b.get()))
+    {
+        op.op_b = spec.conj_b ? BlasOp::conj : BlasOp::none;
+    }
+    else if (is_identity(swapped_groups(plan.perm_b.get(), spec.contracted_b.size())))
+    {
+        op.op_b = spec.conj_b ? BlasOp::conj_trans : BlasOp::trans;
+    }
+    else
+    {
+        b_permuted = true;
+        permute_batched(
+            la,
+            cache,
+            {
+                .dst = b.scratch,
+                .src = b.src,
+                .dims_in = spec.dims_b,
+                .perm = plan.perm_b,
+                .batch = spec.dim_batch,
+                .conj = spec.conj_b,
+            }
+        );
+    }
+
+    const bool b_stored_transposed = op.op_b == BlasOp::trans or op.op_b == BlasOp::conj_trans;
+    return {
+        .m = plan.M,
+        .k = plan.K,
+        .n = plan.N,
+        .b_rows = b_stored_transposed ? plan.N : plan.K,
+        .b_cols = b_stored_transposed ? plan.K : plan.N,
+        .op = op,
+        .a_permuted = a_permuted,
+        .b_permuted = b_permuted,
+    };
+}
+}
+
+auto contract_batched(
+    Linalg& la,
+    PermutationCache& cache,
+    const ContractSpec& spec,
+    const ContractOperand& a,
+    const ContractOperand& b,
+    const ContractOut& out
+) -> void
+{
+    const auto c = prepare_contract(la, cache, spec, a, b);
+    la.matmul_batched_ptr(
+        a.ptrs, c.m, c.k, b.ptrs, c.b_rows, c.b_cols, out.ptrs, c.m, c.n, spec.dim_batch, c.op
+    );
+}
+
+auto contract_strided_batched(
+    Linalg& la,
+    PermutationCache& cache,
+    const ContractSpec& spec,
+    const ContractOperand& a,
+    const ContractOperand& b,
+    const ContractOut& out
+) -> void
+{
+    const auto c = prepare_contract(la, cache, spec, a, b);
+    const CuArrayConst a_view = c.a_permuted ? CuArrayConst{a.scratch} : a.src;
+    const CuArrayConst b_view = c.b_permuted ? CuArrayConst{b.scratch} : b.src;
+    la.matmul_batched(
+        {a_view, c.m, c.k}, {b_view, c.b_rows, c.b_cols}, {out.view, c.m, c.n}, spec.dim_batch, c.op
+    );
+}
 }

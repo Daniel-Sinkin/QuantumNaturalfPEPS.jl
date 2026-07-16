@@ -45,49 +45,37 @@ static auto build_ket_row(
         const auto ket_bond_l = ket_bonds[col];
         const auto ket_bond_r = ket_bonds[col + 1];
 
-        permute({
-            .dst = samp.tmp_a(),
-            .src = samp.rfactor(),
-            .dims_in = {ket_bond_l, bond_above_l, bond_left},
-            .perm = {0, 2, 1},
-        });
         const auto* envA_site =
             samp.env_above()[env_above_cur].p + col_i * samp.max_env_above_site();
-        {
-            const auto m = ket_bond_l * bond_left;
-            const auto k = bond_above_l;
-            const auto n = dim_bond * bond_above_r;
-            la.matmul_batched(
-                {samp.tmp_a(), m, k},
-                {envA_site, samp.env_above()[env_above_cur].stride, k, n},
-                {samp.tmp_b(), m, n},
-                dim_batch
-            );
-        }
+        contract_strided_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {ket_bond_l, bond_above_l, bond_left},
+                .contracted_a = {1},
+                .dims_b = {bond_above_l, dim_bond, bond_above_r},
+                .contracted_b = {0},
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.rfactor(), .scratch = samp.tmp_a()},
+            {.src = {envA_site, samp.env_above()[env_above_cur].stride}},
+            {.view = samp.tmp_b()}
+        );
 
-        permute({
-            .dst = samp.tmp_a(),
-            .src = samp.tmp_b(),
-            .dims_in = {ket_bond_l, bond_left, bond_up, bond_above_r},
-            .perm = {0, 3, 1, 2},
-        });
-        {
-            const auto m = ket_bond_l * bond_above_r;
-            const auto k = bond_left * bond_up;
-            const auto n = phys_site * bond_down * bond_right;
-            la.matmul_batched_ptr(
-                samp.tmp_a_ptrs(),
-                m,
-                k,
-                samp.mpo_ptrs()[row_u][col],
-                k,
-                n,
-                samp.tmp_b_ptrs(),
-                m,
-                n,
-                dim_batch
-            );
-        }
+        contract_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {ket_bond_l, bond_left, bond_up, bond_above_r},
+                .contracted_a = {1, 2},
+                .dims_b = {bond_left, bond_up, phys_site, bond_down, bond_right},
+                .contracted_b = {0, 1},
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.tmp_b(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
+            {.ptrs = samp.mpo_ptrs()[row_u][col]},
+            {.ptrs = samp.tmp_b_ptrs()}
+        );
 
         permute({
             .dst = samp.reduce_input(),
@@ -137,11 +125,6 @@ static auto build_env_unsampled(
     const auto row_u = static_cast<usize>(row);
 
     auto& la = samp.linalg();
-    const auto permute = [&](PermuteOp op)
-    {
-        op.batch = dim_batch;
-        permute_batched(la, samp.permutation_cache(), op);
-    };
 
     {
         const i64 offset = static_cast<i64>(cfg.ly) * samp.max_env_unsampled();
@@ -167,85 +150,86 @@ static auto build_env_unsampled(
             samp.env_unsampled().p + (col_i + 1) * samp.max_env_unsampled();
         auto* env_unsampled_out = samp.env_unsampled().p + col_i * samp.max_env_unsampled();
 
+        const ContractSpec ket_env_spec{
+            .dims_a = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+            .contracted_a = {3},
+            .dims_b = {ket_bond_r, env_bond_r, ket_bond_r},
+            .contracted_b = {0},
+            .dim_batch = dim_batch,
+        };
+        if (row == 0)
         {
-            const auto m = ket_bond_l * dim_phys * bond_below;
-            const auto k = ket_bond_r;
-            const auto n = env_bond_r * ket_bond_r;
-            if (row == 0)
-            {
-                la.matmul_batched_ptr(
-                    samp.ket_row0_ptrs()[col],
-                    m,
-                    k,
-                    samp.envu_ptrs()[col + 1],
-                    k,
-                    n,
-                    samp.tmp_a_ptrs(),
-                    m,
-                    n,
-                    dim_batch
-                );
-            }
-            else
-            {
-                la.matmul_batched(
-                    {ket_site, ket_stride, m, k},
-                    {env_unsampled_in, samp.env_unsampled().stride, k, n},
-                    {samp.tmp_a(), m, n},
-                    dim_batch
-                );
-            }
+            contract_batched(
+                la,
+                samp.permutation_cache(),
+                ket_env_spec,
+                {.ptrs = samp.ket_row0_ptrs()[col]},
+                {.ptrs = samp.envu_ptrs()[col + 1]},
+                {.ptrs = samp.tmp_a_ptrs()}
+            );
         }
-
-        permute({
-            .dst = samp.tmp_b(),
-            .src = samp.tmp_a(),
-            .dims_in = {ket_bond_l, dim_phys, bond_below, env_bond_r, ket_bond_r},
-            .perm = {0, 1, 4, 2, 3},
-        });
+        else
         {
-            const auto m = ket_bond_l * dim_phys * ket_bond_r;
-            const auto k = bond_below * env_bond_r;
-            const auto n = bond_below * env_bond_l;
-            la.matmul_batched_ptr(
-                samp.tmp_b_ptrs(), m, k, dlenv_env_arr, k, n, samp.tmp_a_ptrs(), m, n, dim_batch
+            contract_strided_batched(
+                la,
+                samp.permutation_cache(),
+                ket_env_spec,
+                {.src = {ket_site, ket_stride}},
+                {.src = {env_unsampled_in, samp.env_unsampled().stride}},
+                {.view = samp.tmp_a()}
             );
         }
 
-        permute({
-            .dst = samp.tmp_b(),
-            .src = samp.tmp_a(),
-            .dims_in = {ket_bond_l, dim_phys, ket_bond_r, bond_below, env_bond_l},
-            .perm = {0, 4, 1, 3, 2},
-        });
+        contract_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {ket_bond_l, dim_phys, bond_below, env_bond_r, ket_bond_r},
+                .contracted_a = {2, 3},
+                .dims_b = {bond_below, env_bond_r, bond_below, env_bond_l},
+                .contracted_b = {0, 1},
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.tmp_a(), .scratch = samp.tmp_b(), .ptrs = samp.tmp_b_ptrs()},
+            {.ptrs = dlenv_env_arr},
+            {.ptrs = samp.tmp_a_ptrs()}
+        );
+
+        if (row == 0)
         {
-            const auto m = ket_bond_l * env_bond_l;
-            const auto k = dim_phys * bond_below * ket_bond_r;
-            if (row == 0)
-            {
-                la.matmul_batched_ptr(
-                    samp.tmp_b_ptrs(),
-                    m,
-                    k,
-                    samp.ket_row0_ptrs()[col],
-                    ket_bond_l,
-                    k,
-                    samp.envu_ptrs()[col],
-                    m,
-                    ket_bond_l,
-                    dim_batch,
-                    {.op_b = BlasOp::conj_trans}
-                );
-            }
-            else
-            {
-                la.matmul_batched_none_adj(
-                    {samp.tmp_b(), m, k},
-                    {ket_site, ket_stride, ket_bond_l, k},
-                    {env_unsampled_out, samp.env_unsampled().stride, m, ket_bond_l},
-                    dim_batch
-                );
-            }
+            contract_batched(
+                la,
+                samp.permutation_cache(),
+                {
+                    .dims_a = {ket_bond_l, dim_phys, ket_bond_r, bond_below, env_bond_l},
+                    .contracted_a = {1, 3, 2},
+                    .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                    .contracted_b = {1, 2, 3},
+                    .conj_b = 1,
+                    .dim_batch = dim_batch,
+                },
+                {.src = samp.tmp_a(), .scratch = samp.tmp_b(), .ptrs = samp.tmp_b_ptrs()},
+                {.ptrs = samp.ket_row0_ptrs()[col]},
+                {.ptrs = samp.envu_ptrs()[col]}
+            );
+        }
+        else
+        {
+            contract_strided_batched(
+                la,
+                samp.permutation_cache(),
+                {
+                    .dims_a = {ket_bond_l, dim_phys, ket_bond_r, bond_below, env_bond_l},
+                    .contracted_a = {1, 3, 2},
+                    .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                    .contracted_b = {1, 2, 3},
+                    .conj_b = 1,
+                    .dim_batch = dim_batch,
+                },
+                {.src = samp.tmp_a(), .scratch = samp.tmp_b()},
+                {.src = {ket_site, ket_stride}},
+                {.view = {env_unsampled_out, samp.env_unsampled().stride}}
+            );
         }
 
         const CuNormalizeLogArgs norm_args{
@@ -278,11 +262,6 @@ static auto draw_sigma(
     const auto row_u = static_cast<usize>(row);
 
     auto& la = samp.linalg();
-    const auto permute = [&](PermuteOp op)
-    {
-        op.batch = dim_batch;
-        permute_batched(la, samp.permutation_cache(), op);
-    };
 
     cu_fill_first_one<<<grid_blocks_capped(dim_batch), k_threads_per_block, 0, la.stream()>>>(
         samp.sigma().p, samp.sigma().stride, 1, dim_batch
@@ -302,101 +281,90 @@ static auto draw_sigma(
         cf* const* dlenv_sigma_arr =
             has_below ? samp.dlenv_sigma_ptrs()[row_u][col] : samp.dl_unit_ptrs();
 
-        permute({
-            .dst = samp.tmp_a(),
-            .src = samp.sigma(),
-            .dims_in = {ket_bond_l, env_bond_l, ket_bond_l},
-            .perm = {1, 2, 0},
-        });
+        if (row == 0)
         {
-            const auto m = env_bond_l * ket_bond_l;
-            const auto k = ket_bond_l;
-            const auto n = dim_phys * bond_below * ket_bond_r;
-            if (row == 0)
-            {
-                la.matmul_batched_ptr(
-                    samp.tmp_a_ptrs(),
-                    m,
-                    k,
-                    samp.ket_row0_ptrs()[col],
-                    k,
-                    n,
-                    samp.tmp_b_ptrs(),
-                    m,
-                    n,
-                    dim_batch
-                );
-            }
-            else
-            {
-                la.matmul_batched(
-                    {samp.tmp_a(), m, k},
-                    {ket_site, ket_stride, k, n},
-                    {samp.tmp_b(), m, n},
-                    dim_batch
-                );
-            }
+            contract_batched(
+                la,
+                samp.permutation_cache(),
+                {
+                    .dims_a = {ket_bond_l, env_bond_l, ket_bond_l},
+                    .contracted_a = {0},
+                    .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                    .contracted_b = {0},
+                    .dim_batch = dim_batch,
+                },
+                {.src = samp.sigma(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
+                {.ptrs = samp.ket_row0_ptrs()[col]},
+                {.ptrs = samp.tmp_b_ptrs()}
+            );
         }
-
-        permute({
-            .dst = samp.tmp_a(),
-            .src = samp.tmp_b(),
-            .dims_in = {env_bond_l, ket_bond_l, dim_phys, bond_below, ket_bond_r},
-            .perm = {1, 2, 4, 3, 0},
-        });
+        else
         {
-            const auto m = ket_bond_l * dim_phys * ket_bond_r;
-            const auto k = bond_below * env_bond_l;
-            const auto n = bond_below * env_bond_r;
-            la.matmul_batched_ptr(
-                samp.tmp_a_ptrs(), m, k, dlenv_sigma_arr, k, n, samp.tmp_b_ptrs(), m, n, dim_batch
+            contract_strided_batched(
+                la,
+                samp.permutation_cache(),
+                {
+                    .dims_a = {ket_bond_l, env_bond_l, ket_bond_l},
+                    .contracted_a = {0},
+                    .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                    .contracted_b = {0},
+                    .dim_batch = dim_batch,
+                },
+                {.src = samp.sigma(), .scratch = samp.tmp_a()},
+                {.src = {ket_site, ket_stride}},
+                {.view = samp.tmp_b()}
             );
         }
 
-        permute({
-            .dst = samp.tmp_a(),
-            .src = samp.tmp_b(),
-            .dims_in = {ket_bond_l, dim_phys, ket_bond_r, bond_below, env_bond_r},
-            .perm = {1, 2, 4, 0, 3},
-        });
-        permute({
-            .dst = samp.tmp_b(),
-            .src = {ket_site, ket_stride},
-            .dims_in = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
-            .perm = {0, 2, 1, 3},
-            .conj = 1,
-        });
-        {
-            const auto m = dim_phys * ket_bond_r * env_bond_r;
-            const auto k = ket_bond_l * bond_below;
-            const auto n = dim_phys * ket_bond_r;
-            la.matmul_batched(
-                {samp.tmp_a(), m, k}, {samp.tmp_b(), k, n}, {samp.sigma_full(), m, n}, dim_batch
-            );
-        }
+        contract_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {env_bond_l, ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                .contracted_a = {3, 0},
+                .dims_b = {bond_below, env_bond_l, bond_below, env_bond_r},
+                .contracted_b = {0, 1},
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.tmp_b(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
+            {.ptrs = dlenv_sigma_arr},
+            {.ptrs = samp.tmp_b_ptrs()}
+        );
 
-        permute({
-            .dst = samp.sigma_full_scratch(),
-            .src = samp.sigma_full(),
-            .dims_in = {dim_phys, ket_bond_r, env_bond_r, dim_phys, ket_bond_r},
-            .perm = {0, 3, 1, 2, 4},
-        });
-        std::swap(samp.sigma_full().p, samp.sigma_full_scratch().p);
+        contract_strided_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {ket_bond_l, dim_phys, ket_bond_r, bond_below, env_bond_r},
+                .contracted_a = {0, 3},
+                .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
+                .contracted_b = {0, 2},
+                .conj_b = 1,
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.tmp_b(), .scratch = samp.tmp_a()},
+            {.src = {ket_site, ket_stride}, .scratch = samp.tmp_b()},
+            {.view = samp.sigma_full()}
+        );
 
         const int sigma_elems{ket_bond_r * env_bond_r * ket_bond_r};
         const auto* env_unsampled_next =
             samp.env_unsampled().p + (col_i + 1) * samp.max_env_unsampled();
-        {
-            const auto m = dim_phys * dim_phys;
-            const auto k = sigma_elems;
-            const auto n = 1;
-            la.matmul_batched(
-                {samp.sigma_full(), m, k},
-                {env_unsampled_next, samp.env_unsampled().stride, k, n},
-                {samp.rho(), m, n},
-                dim_batch
-            );
-        }
+        contract_strided_batched(
+            la,
+            samp.permutation_cache(),
+            {
+                .dims_a = {dim_phys, ket_bond_r, env_bond_r, dim_phys, ket_bond_r},
+                .contracted_a = {1, 2, 4},
+                .dims_b = {ket_bond_r, env_bond_r, ket_bond_r},
+                .contracted_b = {0, 1, 2},
+                .dim_batch = dim_batch,
+            },
+            {.src = samp.sigma_full(), .scratch = samp.sigma_full_scratch()},
+            {.src = {env_unsampled_next, samp.env_unsampled().stride}},
+            {.view = samp.rho()}
+        );
+        std::swap(samp.sigma_full().p, samp.sigma_full_scratch().p);
 
         const int site_counter{row * cfg.ly + static_cast<int>(col)};
         const CuDrawArgs draw_args{
