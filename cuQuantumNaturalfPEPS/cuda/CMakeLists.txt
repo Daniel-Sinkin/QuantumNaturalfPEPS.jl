@@ -12,8 +12,9 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 find_package(CUDAToolkit REQUIRED)
 
-add_library(peps_sampler SHARED
+add_library(qnpeps SHARED
   capi/capi.cu
+  contraction.cu
   dtensor.cu
   dlenv/build.cu
   sampler/kernels.cu
@@ -22,19 +23,20 @@ add_library(peps_sampler SHARED
   sampler/sweep.cu
   sampler/entry.cu
 )
-target_include_directories(peps_sampler PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-set_target_properties(peps_sampler PROPERTIES
-  OUTPUT_NAME peps_sampler
+target_include_directories(qnpeps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(qnpeps PROPERTIES
+  OUTPUT_NAME qnpeps
+  PREFIX ""
   POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden
   CUDA_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
-target_link_libraries(peps_sampler PRIVATE
+target_link_libraries(qnpeps PRIVATE
   CUDA::cudart CUDA::cublas CUDA::cusolver CUDA::curand
 )
-target_compile_options(peps_sampler PRIVATE
+target_compile_options(qnpeps PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wshadow,-Wconversion,-Wsign-conversion,-Wfloat-conversion,-Wcast-qual,-Wcast-align,-Wformat=2,-Wundef,-Wnull-dereference,-Wnon-virtual-dtor,-Woverloaded-virtual,-Wdouble-promotion,-Wimplicit-fallthrough,-Wreturn-type,-Werror>
   $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=cuda>
 )
-target_link_options(peps_sampler PRIVATE -Wl,--no-undefined)
+target_link_options(qnpeps PRIVATE -Wl,--no-undefined)

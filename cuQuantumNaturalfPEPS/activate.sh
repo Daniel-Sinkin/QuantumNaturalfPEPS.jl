@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
+unset QNPEPS_ACTIVE_ROOT
+
 _qnpeps_load_modules() {
+    local package_dir nvcc_path julia_path nvcc_release toolkit_libdir
+    package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
+
     if ! type module >/dev/null 2>&1; then
         if [ -n "${MODULESHOME:-}" ] && [ -r "$MODULESHOME/init/bash" ]; then
             source "$MODULESHOME/init/bash"
@@ -31,18 +36,41 @@ _qnpeps_load_modules() {
     export JULIA_DEPOT_PATH="$QNPEPS_JULIA_DEPOT"
     mkdir -p "$JULIA_DEPOT_PATH" || return 1
 
-    local nvcc_release
+    nvcc_path="$(readlink -f "$(command -v nvcc)")"
+    julia_path="$(readlink -f "$(command -v julia)")"
+    toolkit_libdir="$(readlink -f "$CUDA_HOME/targets/x86_64-linux/lib")"
     nvcc_release="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
     if [ "$nvcc_release" != "$QNPEPS_CUDA_VERSION" ]; then
         echo "activate.sh: expected CUDA $QNPEPS_CUDA_VERSION, nvcc reports $nvcc_release" >&2
         return 1
     fi
 
+    export QNPEPS_ACTIVE_ROOT="$package_dir"
+
     echo "cuQuantumNaturalfPEPS JURECA toolchain"
+    printf '  Host: %s\n' "$(hostname)"
     printf '  Julia: %s\n' "$(julia --version)"
+    printf '  Julia executable: %s\n' "$julia_path"
     printf '  CUDA compiler: %s\n' "$(nvcc --version | tail -n 1)"
+    printf '  CUDA compiler executable: %s\n' "$nvcc_path"
     printf '  CUDA_HOME: %s\n' "$CUDA_HOME"
+    printf '  CUDA toolkit libraries: %s\n' "$toolkit_libdir"
     printf '  JULIA_DEPOT_PATH: %s\n' "$JULIA_DEPOT_PATH"
+    printf '  QNPEPS_ACTIVE_ROOT: %s\n' "$QNPEPS_ACTIVE_ROOT"
+    printf '  PATH: %s\n' "$PATH"
+    printf '  LD_LIBRARY_PATH: %s\n' "${LD_LIBRARY_PATH:-<unset>}"
+    printf '  LD_PRELOAD: %s\n' "${LD_PRELOAD:-<unset>}"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local gpu_info
+        if gpu_info="$(nvidia-smi --query-gpu=index,name,compute_cap,driver_version --format=csv,noheader 2>&1)"; then
+            echo "  Visible NVIDIA GPUs (index, name, compute capability, driver):"
+            while IFS= read -r gpu; do
+                printf '    %s\n' "$gpu"
+            done <<< "$gpu_info"
+        else
+            printf '  Visible NVIDIA GPUs: unavailable (%s)\n' "$gpu_info"
+        fi
+    fi
 }
 
 _qnpeps_load_modules
