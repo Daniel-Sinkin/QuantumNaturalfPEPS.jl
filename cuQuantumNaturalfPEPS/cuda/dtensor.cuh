@@ -4,18 +4,39 @@
 #include "cuda_utils.cuh"
 #include "types.cuh"
 
+#include <cassert>
 #include <complex>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <initializer_list>
+#include <limits>
+#include <map>
 #include <utility>
 #include <vector>
 
 namespace qnpeps
 {
+class ArenaCursor;
 class Linalg;
 inline constexpr int k_max_tensor_rank{8};
 static_assert(k_max_tensor_rank >= 6, "k_max_tensor_rank must cover the rank-6 RAB tensor");
+
+class Axes
+{
+  public:
+    Axes() = default;
+    Axes(std::initializer_list<int> axes) : axes_(axes) {}
+    explicit Axes(std::vector<int> axes) : axes_(std::move(axes)) {}
+
+    [[nodiscard]] auto size() const noexcept -> usize { return axes_.size(); }
+    [[nodiscard]] auto operator[](usize k) const noexcept -> int { return axes_[k]; }
+
+    [[nodiscard]] auto begin() const noexcept { return axes_.begin(); }
+    [[nodiscard]] auto end() const noexcept { return axes_.end(); }
+
+  private:
+    std::vector<int> axes_{};
+};
 
 class Shape
 {
@@ -32,8 +53,25 @@ class Shape
     {
         usize total{1};
         for (const auto extent : extents_)
+        {
+            const bool valid{
+                extent > 0
+                and total <= std::numeric_limits<usize>::max() / static_cast<usize>(extent)
+            };
+            if (not valid)
+            {
+                assert(valid);
+                qnpeps::set_err(QNPEPS_ERR_INTERNAL);
+                return 0;
+            }
             total *= static_cast<usize>(extent);
+        }
         return total;
+    }
+
+    [[nodiscard]] auto operator==(const Shape& other) const noexcept -> bool
+    {
+        return extents_ == other.extents_;
     }
 
     [[nodiscard]] auto begin() const noexcept { return extents_.begin(); }
@@ -57,17 +95,30 @@ class Permutation
     template <typename T>
     [[nodiscard]] auto can_apply_to(const std::vector<T>& xs) const noexcept -> bool
     {
-        return size() == xs.size();
+        if (size() != xs.size()) return false;
+        for (auto i = 0_uz; i < size(); ++i)
+        {
+            if (perm_[i] < 0 or perm_[i] >= static_cast<int>(size())) return false;
+            for (auto j = 0_uz; j < i; ++j)
+                if (perm_[i] == perm_[j]) return false;
+        }
+        return true;
     }
 
     [[nodiscard]] auto can_apply_to(const Shape& shape) const noexcept -> bool
     {
-        return size() == shape.rank();
+        return can_apply_to(shape.get());
     }
 
     template <typename T>
     [[nodiscard]] auto apply(const std::vector<T>& xs) const -> std::vector<T>
     {
+        if (not can_apply_to(xs))
+        {
+            assert(can_apply_to(xs));
+            qnpeps::set_err(QNPEPS_ERR_INTERNAL);
+            return {};
+        }
         std::vector<T> out{};
         out.reserve(perm_.size());
         for (const auto p : perm_)
@@ -89,6 +140,13 @@ class Permutation
         return Permutation{std::move(out)};
     }
 
+    [[nodiscard]] auto is_identity() const noexcept -> bool
+    {
+        for (auto i = 0_uz; i < perm_.size(); ++i)
+            if (perm_[i] != static_cast<int>(i)) return false;
+        return true;
+    }
+
   private:
     std::vector<int> perm_{};
 };
@@ -99,14 +157,8 @@ struct HostTensor
 {
     Shape dim{};
     std::vector<chost> v{};
-    [[nodiscard]] auto n() const noexcept -> i64
-    {
-        i64 total{1};
-        for (const auto dim_size : dim)
-            total *= dim_size;
-        return total;
-    }
-    auto alloc() -> void { v.assign(static_cast<usize>(n()), chost{0, 0}); }
+    [[nodiscard]] auto num_elems() const noexcept -> usize { return dim.num_elems(); }
+    auto alloc() -> void { v.assign(num_elems(), chost{0, 0}); }
 };
 
 [[nodiscard]] inline auto permutation_index_map(const Shape& dims_in, const Permutation& perm)
@@ -125,9 +177,12 @@ struct HostTensor
     for (auto k = 1_uz; k < rank; ++k)
         stride_in[k] = stride_in[k - 1] * dims_in[k - 1];
 
-    usize total{1};
-    for (const auto dim_size : dims_out)
-        total *= static_cast<usize>(dim_size);
+    const auto total = dims_out.num_elems();
+    if (total > static_cast<usize>(std::numeric_limits<int>::max()))
+    {
+        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
+        return {};
+    }
 
     std::vector<int> index_map{};
     index_map.resize(total);
@@ -158,44 +213,10 @@ struct DeviceTensor
     [[nodiscard]] auto num_elems() const noexcept -> usize { return dim.num_elems(); }
 };
 
-class Carver
-{
-  public:
-    Carver() = default;
-    Carver(char* base, usize capacity) : base_(base), capacity_(capacity) {}
-
-    [[nodiscard]] auto base() const noexcept -> char* { return base_; }
-    [[nodiscard]] auto capacity() const noexcept -> usize { return capacity_; }
-    [[nodiscard]] auto offset() const noexcept -> usize { return offset_; }
-    auto offset() noexcept -> usize& { return offset_; }
-
-    template <typename T>
-    auto take(usize count) -> T*
-    {
-        offset_ = device_align(offset_);
-        const auto begin = offset_;
-        offset_ += sizeof(T) * count;
-        if (not base_) return nullptr;
-        if (capacity_ and offset_ > capacity_)
-        {
-            set_err(QNPEPS_ERR_OOM);
-            return nullptr;
-        }
-        return reinterpret_cast<T*>(base_ + begin);
-    }
-
-    [[nodiscard]] auto total() const noexcept -> usize { return device_align(offset_); }
-
-  private:
-    char* base_{};
-    usize capacity_{};
-    usize offset_{};
-};
-
 auto set_stream(cudaStream_t new_stream) -> void;
 auto stream() -> cudaStream_t;
 
-auto alloc(Carver& carver, const Shape& dim) -> DeviceTensor;
+auto alloc(ArenaCursor& arena, const Shape& dim) -> DeviceTensor;
 auto free(DeviceTensor& tensor) -> void;
 
 auto view(cuFloatComplex* data, Shape dim) -> DeviceTensor;
@@ -203,60 +224,49 @@ auto view(cuFloatComplex* data, Shape dim) -> DeviceTensor;
 auto permute_axes(
     const DeviceTensor& tensor, const Permutation& perm, bool conj, cuFloatComplex* out
 ) -> void;
-auto permute_axes(Carver& carver, const DeviceTensor& tensor, const Permutation& perm, bool conj)
-    -> DeviceTensor;
-
-struct ContractFlags
-{
-    bool conj_a{false};
-    bool conj_b{false};
-};
-
-struct ContractPlan
-{
-    Permutation perm_a{};
-    Permutation perm_b{};
-    Shape result_dim{};
-    int M{1};
-    int K{1};
-    int N{1};
-};
-
-[[nodiscard]] auto contract_plan(
-    const Shape& a_dim,
-    const std::vector<int>& contracted_a,
-    const Shape& b_dim,
-    const std::vector<int>& contracted_b
-) -> ContractPlan;
-
-auto contract(
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const DeviceTensor& tensor_b,
-    ContractFlags flags,
-    const ContractPlan& plan,
-    void* scratch,
-    cuFloatComplex* out
-) -> void;
-auto contract(
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const std::vector<int>& contracted_a,
-    const DeviceTensor& tensor_b,
-    const std::vector<int>& contracted_b,
-    ContractFlags flags,
-    void* scratch,
-    cuFloatComplex* out
-) -> void;
-auto contract(
-    Carver& carver,
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const std::vector<int>& contracted_a,
-    const DeviceTensor& tensor_b,
-    const std::vector<int>& contracted_b,
-    ContractFlags flags
+auto permute_axes(
+    ArenaCursor& arena, const DeviceTensor& tensor, const Permutation& perm, bool conj
 ) -> DeviceTensor;
+
+class PermutationCache
+{
+  public:
+    PermutationCache() = default;
+    PermutationCache(const PermutationCache&) = delete;
+    auto operator=(const PermutationCache&) -> PermutationCache& = delete;
+    PermutationCache(PermutationCache&&) noexcept = default;
+    auto operator=(PermutationCache&&) noexcept -> PermutationCache& = default;
+
+    auto get_or_create(const Shape& dims, const Permutation& perm) -> int*;
+    auto release() -> void;
+
+  private:
+    struct Key
+    {
+        std::vector<int> dims{};
+        std::vector<int> perm{};
+        [[nodiscard]] auto operator<(const Key& other) const noexcept -> bool
+        {
+            if (dims != other.dims) return dims < other.dims;
+            return perm < other.perm;
+        }
+    };
+
+    std::map<Key, int*> entries_{};
+};
+
+struct PermuteOp
+{
+    CuArray dst{};
+    CuArrayConst src{};
+    Shape dims_in{};
+    Permutation perm{};
+    int batch_count{};
+    bool conjugate{};
+};
+
+auto permute_batched(Linalg& linalg, PermutationCache& permutation_cache, const PermuteOp& op)
+    -> void;
 }
 
 #endif

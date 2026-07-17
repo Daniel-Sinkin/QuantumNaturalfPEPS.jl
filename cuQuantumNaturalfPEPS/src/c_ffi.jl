@@ -4,19 +4,22 @@ using Libdl
 const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_CACHE = Dict{Symbol,Ptr{Cvoid}}()
 
-const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.3 (2026-07-14)"
+const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.0.4 (2026-07-17)"
 
 function _lib_path()::String
     override = get(ENV, "QNPEPS_LIB", "")
     isempty(override) || return override
-    return normpath(joinpath(@__DIR__, "..", "cuda", "build", "libpeps_sampler.so"))
+    return normpath(joinpath(@__DIR__, "..", "cuda", "build", "qnpeps.so"))
 end
 
-function _lib_missing_error(path::AbstractString)::Union{}
-    error("cuQuantumNaturalfPEPS: libpeps_sampler.so not found. Checked: $path")
+function _lib_missing_error(; path::AbstractString)::Union{}
+    error("cuQuantumNaturalfPEPS: qnpeps.so not found. Checked: $path")
 end
 
-function _capi_version_mismatch_error(path::AbstractString, got::AbstractString)::Union{}
+function _capi_version_mismatch_error(;
+    path::AbstractString,
+    got::AbstractString,
+)::Union{}
     error(
         "cuQuantumNaturalfPEPS: CUDA library version mismatch, " *
         "got \"$got\" expected \"$EXPECTED_CAPI_VERSION\" ($path)",
@@ -26,16 +29,16 @@ end
 function _lib_handle()::Ptr{Cvoid}
     _LIB_HANDLE[] == C_NULL || return _LIB_HANDLE[]
     path = _lib_path()
-    isfile(path) || _lib_missing_error(path)
+    isfile(path) || _lib_missing_error(; path)
     handle = Libdl.dlopen(path)
     version_ptr = Libdl.dlsym(handle, :qnpeps_capi_version)
     got = unsafe_string(@ccall $version_ptr()::Cstring)
-    got == EXPECTED_CAPI_VERSION || _capi_version_mismatch_error(path, got)
+    got == EXPECTED_CAPI_VERSION || _capi_version_mismatch_error(; path, got)
     _LIB_HANDLE[] = handle
     return _LIB_HANDLE[]
 end
 
-function _sym(name::Symbol)::Ptr{Cvoid}
+function _sym(; name::Symbol)::Ptr{Cvoid}
     cached = get(_SYM_CACHE, name, C_NULL)
     cached == C_NULL || return cached
     ptr = Libdl.dlsym(_lib_handle(), name)
@@ -43,56 +46,70 @@ function _sym(name::Symbol)::Ptr{Cvoid}
     return ptr
 end
 
-capi_version()::String = unsafe_string(@ccall $(_sym(:qnpeps_capi_version))()::Cstring)
+capi_version()::String =
+    unsafe_string(@ccall $(_sym(; name=:qnpeps_capi_version))()::Cstring)
 
-function _strerror(status::Integer)::String
-    return unsafe_string(@ccall $(_sym(:qnpeps_strerror))(status::Cint)::Cstring)
+function _strerror(; status::Integer)::String
+    return unsafe_string(
+        @ccall $(_sym(; name=:qnpeps_strerror))(status::Cint)::Cstring
+    )
 end
 
 function _last_error_location()::String
-    file_ptr = @ccall $(_sym(:qnpeps_last_error_file))()::Cstring
-    line = @ccall $(_sym(:qnpeps_last_error_line))()::Cint
+    file_ptr = @ccall $(_sym(; name=:qnpeps_last_error_file))()::Cstring
+    line = @ccall $(_sym(; name=:qnpeps_last_error_line))()::Cint
     (file_ptr == C_NULL || line <= 0) && return ""
     file = unsafe_string(file_ptr)
     isempty(file) && return ""
     return "$file:$line"
 end
 
-@inline function _check(status::Integer, what::AbstractString)::Nothing
+@inline function _check(; status::Integer, what::AbstractString)::Nothing
     status == 0 && return
     location = _last_error_location()
     at = isempty(location) ? "" : " at $location"
-    error("cuQuantumNaturalfPEPS: $what failed$at (status $status: $(_strerror(status)))")
+    error(
+        "cuQuantumNaturalfPEPS: $what failed$at " *
+        "(status $status: $(_strerror(; status)))",
+    )
 end
 
-function _dlenv_bytes(config::QnpepsConfig)::Int64
-    return @ccall $(_sym(:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
+function _dlenv_bytes(; config::QnpepsConfig)::Int64
+    return @ccall $(_sym(; name=:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
 end
 
-function _sample_bytes(config::QnpepsConfig, n_samples::Integer)::Int64
-    return @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
+function _sample_bytes(; config::QnpepsConfig, n_samples::Integer)::Int64
+    return @ccall $(_sym(; name=:qnpeps_sample_bytes))(
+        config::Ref{QnpepsConfig}, n_samples::UInt64
+    )::Int64
 end
 
-function _scratch_bytes(config::QnpepsConfig)::Int64
-    return @ccall $(_sym(:qnpeps_sample_scratch_bytes))(config::Ref{QnpepsConfig})::Int64
+function _scratch_bytes(; config::QnpepsConfig)::Int64
+    return @ccall $(_sym(; name=:qnpeps_sample_scratch_bytes))(
+        config::Ref{QnpepsConfig}
+    )::Int64
 end
 
-function _sample_footprint_bytes(config::QnpepsConfig, n_samples::Integer)::Int64
-    fn = _sym(:qnpeps_sample_footprint_bytes)
+function _sample_footprint_bytes(;
+    config::QnpepsConfig,
+    n_samples::Integer,
+)::Int64
+    fn = _sym(; name=:qnpeps_sample_footprint_bytes)
     return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
-function _peps_bytes(config::QnpepsConfig)::Int64
-    return @ccall $(_sym(:qnpeps_peps_bytes))(config::Ref{QnpepsConfig})::Int64
+function _peps_bytes(; config::QnpepsConfig)::Int64
+    return @ccall $(_sym(; name=:qnpeps_peps_bytes))(config::Ref{QnpepsConfig})::Int64
 end
 
 function _ffi_build_dlenv(
+    ;
     config::QnpepsConfig,
     peps::CuPtr,
     dlenv::CuPtr,
     cumulative_row_logs::CuPtr,
 )::Nothing
-    fn = _sym(:qnpeps_build_dlenv)
+    fn = _sym(; name=:qnpeps_build_dlenv)
     status = GC.@preserve peps dlenv @ccall $fn(
         config::Ref{QnpepsConfig},
         peps::CuPtr{Cvoid},
@@ -100,14 +117,17 @@ function _ffi_build_dlenv(
         cumulative_row_logs::CuPtr{Float64},
         CUDA.stream().handle::Ptr{Cvoid},
     )::Cint
-    _check(status, "qnpeps_build_dlenv")
+    _check(; status, what="qnpeps_build_dlenv")
 end
 
-function _dlenv_row_bytes(config::QnpepsConfig, maxdim::Integer)::Int64
-    return @ccall $(_sym(:qnpeps_dlenv_row_bytes))(config::Ref{QnpepsConfig}, maxdim::Cint)::Int64
+function _dlenv_row_bytes(; config::QnpepsConfig, maxdim::Integer)::Int64
+    return @ccall $(_sym(; name=:qnpeps_dlenv_row_bytes))(
+        config::Ref{QnpepsConfig}, maxdim::Cint
+    )::Int64
 end
 
 function _ffi_double_layer_row(
+    ;
     config::QnpepsConfig,
     row::Integer,
     maxdim::Integer,
@@ -116,7 +136,7 @@ function _ffi_double_layer_row(
     out::CuPtr,
     row_log::Ref{Float64},
 )::Nothing
-    fn = _sym(:qnpeps_double_layer_row)
+    fn = _sym(; name=:qnpeps_double_layer_row)
     status = GC.@preserve peps_row out row_log @ccall $fn(
         config::Ref{QnpepsConfig},
         Cint(row)::Cint,
@@ -127,10 +147,11 @@ function _ffi_double_layer_row(
         row_log::Ptr{Float64},
         CUDA.stream().handle::Ptr{Cvoid},
     )::Cint
-    _check(status, "qnpeps_double_layer_row")
+    _check(; status, what="qnpeps_double_layer_row")
 end
 
 function _ffi_sample(
+    ;
     config::QnpepsConfig,
     peps::CuPtr,
     dlenv::CuPtr,
@@ -159,29 +180,31 @@ function _ffi_sample(
         UInt64(dim_batch),
         UInt(CUDA.stream().handle),
     )
-    fn = _sym(:qnpeps_sample)
+    fn = _sym(; name=:qnpeps_sample)
     status = GC.@preserve peps dlenv scratch samples @ccall $fn(
         config::Ref{QnpepsConfig},
         args::Ref{QnpepsSampleArgs},
     )::Cint
-    _check(status, "qnpeps_sample")
+    _check(; status, what="qnpeps_sample")
 end
 
 function _ffi_pool_release()::Nothing
-    @ccall $(_sym(:qnpeps_sampler_pool_release))()::Cvoid
+    @ccall $(_sym(; name=:qnpeps_sampler_pool_release))()::Cvoid
 end
 
 function _batched_rangefinder_scratch_bytes(
+    ;
     rows::Integer,
     cols::Integer,
     rank::Integer,
     batch::Integer,
 )::Int64
-    fn = _sym(:qnpeps_batched_rangefinder_scratch_bytes)
+    fn = _sym(; name=:qnpeps_batched_rangefinder_scratch_bytes)
     return @ccall $fn(rows::Cint, cols::Cint, rank::Cint, batch::Cint)::Int64
 end
 
 function _ffi_batched_rangefinder(
+    ;
     input::CuPtr,
     rows::Integer,
     cols::Integer,
@@ -196,7 +219,7 @@ function _ffi_batched_rangefinder(
     scratch::CuPtr,
     scratch_bytes::Integer,
 )::Nothing
-    fn = _sym(:qnpeps_batched_rangefinder)
+    fn = _sym(; name=:qnpeps_batched_rangefinder)
     status = GC.@preserve input q_out r_out scratch @ccall $fn(
         input::CuPtr{Cvoid},
         Cint(rows)::Cint,
@@ -213,5 +236,5 @@ function _ffi_batched_rangefinder(
         UInt64(scratch_bytes)::UInt64,
         CUDA.stream().handle::Ptr{Cvoid},
     )::Cint
-    _check(status, "qnpeps_batched_rangefinder")
+    _check(; status, what="qnpeps_batched_rangefinder")
 end

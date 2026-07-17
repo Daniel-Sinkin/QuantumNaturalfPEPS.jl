@@ -5,31 +5,6 @@
 
 namespace qnpeps
 {
-__global__ auto cu_gather(CuGatherArgs args) -> void
-{
-    const auto out = args.out;
-    const auto in = args.in;
-    const auto gather_indices = args.gather_indices;
-    const auto n = args.n;
-    const auto stride_out = args.stride_out;
-    const auto stride_in = args.stride_in;
-    const auto conjugate = args.conjugate;
-    const auto dim_batch = args.dim_batch;
-
-    const i64 total{static_cast<i64>(n) * dim_batch};
-    for (i64 tid{global_lane()}; tid < total; tid += grid_stride())
-    {
-        const auto lane = static_cast<int>(tid / n);
-        const auto elem = static_cast<int>(tid % n);
-        const auto lane_i64 = static_cast<i64>(lane);
-        const i64 in_idx{lane_i64 * stride_in + gather_indices[elem]};
-        const i64 out_idx{lane_i64 * stride_out + elem};
-        auto value = in[in_idx];
-        if (conjugate) value.im = -value.im;
-        out[out_idx] = value;
-    }
-}
-
 __global__ auto cu_slice_ket(CuSliceKetArgs args) -> void
 {
     const auto out = args.out;
@@ -228,25 +203,4 @@ __global__ auto cu_fill_first_one(cf* x, i64 stride, int n, int dim_batch) -> vo
     }
 }
 
-auto permute_batched(Linalg& linalg, PermutationCache& permutation_cache, const PermuteOp& op)
-    -> void
-{
-    i64 element_count{1};
-    for (const int dim : op.dims_in)
-        element_count *= dim;
-    const PermuteKey key{op.dims_in.get(), op.perm.get(), op.conj != 0};
-    auto* gather_indices = permutation_cache.get(key, permutation_index_map(op.dims_in, op.perm));
-    const auto blocks = grid_blocks_capped(element_count * op.batch);
-    const CuGatherArgs gather_args{
-        .out = op.dst.p,
-        .in = op.src.p,
-        .gather_indices = gather_indices,
-        .n = static_cast<int>(element_count),
-        .stride_out = op.dst.stride,
-        .stride_in = op.src.stride,
-        .conjugate = op.conj,
-        .dim_batch = op.batch,
-    };
-    cu_gather<<<blocks, k_threads_per_block, 0, linalg.stream()>>>(gather_args);
-}
 }

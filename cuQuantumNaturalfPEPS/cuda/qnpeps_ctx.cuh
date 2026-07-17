@@ -28,9 +28,9 @@ struct qnpeps_ctx
         bool allocated{};
         cf* peps_buf{};
         char* arena{};
-        Carver known{};
-        Carver rolling_r{};
-        Carver scratch{};
+        ArenaCursor known{};
+        ArenaCursor rolling_r{};
+        ArenaCursor scratch{};
         int* fail{};
         f64* scales_all{};
         cf* triv{};
@@ -61,24 +61,46 @@ struct qnpeps_ctx
     struct SamplerState
     {
         Sampler samp{};
-        char* arena{};
-        Carver arena_view{};
-        bool arena_owned{};
-        cf* unit{};
-        cf** ptr_region{};
-        u8* h_samples{};
-        f64* h_logpc{};
-        f64* h_lognorm{};
-        u64* device_seed{};
-        u64 h_seed{};
-        cudaGraphExec_t graph{};
-        bool warmed{};
-        int refresh_gen{-1};
-        int dim_batch{};
-        std::vector<u8> all_samples{};
-        std::vector<f64> all_logpc{};
-        std::vector<f64> all_lognorm{};
-        bool allocated{};
+
+        struct Allocation
+        {
+            char* base{};
+            ArenaCursor cursor{};
+            bool owned{};
+            cf* unit{};
+            cf** ptr_region{};
+            u64* device_seed{};
+            int dim_batch_capacity{};
+            bool allocated{};
+        } allocation{};
+
+        struct HostStaging
+        {
+            u8* h_samples{};
+            f64* h_logpc{};
+            f64* h_lognorm{};
+            u64 h_seed{};
+            std::vector<u8> all_samples{};
+            std::vector<f64> all_logpc{};
+            std::vector<f64> all_lognorm{};
+        } staging{};
+
+        struct Execution
+        {
+            cudaGraphExec_t graph{};
+            bool warmed{};
+            int refresh_gen{-1};
+            int dim_batch{};
+        } execution{};
+
+        [[nodiscard]] auto ready() const noexcept -> bool
+        {
+            return allocation.allocated and allocation.base and allocation.unit
+                   and allocation.ptr_region and allocation.device_seed
+                   and allocation.dim_batch_capacity >= execution.dim_batch
+                   and execution.dim_batch > 0 and staging.h_samples and staging.h_logpc
+                   and staging.h_lognorm;
+        }
     } sampler{};
 
     bool use_graph{true};

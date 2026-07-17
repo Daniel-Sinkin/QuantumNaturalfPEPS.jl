@@ -1,3 +1,4 @@
+#include "contraction.cuh"
 #include "cuda_utils.cuh"
 #include "defer.cuh"
 #include "dlenv/build.cuh"
@@ -241,7 +242,7 @@ rangefinder(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DlRangefinderAr
     la.matmul(m_ac, m_omega, m_y);
     for (auto it = 0; it < 2; ++it)
     {
-        la.matmul_adj_none(m_ac, m_y, m_z);
+        la.matmul_left_adj(m_ac, m_y, m_z);
         la.matmul(m_ac, m_z, m_y);
     }
 
@@ -264,7 +265,7 @@ rangefinder(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DlRangefinderAr
         la.stream()
     ));
     r = alloc(ar.scratch, {rank, cols});
-    la.matmul_adj_none(m_y, m_ac, CuMatrix{cf_cast(r.d), rank, cols});
+    la.matmul_left_adj(m_y, m_ac, CuMatrix{cf_cast(r.d), rank, cols});
 }
 
 __global__ auto
@@ -373,21 +374,54 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
     for (auto col = 0_uz; col < num_cols; ++col)
     {
         if (err_state() != QNPEPS_OK) return out;
-        Carver col_scratch{ar.scratch};
-        const Arenas col_ar{ar.known, ar.rolling_r, col_scratch};
+        ArenaCursor column_scratch{ar.scratch};
+        const Arenas column_arenas{ar.known, ar.rolling_r, column_scratch};
 
         const DeviceTensor& ket = row_ket[col];
         const DeviceTensor& env = env_below ? (*env_below)[col] : triv;
 
-        auto r_env = contract(col_scratch, la, carried_r, {3}, env, {0}, {});
+        auto r_env = contract(
+            column_scratch,
+            la,
+            {
+                .dims_a = carried_r.dim,
+                .contracted_a = {3},
+                .dims_b = env.dim,
+                .contracted_b = {0},
+            },
+            carried_r,
+            env
+        );
         DEFER([&] { free(r_env); });
-        auto r_env_ket = contract(col_scratch, la, r_env, {1, 3}, ket, {4, 3}, {});
+        auto r_env_ket = contract(
+            column_scratch,
+            la,
+            {
+                .dims_a = r_env.dim,
+                .contracted_a = {1, 3},
+                .dims_b = ket.dim,
+                .contracted_b = {4, 3},
+            },
+            r_env,
+            ket
+        );
         DEFER([&] { free(r_env_ket); });
-        auto rab =
-            contract(col_scratch, la, r_env_ket, {1, 2, 4}, ket, {4, 3, 0}, {.conj_b = true});
+        auto rab = contract(
+            column_scratch,
+            la,
+            {
+                .dims_a = r_env_ket.dim,
+                .contracted_a = {1, 2, 4},
+                .dims_b = ket.dim,
+                .contracted_b = {4, 3, 0},
+                .transforms = {.conj_b = true},
+            },
+            r_env_ket,
+            ket
+        );
         DEFER([&] { free(rab); });
 
-        auto rab_mat = permute_axes(col_scratch, rab, {0, 2, 4, 1, 3, 5}, false);
+        auto rab_mat = permute_axes(column_scratch, rab, {0, 2, 4, 1, 3, 5}, false);
         DEFER([&] { free(rab_mat); });
         const int bond_left{rab.dim[0]};
         const int bond_right{rab.dim[1]};
@@ -404,7 +438,7 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         rangefinder(
             ctx,
             la,
-            col_ar,
+            column_arenas,
             {
                 .input = rab_mat,
                 .rows = rows,
@@ -420,7 +454,7 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         {
             const auto r_factor_elems = static_cast<i64>(rank) * cols;
 
-            auto* device_inverse_scale = col_scratch.take<f32>(1);
+            auto* device_inverse_scale = column_scratch.take<f32>(1);
             cu_absmax_inverse<<<1, k_tree_reduce_threads, 0, stream()>>>(
                 r_factor.d, r_factor_elems, device_inverse_scale, device_scales + col
             );
@@ -436,7 +470,7 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         out[col] = DeviceTensor{{bond_left, ket_vertical, bra_vertical, rank}, q.d};
 
         auto r_reshaped = view(r_factor.d, {rank, bond_right, ket_horizontal, bra_horizontal});
-        ar.rolling_r.offset() = 0;
+        ar.rolling_r.rewind();
         carried_r = permute_axes(ar.rolling_r, r_reshaped, {0, 2, 3, 1}, false);
     }
 
@@ -461,7 +495,18 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
 
     DeviceTensor& last = out[num_cols - 1];
     {
-        auto folded = contract(ar.known, la, last, {3}, carried_r, {0}, {});
+        auto folded = contract(
+            ar.known,
+            la,
+            {
+                .dims_a = last.dim,
+                .contracted_a = {3},
+                .dims_b = carried_r.dim,
+                .contracted_b = {0},
+            },
+            last,
+            carried_r
+        );
         last = DeviceTensor{{folded.dim[0], folded.dim[1], folded.dim[2], 1}, folded.d};
     }
     return out;
@@ -579,17 +624,17 @@ static auto plan_dl_arena(Linalg& la, const Dims& dims, int maxdim) -> DlSizes
 }
 
 static auto
-carve_dl_arena(qnpeps_ctx::DlBuild& dl, const DlSizes& sz, usize scales_count, Carver carver)
-    -> Carver
+carve_dl_arena(qnpeps_ctx::DlBuild& dl, const DlSizes& sz, usize scales_count, ArenaCursor arena)
+    -> ArenaCursor
 {
-    dl.fail = carver.take<int>(1);
-    dl.scales_all = carver.take<f64>(scales_count);
-    dl.triv = carver.take<cf>(1);
-    dl.scalar_r = carver.take<cf>(1);
-    dl.known = Carver{carver.take<char>(sz.known), sz.known};
-    dl.rolling_r = Carver{carver.take<char>(sz.rolling_r), sz.rolling_r};
-    dl.scratch = Carver{carver.take<char>(sz.scratch), sz.scratch};
-    return carver;
+    dl.fail = arena.take<int>(1);
+    dl.scales_all = arena.take<f64>(scales_count);
+    dl.triv = arena.take<cf>(1);
+    dl.scalar_r = arena.take<cf>(1);
+    dl.known = arena.take_subarena(sz.known);
+    dl.rolling_r = arena.take_subarena(sz.rolling_r);
+    dl.scratch = arena.take_subarena(sz.scratch);
+    return arena;
 }
 
 static auto dl_ensure_allocated(qnpeps_ctx& ctx, Linalg& la) -> void
@@ -619,13 +664,13 @@ static auto dl_ensure_allocated(qnpeps_ctx& ctx, Linalg& la) -> void
     const auto num_env_rows = static_cast<usize>(lx - 1);
     const auto num_cols = static_cast<usize>(ly);
     const usize scales_count{num_env_rows * num_cols};
-    const auto measured = carve_dl_arena(ctx.dl, sz, scales_count, Carver{});
+    const auto measured = carve_dl_arena(ctx.dl, sz, scales_count, ArenaCursor::measure());
 
     if (not ctx.dl.arena)
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ctx.dl.arena), measured.total()));
     if (err_state() != QNPEPS_OK) return;
 
-    carve_dl_arena(ctx.dl, sz, scales_count, Carver{ctx.dl.arena, measured.total()});
+    carve_dl_arena(ctx.dl, sz, scales_count, ArenaCursor::carve(ctx.dl.arena, measured.total()));
 
     const auto dlenv_bytes = qnpeps_dlenv_bytes(&cfg);
     if (not ctx.dlenv.buf[0])
@@ -717,9 +762,9 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
         );
     }
 
-    ctx.dl.known.offset() = 0;
-    ctx.dl.rolling_r.offset() = 0;
-    ctx.dl.scratch.offset() = 0;
+    ctx.dl.known.rewind();
+    ctx.dl.rolling_r.rewind();
+    ctx.dl.scratch.rewind();
     CUDA_CHECK(cudaMemsetAsync(ctx.dl.fail, 0, sizeof(int), la.stream()));
 
     const int chi_c{std::min(cfg.chi_dl, dim_bond * dim_bond)};
@@ -798,9 +843,9 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
             cudaGetLastError();
             ctx.dlenv.graph[target] = nullptr;
             if (graph) CUDA_NOCHECK(cudaGraphDestroy(graph));
-            ctx.dl.known.offset() = 0;
-            ctx.dl.rolling_r.offset() = 0;
-            ctx.dl.scratch.offset() = 0;
+            ctx.dl.known.rewind();
+            ctx.dl.rolling_r.rewind();
+            ctx.dl.scratch.rewind();
             CUDA_CHECK(cudaMemsetAsync(ctx.dl.fail, 0, sizeof(int), la.stream()));
             build_region();
         }
@@ -860,7 +905,7 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     if (fail_host != 0) set_err(QNPEPS_ERR_CUDA);
     if (err_state() != QNPEPS_OK) return err_state();
 
-    if (ctx.sampler.allocated)
+    if (ctx.sampler.allocation.allocated)
     {
         ensure_dlenv_views(ctx);
         if (err_state() != QNPEPS_OK) return err_state();
@@ -939,9 +984,9 @@ auto build_dlenv_row(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&arena_base), sz.total()));
     if (err_state() != QNPEPS_OK) return err_state();
     DEFER([&] { CUDA_NOCHECK(cudaFree(arena_base)); });
-    Carver known{arena_base, sz.known};
-    Carver rolling_r{arena_base + sz.known, sz.rolling_r};
-    Carver scratch{arena_base + sz.known + sz.rolling_r, sz.scratch};
+    auto known = ArenaCursor::carve(arena_base, sz.known);
+    auto rolling_r = ArenaCursor::carve(arena_base + sz.known, sz.rolling_r);
+    auto scratch = ArenaCursor::carve(arena_base + sz.known + sz.rolling_r, sz.scratch);
     const Arenas ar{known, rolling_r, scratch};
 
     qnpeps_ctx tmp{};

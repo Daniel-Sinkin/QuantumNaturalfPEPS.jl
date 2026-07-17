@@ -7,6 +7,12 @@ const AX_R = 3
 const AX_D = 4
 const AX_L = 5
 
+const REF_AX_P = 5
+const REF_AX_U = 4
+const REF_AX_R = 3
+const REF_AX_D = 2
+const REF_AX_L = 1
+
 struct PepsError <: Exception
     msg::String
 end
@@ -123,17 +129,25 @@ function _validate(arrays::AbstractMatrix)::Nothing
             throw(PepsError("vertical bond ($row,$col) down != up"))
         end
     end
-    D = size(arrays[1, 1], AX_R)
+    dim_bond = size(arrays[1, 1], AX_R)
     for row in 1:lx, col in 1:(ly-1)
         actual = size(arrays[row, col], AX_R)
-        if actual != D
-            throw(PepsError("horizontal bond ($row,$col) dim $actual != uniform dim_bond $D"))
+        if actual != dim_bond
+            throw(
+                PepsError(
+                    "horizontal bond ($row,$col) dim $actual != uniform dim_bond $dim_bond",
+                ),
+            )
         end
     end
     for row in 1:(lx-1), col in 1:ly
         actual = size(arrays[row, col], AX_D)
-        if actual != D
-            throw(PepsError("vertical bond ($row,$col) dim $actual != uniform dim_bond $D"))
+        if actual != dim_bond
+            throw(
+                PepsError(
+                    "vertical bond ($row,$col) dim $actual != uniform dim_bond $dim_bond",
+                ),
+            )
         end
     end
     return nothing
@@ -149,7 +163,8 @@ function load_peps(tensors::AbstractMatrix)::Peps
     return Peps(arrays)
 end
 
-_to_device_order(A)::Array{<:Number,5} = permutedims(A, (5, 4, 3, 2, 1))
+_to_device_order(A)::Array{<:Number,5} =
+    permutedims(A, (REF_AX_P, REF_AX_U, REF_AX_R, REF_AX_D, REF_AX_L))
 
 function upload_peps(peps::Peps)::CuPeps
     lx, ly = size(peps)
@@ -166,7 +181,7 @@ function upload_peps(peps::Peps)::CuPeps
         dim_phys=_dim_phys(peps),
     )
     packed_bytes = sizeof(ComplexF32) * length(buf)
-    expected_bytes = _peps_bytes(config)
+    expected_bytes = _peps_bytes(; config)
     if packed_bytes != expected_bytes
         throw(PepsError("packed PEPS is $packed_bytes bytes but C layout expects $expected_bytes"))
     end

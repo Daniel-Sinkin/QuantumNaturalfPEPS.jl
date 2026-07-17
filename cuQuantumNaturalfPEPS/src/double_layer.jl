@@ -49,7 +49,8 @@ function _mps_to_env_arrays(env::MPS, site_indices::AbstractVector)::Vector{<:Ar
     return out
 end
 
-_vbond(tensors, i, j)::Index = commonind(tensors[i, j], tensors[i+1, j])
+_vbond(tensors, row, col)::Index = commonind(tensors[row, col], tensors[row+1, col])
+_hbond(tensors, row, col)::Index = commonind(tensors[row, col], tensors[row, col+1])
 
 function _itensor_bond_dim(tensors::AbstractMatrix)::Int
     lx, ly = size(tensors)
@@ -58,7 +59,7 @@ function _itensor_bond_dim(tensors::AbstractMatrix)::Int
         dim_bond = max(dim_bond, dim(_vbond(tensors, row, col)))
     end
     for row in 1:lx, col in 1:(ly-1)
-        dim_bond = max(dim_bond, dim(commonind(tensors[row, col], tensors[row, col+1])))
+        dim_bond = max(dim_bond, dim(_hbond(tensors, row, col)))
     end
     return dim_bond
 end
@@ -107,13 +108,14 @@ end
 
 function double_layer_step(
     tensors::AbstractMatrix,
-    i::Integer,
+    env_row::Integer,
     env_below::Union{Nothing,MPS};
     maxdim::Integer,
 )::Tuple{MPS,Float64}
     lx, ly = size(tensors)
-    1 <= i <= lx - 1 || throw(ArgumentError("env row index i must be in 1:$(lx-1) (got $i)"))
-    row_index = i + 1
+    1 <= env_row <= lx - 1 ||
+        throw(ArgumentError("env_row must be in 1:$(lx-1) (got $env_row)"))
+    row_index = env_row + 1
     config = QnpepsConfig(
         lx=lx,
         ly=ly,
@@ -129,22 +131,22 @@ function double_layer_step(
         _pack_env_row(_mps_to_env_arrays(env_below, vbonds))
     end
     env_below_ptr = env_below_buffer === nothing ? CuPtr{Cvoid}(0) : pointer(env_below_buffer)
-    out_bytes = CUDA.zeros(UInt8, _dlenv_row_bytes(config, maxdim))
+    out_bytes = CUDA.zeros(UInt8, _dlenv_row_bytes(; config, maxdim))
     row_log = Ref{Float64}(0.0)
     GC.@preserve row_buffer env_below_buffer out_bytes begin
-        _ffi_double_layer_row(
+        _ffi_double_layer_row(;
             config,
-            row_index,
+            row=row_index,
             maxdim,
-            pointer(row_buffer),
-            env_below_ptr,
-            pointer(out_bytes),
+            peps_row=pointer(row_buffer),
+            env_below=env_below_ptr,
+            out=pointer(out_bytes),
             row_log,
         )
     end
     CUDA.synchronize()
     env = _parse_env_row(Array(out_bytes), ly)
-    return _env_arrays_to_mps(env, [_vbond(tensors, i, col) for col in 1:ly]), row_log[]
+    return _env_arrays_to_mps(env, [_vbond(tensors, env_row, col) for col in 1:ly]), row_log[]
 end
 
 struct CuDlenv
@@ -176,12 +178,17 @@ function double_layer(
     chi_dl::Integer=device_peps.dim_bond,
 )::CuDlenv
     config = _cfg_of(device_peps; chi_s=chi_s, chi_dl=chi_dl)
-    n_bytes = _dlenv_bytes(config)
+    n_bytes = _dlenv_bytes(; config)
     n_bytes >= 0 || throw(PepsError("bad config for dlenv size"))
     data = CUDA.zeros(UInt8, n_bytes)
     logs = CUDA.zeros(Float64, device_peps.lx - 1)
     GC.@preserve device_peps data logs begin
-        _ffi_build_dlenv(config, pointer(device_peps.data), pointer(data), pointer(logs))
+        _ffi_build_dlenv(;
+            config,
+            peps=pointer(device_peps.data),
+            dlenv=pointer(data),
+            cumulative_row_logs=pointer(logs),
+        )
     end
     return CuDlenv(
         data,

@@ -4,11 +4,11 @@
 #include "capi/qnpeps.h"
 #include "types.cuh"
 
+#include <algorithm>
+#include <cstdint>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cusolverDn.h>
-
-#include <cstdint>
 #include <source_location>
 
 namespace qnpeps
@@ -50,10 +50,9 @@ inline auto set_err_at(qnpeps_status status, const char* file, int32_t line) -> 
     return state.status;
 }
 
-inline auto set_err(
-    qnpeps_status status,
-    std::source_location where = std::source_location::current()
-) -> qnpeps_status
+inline auto
+set_err(qnpeps_status status, std::source_location where = std::source_location::current())
+    -> qnpeps_status
 {
     return set_err_at(status, where.file_name(), static_cast<int32_t>(where.line()));
 }
@@ -100,6 +99,19 @@ namespace qnpeps
 {
 static_assert(sizeof(cf) == sizeof(cuFloatComplex));
 static_assert(alignof(cf) == alignof(cuFloatComplex));
+
+inline constexpr u32 k_threads_per_block{256};
+inline constexpr i64 k_max_blocks{4096};
+
+[[nodiscard]] inline constexpr auto grid_blocks_capped(i64 work_items) -> u32
+{
+    return static_cast<u32>(std::min(k_max_blocks, ceil_div(work_items, k_threads_per_block)));
+}
+
+[[nodiscard]] inline constexpr auto grid_blocks_exact(i64 work_items) -> u32
+{
+    return static_cast<u32>(ceil_div(work_items, k_threads_per_block));
+}
 
 template <class T>
 [[nodiscard]] inline auto byte_offset(const void* base, usize bytes) noexcept -> const T*
@@ -161,6 +173,18 @@ template <class T>
 [[nodiscard]] inline auto cf_cast(const cuFloatComplex* p) noexcept -> const cf*
 {
     return reinterpret_cast<const cf*>(p);
+}
+
+template <typename T>
+inline auto copy_h2d_async(T* dst, const T* src, usize count, cudaStream_t stream) -> void
+{
+    CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(T), cudaMemcpyHostToDevice, stream));
+}
+
+template <typename T>
+inline auto copy_d2h_async(T* dst, const T* src, usize count, cudaStream_t stream) -> void
+{
+    CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(T), cudaMemcpyDeviceToHost, stream));
 }
 
 [[nodiscard]] inline auto instantiate_graph(cudaGraphExec_t& executable, cudaGraph_t graph)

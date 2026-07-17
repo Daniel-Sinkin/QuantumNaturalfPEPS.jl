@@ -1,11 +1,14 @@
 #ifndef QNPEPS_SAMPLER_STATE_CUH
 #define QNPEPS_SAMPLER_STATE_CUH
 
+#include "arena_cursor.cuh"
 #include "dtensor.cuh"
 #include "linalg.cuh"
 #include "sampler/kernels.cuh"
 #include "types.cuh"
 
+#include <algorithm>
+#include <cassert>
 #include <map>
 #include <random>
 #include <utility>
@@ -48,7 +51,7 @@ enum class PepsLayout
     reverse_packed
 };
 
-auto arena_upload(Carver& carver, const HostTensor& host_tensor) -> cf*;
+auto arena_upload(ArenaCursor& arena, const HostTensor& host_tensor) -> cf*;
 
 class Sampler
 {
@@ -56,10 +59,11 @@ class Sampler
     auto cfg() -> SamplerConfig& { return cfg_; }
     auto linalg() -> Linalg& { return *linalg_; }
     auto permutation_cache() -> PermutationCache& { return permutation_cache_; }
-    auto bind(Linalg& linalg, Carver& carver) -> void
+    auto bind(Linalg& linalg, ArenaCursor& arena) -> void
     {
+        assert(linalg.blas() and linalg.cusolver());
         linalg_ = &linalg;
-        carver_ = &carver;
+        arena_ = &arena;
     }
 
     auto mpo() -> std::vector<std::vector<cf*>>& { return mpo_; }
@@ -113,6 +117,13 @@ class Sampler
 
     auto omega(int N, int k) -> cf*
     {
+        const bool valid{linalg_ and arena_ and N > 0 and k > 0 and k <= N};
+        if (not valid)
+        {
+            set_err(QNPEPS_ERR_INTERNAL);
+            return nullptr;
+        }
+        assert(valid);
         const std::pair<int, int> key{N, k};
         auto it = omegas_.find(key);
         if (it != omegas_.end()) return it->second;
@@ -123,7 +134,7 @@ class Sampler
         host.alloc();
         for (auto& value : host.v)
             value = chost{gauss(rng), gauss(rng)};
-        auto* device_ptr = arena_upload(*carver_, host);
+        auto* device_ptr = arena_upload(*arena_, host);
         omegas_.emplace(key, device_ptr);
         return device_ptr;
     }
@@ -136,6 +147,17 @@ class Sampler
         int dim_batch
     ) -> void
     {
+        const bool valid{
+            linalg_ and input.data() and input.rows() > 0 and input.cols() > 0 and k > 0
+            and k <= std::min(input.rows(), input.cols()) and q_out.data() and r_out.data()
+            and dim_batch > 0
+        };
+        if (not valid)
+        {
+            set_err(QNPEPS_ERR_INTERNAL);
+            return;
+        }
+        assert(valid);
         batched_rangefinder(
             *linalg_,
             {
@@ -160,7 +182,7 @@ class Sampler
     SamplerConfig cfg_{};
     Linalg* linalg_{};
     PermutationCache permutation_cache_{};
-    Carver* carver_{};
+    ArenaCursor* arena_{};
 
     std::vector<std::vector<cf*>> mpo_{};
     std::vector<std::vector<Shape>> peps_shapes_{};

@@ -32,42 +32,42 @@ function _sample_all(
     seed::Integer,
 )::SampleResult
     config = _cfg_of(dlenv; seed=seed)
-    samples = CUDA.zeros(UInt8, _sample_bytes(config, n_samples))
+    samples = CUDA.zeros(UInt8, _sample_bytes(; config, n_samples))
     log_prob_config = CUDA.zeros(Float64, n_samples)
     log_gauge = CUDA.zeros(Float64, n_samples)
     if gpus > 1
         GC.@preserve device_peps dlenv samples log_prob_config log_gauge begin
-            _ffi_sample(
+            _ffi_sample(;
                 config,
-                pointer(device_peps.data),
-                pointer(dlenv.data),
+                peps=pointer(device_peps.data),
+                dlenv=pointer(dlenv.data),
                 gpus,
-                CuPtr{Cvoid}(0),
-                0,
-                pointer(samples),
-                pointer(log_prob_config),
-                pointer(log_gauge),
+                scratch=CuPtr{Cvoid}(0),
+                scratch_bytes=0,
+                samples=pointer(samples),
+                log_prob_config=pointer(log_prob_config),
+                log_gauge=pointer(log_gauge),
                 n_samples,
-                0,
-                0,
+                batch_base=0,
+                dim_batch=0,
             )
         end
     else
-        scratch = CUDA.zeros(UInt8, _scratch_bytes(config))
+        scratch = CUDA.zeros(UInt8, _scratch_bytes(; config))
         GC.@preserve device_peps dlenv samples log_prob_config log_gauge scratch begin
-            _ffi_sample(
+            _ffi_sample(;
                 config,
-                pointer(device_peps.data),
-                pointer(dlenv.data),
-                1,
-                pointer(scratch),
-                length(scratch),
-                pointer(samples),
-                pointer(log_prob_config),
-                pointer(log_gauge),
+                peps=pointer(device_peps.data),
+                dlenv=pointer(dlenv.data),
+                gpus=1,
+                scratch=pointer(scratch),
+                scratch_bytes=length(scratch),
+                samples=pointer(samples),
+                log_prob_config=pointer(log_prob_config),
+                log_gauge=pointer(log_gauge),
                 n_samples,
-                0,
-                0,
+                batch_base=0,
+                dim_batch=0,
             )
         end
     end
@@ -114,23 +114,23 @@ function sample_peps!(
 )::CuArray{UInt8}
     seeded = _reseed(config, seed)
     n_samples = length(samples) ÷ (Int(seeded.lx) * Int(seeded.ly))
-    scratch = CUDA.zeros(UInt8, _scratch_bytes(seeded))
+    scratch = CUDA.zeros(UInt8, _scratch_bytes(; config=seeded))
     log_prob_config_ptr = log_prob_config === nothing ? CuPtr{Float64}(0) : pointer(log_prob_config)
     log_gauge_ptr = log_gauge === nothing ? CuPtr{Float64}(0) : pointer(log_gauge)
     GC.@preserve peps_data dlenv_data samples scratch log_prob_config log_gauge begin
-        _ffi_sample(
-            seeded,
-            pointer(peps_data),
-            pointer(dlenv_data),
-            1,
-            pointer(scratch),
-            length(scratch),
-            pointer(samples),
-            log_prob_config_ptr,
-            log_gauge_ptr,
+        _ffi_sample(;
+            config=seeded,
+            peps=pointer(peps_data),
+            dlenv=pointer(dlenv_data),
+            gpus=1,
+            scratch=pointer(scratch),
+            scratch_bytes=length(scratch),
+            samples=pointer(samples),
+            log_prob_config=log_prob_config_ptr,
+            log_gauge=log_gauge_ptr,
             n_samples,
-            0,
-            0,
+            batch_base=0,
+            dim_batch=0,
         )
     end
     return samples
