@@ -2,29 +2,44 @@
 #include "qnpeps_ctx.cuh"
 #include "sampler/draw.cuh"
 
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <utility>
 #include <vector>
 
 namespace qnpeps
 {
+[[nodiscard]] static auto fixed_pointer_slots(usize num_rows, usize num_cols) noexcept -> usize
+{
+    const auto num_env = num_rows - 1;
+    return 2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1;
+}
+
+[[nodiscard]] static auto pointer_slots(usize num_rows, usize num_cols) noexcept -> usize
+{
+    const auto num_env = num_rows - 1;
+    return fixed_pointer_slots(num_rows, num_cols) + 2 * num_env * num_cols;
+}
+
 static auto upload_tensor(cf* device_ptr, const HostTensor& host_tensor) -> void
 {
-    const auto bytes = static_cast<usize>(host_tensor.n()) * sizeof(cf);
+    const auto bytes = host_tensor.num_elems() * sizeof(cf);
     CUDA_CHECK(cudaMemcpy(device_ptr, host_tensor.v.data(), bytes, cudaMemcpyHostToDevice));
 }
 
-auto arena_upload(Carver& carver, const HostTensor& host_tensor) -> cf*
+auto arena_upload(ArenaCursor& arena, const HostTensor& host_tensor) -> cf*
 {
-    auto* device_ptr = carver.take<cf>(static_cast<usize>(host_tensor.n()));
+    auto* device_ptr = arena.take<cf>(host_tensor.num_elems());
     upload_tensor(device_ptr, host_tensor);
     return device_ptr;
 }
 
 [[nodiscard]] static auto
-carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, Carver carver)
-    -> Carver
+carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, ArenaCursor arena)
+    -> ArenaCursor
 {
     Sampler& samp = state.samp;
 
@@ -75,20 +90,20 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
             const auto shape = peps_site_shape(row, col);
             samp.peps_shapes()[row_u][col_u] = shape;
             samp.mpo()[static_cast<usize>(row)][static_cast<usize>(col)] =
-                carver.take<cf>(shape.num_elems());
+                arena.take<cf>(shape.num_elems());
         }
     }
     samp.ket_row0().assign(num_cols, nullptr);
     for (auto col = 0; col < cfg.ly; ++col)
         samp.ket_row0()[static_cast<usize>(col)] =
-            carver.take<cf>(samp.peps_shapes()[0][static_cast<usize>(col)].num_elems());
-    state.unit = carver.take<cf>(1);
+            arena.take<cf>(samp.peps_shapes()[0][static_cast<usize>(col)].num_elems());
+    state.allocation.unit = arena.take<cf>(1);
 
     const auto take_array = [&](i64 stride)
     {
         CuArray buffer{};
         buffer.stride = stride;
-        buffer.p = carver.take<cf>(static_cast<usize>(stride) * dim_batch);
+        buffer.p = arena.take<cf>(static_cast<usize>(stride) * dim_batch);
         return buffer;
     };
 
@@ -109,28 +124,25 @@ carve_sampler_arena(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg, C
     samp.proj()               = take_array(samp.max_rfactor());
     samp.rfactor_next()       = take_array(samp.max_rfactor());
     samp.gram()               = take_array(chi_env_max * chi_env_max);
+
+    samp.gram_ptrs()   = arena.take<cf*>(dim_batch);
+    samp.sketch_ptrs() = arena.take<cf*>(dim_batch);
+    samp.info()        = arena.take<int>(dim_batch);
+    samp.fail()        = arena.take<int>(1);
     // clang-format on
 
-    samp.gram_ptrs() = carver.take<cf*>(dim_batch);
-    samp.sketch_ptrs() = carver.take<cf*>(dim_batch);
-    samp.info() = carver.take<int>(dim_batch);
-    samp.fail() = carver.take<int>(1);
+    const auto ptr_capacity = dim_batch;
+    const auto ptr_slot_count = pointer_slots(num_rows, num_cols);
+    state.allocation.ptr_region = arena.take<cf*>(ptr_slot_count * ptr_capacity);
 
-    const auto ptr_capacity = static_cast<usize>(k_max_batch_size);
-    const auto num_env = num_rows - 1;
-    const usize ptr_slots{
-        2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1 + 2 * num_env * num_cols
-    };
-    state.ptr_region = carver.take<cf*>(ptr_slots * ptr_capacity);
+    samp.drawn_spin() = arena.take<int>(dim_batch);
+    samp.row_spins() = arena.take<int>(dim_batch * num_cols);
+    samp.logpc() = arena.take<f64>(dim_batch);
+    samp.lognorm() = arena.take<f64>(dim_batch);
+    samp.samples() = arena.take<u8>(dim_batch * num_rows * num_cols);
+    state.allocation.device_seed = arena.take<u64>(1);
 
-    samp.drawn_spin() = carver.take<int>(dim_batch);
-    samp.row_spins() = carver.take<int>(dim_batch * num_cols);
-    samp.logpc() = carver.take<f64>(dim_batch);
-    samp.lognorm() = carver.take<f64>(dim_batch);
-    samp.samples() = carver.take<u8>(dim_batch * num_rows * num_cols);
-    state.device_seed = carver.take<u64>(1);
-
-    return carver;
+    return arena;
 }
 
 [[nodiscard]] static auto omega_region_bytes(const SamplerConfig& cfg) -> usize
@@ -181,7 +193,7 @@ namespace sampler
 auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, usize scratch_bytes)
     -> void
 {
-    if (ctx.sampler.allocated) return;
+    if (ctx.sampler.allocation.allocated) return;
     if (not dlenv or not dlenv->values)
     {
         set_err(QNPEPS_ERR_INTERNAL);
@@ -200,13 +212,21 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     cfg.fast_mode = true;
     cfg.seed = ctx.cfg.seed;
     cfg.batch_base = 0;
-    cfg.dim_batch = ctx.sampler.dim_batch;
+    cfg.dim_batch = ctx.sampler.execution.dim_batch;
     samp.cfg() = cfg;
 
     SamplerConfig capacity_cfg{cfg};
-    capacity_cfg.dim_batch = k_max_batch_size;
-    const auto measured = carve_sampler_arena(ctx.sampler, capacity_cfg, Carver{});
-    const usize total{measured.total() + omega_region_bytes(capacity_cfg)};
+    if (ctx.sampler.allocation.dim_batch_capacity < ctx.sampler.execution.dim_batch)
+        ctx.sampler.allocation.dim_batch_capacity = ctx.sampler.execution.dim_batch;
+    capacity_cfg.dim_batch = ctx.sampler.allocation.dim_batch_capacity;
+    const auto measured = carve_sampler_arena(ctx.sampler, capacity_cfg, ArenaCursor::measure());
+    const auto omega_bytes = omega_region_bytes(capacity_cfg);
+    if (measured.total() > std::numeric_limits<usize>::max() - omega_bytes)
+    {
+        set_err(QNPEPS_ERR_OOM);
+        return;
+    }
+    const usize total{measured.total() + omega_bytes};
 
     char* base{};
     if (scratch)
@@ -217,7 +237,7 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
             return;
         }
         base = static_cast<char*>(scratch);
-        ctx.sampler.arena_owned = false;
+        ctx.sampler.allocation.owned = false;
     }
     else
     {
@@ -227,13 +247,21 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
             set_err(QNPEPS_ERR_OOM);
             return;
         }
-        ctx.sampler.arena_owned = true;
+        ctx.sampler.allocation.owned = true;
     }
-    ctx.sampler.arena = base;
-    ctx.sampler.arena_view = carve_sampler_arena(ctx.sampler, capacity_cfg, Carver{base, total});
-    samp.bind(ctx.linalg, ctx.sampler.arena_view);
+    ctx.sampler.allocation.base = base;
+    ctx.sampler.allocation.cursor =
+        carve_sampler_arena(ctx.sampler, capacity_cfg, ArenaCursor::carve(base, total));
+    if (err_state() != QNPEPS_OK) return;
+    if (ctx.sampler.allocation.cursor.total() != measured.total())
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
+    assert(ctx.sampler.allocation.cursor.total() == measured.total());
+    samp.bind(ctx.linalg, ctx.sampler.allocation.cursor);
 
-    const auto dim_batch = static_cast<usize>(k_max_batch_size);
+    const auto dim_batch = static_cast<usize>(capacity_cfg.dim_batch);
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
 
@@ -263,7 +291,7 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     unit.dim = {1, 1, 1, 1};
     unit.alloc();
     unit.v[0] = chost{1.0f, 0.0f};
-    upload_tensor(ctx.sampler.unit, unit);
+    upload_tensor(ctx.sampler.allocation.unit, unit);
 
     {
         std::vector<cf*> host_ptrs{};
@@ -284,8 +312,8 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     {
         const auto cap = dim_batch;
         const auto num_env = num_rows - 1;
-        const usize fixed_slots{2_uz + (num_cols + 1) + num_env * num_cols + num_cols + 1};
-        auto* region = ctx.sampler.ptr_region;
+        const auto fixed_slots = fixed_pointer_slots(num_rows, num_cols);
+        auto* region = ctx.sampler.allocation.ptr_region;
 
         std::vector<cf*> host{};
         host.resize(fixed_slots * cap);
@@ -325,7 +353,7 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
         samp.ket_row0_ptrs().resize(num_cols);
         for (auto col = 0_uz; col < num_cols; ++col)
             fill_broadcast(place(samp.ket_row0_ptrs()[col]), samp.ket_row0()[col]);
-        fill_broadcast(place(samp.dl_unit_ptrs()), ctx.sampler.unit);
+        fill_broadcast(place(samp.dl_unit_ptrs()), ctx.sampler.allocation.unit);
 
         CUDA_CHECK(
             cudaMemcpy(region, host.data(), fixed_slots * cap * sizeof(cf*), cudaMemcpyHostToDevice)
@@ -339,20 +367,37 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
         for (auto row = 0_uz; row < num_env; ++row)
             for (auto col = 0_uz; col < num_cols; ++col)
                 place(samp.dlenv_sigma_ptrs()[row][col]);
+        const auto expected_slots = pointer_slots(num_rows, num_cols);
+        if (s != expected_slots)
+        {
+            set_err(QNPEPS_ERR_INTERNAL);
+            return;
+        }
+        assert(s == expected_slots);
     }
 
-    const i64 lane_samples{static_cast<i64>(dim_batch) * cfg.lx * cfg.ly};
+    const i64 lane_samples{static_cast<i64>(dim_batch) * cfg.num_sites()};
     const auto lane_samples_u = static_cast<usize>(lane_samples);
+    CUDA_CHECK(cudaHostAlloc(
+        &ctx.sampler.staging.h_samples, lane_samples_u * sizeof(u8), cudaHostAllocDefault
+    ));
     CUDA_CHECK(
-        cudaHostAlloc(&ctx.sampler.h_samples, lane_samples_u * sizeof(u8), cudaHostAllocDefault)
+        cudaHostAlloc(&ctx.sampler.staging.h_logpc, dim_batch * sizeof(f64), cudaHostAllocDefault)
     );
-    CUDA_CHECK(cudaHostAlloc(&ctx.sampler.h_logpc, dim_batch * sizeof(f64), cudaHostAllocDefault));
     CUDA_CHECK(
-        cudaHostAlloc(&ctx.sampler.h_lognorm, dim_batch * sizeof(f64), cudaHostAllocDefault)
+        cudaHostAlloc(&ctx.sampler.staging.h_lognorm, dim_batch * sizeof(f64), cudaHostAllocDefault)
     );
+    if (err_state() != QNPEPS_OK) return;
     ctx.use_graph = true;
 
-    ctx.sampler.allocated = true;
+    ctx.sampler.allocation.allocated = true;
+    const bool ready{ctx.sampler.ready()};
+    if (not ready)
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
+    assert(ready);
 }
 
 auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
@@ -364,19 +409,18 @@ auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
         view = nullptr;
     }
     ctx.dlenv.views_allocated = false;
-    if (ctx.sampler.allocated) ctx.sampler.samp.permutation_cache().release();
-    if (ctx.sampler.arena_owned and ctx.sampler.arena) CUDA_NOCHECK(cudaFree(ctx.sampler.arena));
-    if (ctx.sampler.h_samples) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.h_samples));
-    if (ctx.sampler.h_logpc) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.h_logpc));
-    if (ctx.sampler.h_lognorm) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.h_lognorm));
-    if (ctx.sampler.graph) CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.graph));
+    ctx.sampler.samp.permutation_cache().release();
+    if (ctx.sampler.allocation.owned and ctx.sampler.allocation.base)
+        CUDA_NOCHECK(cudaFree(ctx.sampler.allocation.base));
+    if (ctx.sampler.staging.h_samples) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.staging.h_samples));
+    if (ctx.sampler.staging.h_logpc) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.staging.h_logpc));
+    if (ctx.sampler.staging.h_lognorm) CUDA_NOCHECK(cudaFreeHost(ctx.sampler.staging.h_lognorm));
+    if (ctx.sampler.execution.graph)
+        CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.execution.graph));
 
-    ctx.sampler.arena = nullptr;
-    ctx.sampler.h_samples = nullptr;
-    ctx.sampler.h_logpc = nullptr;
-    ctx.sampler.h_lognorm = nullptr;
-    ctx.sampler.graph = nullptr;
-    ctx.sampler.allocated = false;
+    ctx.sampler.allocation = {};
+    ctx.sampler.staging = {};
+    ctx.sampler.execution = {};
 }
 
 auto sample_arena_bytes(const QnpepsConfig& config, int max_dim_batch) -> int64_t
@@ -390,8 +434,14 @@ auto sample_arena_bytes(const QnpepsConfig& config, int max_dim_batch) -> int64_
     cfg.chi_dl = std::min(config.chi_dl, config.dim_bond * config.dim_bond);
     cfg.dim_batch = std::max(max_dim_batch, 1);
     qnpeps_ctx::SamplerState state{};
-    const auto measured = carve_sampler_arena(state, cfg, Carver{});
-    return static_cast<int64_t>(measured.total() + omega_region_bytes(cfg));
+    const auto measured = carve_sampler_arena(state, cfg, ArenaCursor::measure());
+    const auto omega_bytes = omega_region_bytes(cfg);
+    if (measured.total() > std::numeric_limits<usize>::max() - omega_bytes)
+    {
+        set_err(QNPEPS_ERR_OOM);
+        return 0;
+    }
+    return static_cast<int64_t>(measured.total() + omega_bytes);
 }
 }
 }

@@ -1,5 +1,8 @@
+#include "contraction.cuh"
 #include "qnpeps_ctx.cuh"
 
+#include <algorithm>
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -24,7 +27,7 @@ static auto build_ket_row(
     auto& la = samp.linalg();
     const auto permute = [&](PermuteOp op)
     {
-        op.batch = dim_batch;
+        op.batch_count = dim_batch;
         permute_batched(la, samp.permutation_cache(), op);
     };
 
@@ -47,7 +50,7 @@ static auto build_ket_row(
 
         const auto* envA_site =
             samp.env_above()[env_above_cur].p + col_i * samp.max_env_above_site();
-        contract_strided_batched(
+        contract_strided(
             la,
             samp.permutation_cache(),
             {
@@ -55,11 +58,11 @@ static auto build_ket_row(
                 .contracted_a = {1},
                 .dims_b = {bond_above_l, dim_bond, bond_above_r},
                 .contracted_b = {0},
-                .dim_batch = dim_batch,
             },
             {.src = samp.rfactor(), .scratch = samp.tmp_a()},
             {.src = {envA_site, samp.env_above()[env_above_cur].stride}},
-            {.view = samp.tmp_b()}
+            {.view = samp.tmp_b()},
+            dim_batch
         );
 
         contract_batched(
@@ -70,11 +73,11 @@ static auto build_ket_row(
                 .contracted_a = {1, 2},
                 .dims_b = {bond_left, bond_up, phys_site, bond_down, bond_right},
                 .contracted_b = {0, 1},
-                .dim_batch = dim_batch,
             },
             {.src = samp.tmp_b(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
             {.ptrs = samp.mpo_ptrs()[row_u][col]},
-            {.ptrs = samp.tmp_b_ptrs()}
+            {.ptrs = samp.tmp_b_ptrs()},
+            dim_batch
         );
 
         permute({
@@ -155,7 +158,6 @@ static auto build_env_unsampled(
             .contracted_a = {3},
             .dims_b = {ket_bond_r, env_bond_r, ket_bond_r},
             .contracted_b = {0},
-            .dim_batch = dim_batch,
         };
         if (row == 0)
         {
@@ -165,18 +167,20 @@ static auto build_env_unsampled(
                 ket_env_spec,
                 {.ptrs = samp.ket_row0_ptrs()[col]},
                 {.ptrs = samp.envu_ptrs()[col + 1]},
-                {.ptrs = samp.tmp_a_ptrs()}
+                {.ptrs = samp.tmp_a_ptrs()},
+                dim_batch
             );
         }
         else
         {
-            contract_strided_batched(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 ket_env_spec,
                 {.src = {ket_site, ket_stride}},
                 {.src = {env_unsampled_in, samp.env_unsampled().stride}},
-                {.view = samp.tmp_a()}
+                {.view = samp.tmp_a()},
+                dim_batch
             );
         }
 
@@ -188,11 +192,11 @@ static auto build_env_unsampled(
                 .contracted_a = {2, 3},
                 .dims_b = {bond_below, env_bond_r, bond_below, env_bond_l},
                 .contracted_b = {0, 1},
-                .dim_batch = dim_batch,
             },
             {.src = samp.tmp_a(), .scratch = samp.tmp_b(), .ptrs = samp.tmp_b_ptrs()},
             {.ptrs = dlenv_env_arr},
-            {.ptrs = samp.tmp_a_ptrs()}
+            {.ptrs = samp.tmp_a_ptrs()},
+            dim_batch
         );
 
         if (row == 0)
@@ -205,17 +209,17 @@ static auto build_env_unsampled(
                     .contracted_a = {1, 3, 2},
                     .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
                     .contracted_b = {1, 2, 3},
-                    .conj_b = 1,
-                    .dim_batch = dim_batch,
+                    .transforms = {.conj_b = true},
                 },
                 {.src = samp.tmp_a(), .scratch = samp.tmp_b(), .ptrs = samp.tmp_b_ptrs()},
                 {.ptrs = samp.ket_row0_ptrs()[col]},
-                {.ptrs = samp.envu_ptrs()[col]}
+                {.ptrs = samp.envu_ptrs()[col]},
+                dim_batch
             );
         }
         else
         {
-            contract_strided_batched(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -223,12 +227,12 @@ static auto build_env_unsampled(
                     .contracted_a = {1, 3, 2},
                     .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
                     .contracted_b = {1, 2, 3},
-                    .conj_b = 1,
-                    .dim_batch = dim_batch,
+                    .transforms = {.conj_b = true},
                 },
                 {.src = samp.tmp_a(), .scratch = samp.tmp_b()},
                 {.src = {ket_site, ket_stride}},
-                {.view = {env_unsampled_out, samp.env_unsampled().stride}}
+                {.view = {env_unsampled_out, samp.env_unsampled().stride}},
+                dim_batch
             );
         }
 
@@ -291,16 +295,16 @@ static auto draw_sigma(
                     .contracted_a = {0},
                     .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
                     .contracted_b = {0},
-                    .dim_batch = dim_batch,
                 },
                 {.src = samp.sigma(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
                 {.ptrs = samp.ket_row0_ptrs()[col]},
-                {.ptrs = samp.tmp_b_ptrs()}
+                {.ptrs = samp.tmp_b_ptrs()},
+                dim_batch
             );
         }
         else
         {
-            contract_strided_batched(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -308,11 +312,11 @@ static auto draw_sigma(
                     .contracted_a = {0},
                     .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
                     .contracted_b = {0},
-                    .dim_batch = dim_batch,
                 },
                 {.src = samp.sigma(), .scratch = samp.tmp_a()},
                 {.src = {ket_site, ket_stride}},
-                {.view = samp.tmp_b()}
+                {.view = samp.tmp_b()},
+                dim_batch
             );
         }
 
@@ -324,14 +328,14 @@ static auto draw_sigma(
                 .contracted_a = {3, 0},
                 .dims_b = {bond_below, env_bond_l, bond_below, env_bond_r},
                 .contracted_b = {0, 1},
-                .dim_batch = dim_batch,
             },
             {.src = samp.tmp_b(), .scratch = samp.tmp_a(), .ptrs = samp.tmp_a_ptrs()},
             {.ptrs = dlenv_sigma_arr},
-            {.ptrs = samp.tmp_b_ptrs()}
+            {.ptrs = samp.tmp_b_ptrs()},
+            dim_batch
         );
 
-        contract_strided_batched(
+        contract_strided(
             la,
             samp.permutation_cache(),
             {
@@ -339,18 +343,18 @@ static auto draw_sigma(
                 .contracted_a = {0, 3},
                 .dims_b = {ket_bond_l, dim_phys, bond_below, ket_bond_r},
                 .contracted_b = {0, 2},
-                .conj_b = 1,
-                .dim_batch = dim_batch,
+                .transforms = {.conj_b = true},
             },
             {.src = samp.tmp_b(), .scratch = samp.tmp_a()},
             {.src = {ket_site, ket_stride}, .scratch = samp.tmp_b()},
-            {.view = samp.sigma_full()}
+            {.view = samp.sigma_full()},
+            dim_batch
         );
 
         const int sigma_elems{ket_bond_r * env_bond_r * ket_bond_r};
         const auto* env_unsampled_next =
             samp.env_unsampled().p + (col_i + 1) * samp.max_env_unsampled();
-        contract_strided_batched(
+        contract_strided(
             la,
             samp.permutation_cache(),
             {
@@ -358,11 +362,11 @@ static auto draw_sigma(
                 .contracted_a = {1, 2, 4},
                 .dims_b = {ket_bond_r, env_bond_r, ket_bond_r},
                 .contracted_b = {0, 1, 2},
-                .dim_batch = dim_batch,
             },
             {.src = samp.sigma_full(), .scratch = samp.sigma_full_scratch()},
             {.src = {env_unsampled_next, samp.env_unsampled().stride}},
-            {.view = samp.rho()}
+            {.view = samp.rho()},
+            dim_batch
         );
         std::swap(samp.sigma_full().p, samp.sigma_full_scratch().p);
 
@@ -480,6 +484,13 @@ auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout lay
         return;
     }
 
+    if (not ctx.sampler.ready())
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
+    assert(ctx.sampler.ready());
+
     Sampler& samp = ctx.sampler.samp;
     const auto num_rows = static_cast<usize>(ctx.cfg.lx);
     const auto num_cols = static_cast<usize>(ctx.cfg.ly);
@@ -526,17 +537,23 @@ auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout lay
 
 auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
 {
+    if (not ctx.sampler.ready())
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
+    assert(ctx.sampler.ready());
     Sampler& samp = ctx.sampler.samp;
     SamplerConfig& cfg = samp.cfg();
 
-    if (ctx.sampler.dim_batch > 0 and cfg.dim_batch != ctx.sampler.dim_batch)
+    if (ctx.sampler.execution.dim_batch > 0 and cfg.dim_batch != ctx.sampler.execution.dim_batch)
     {
-        if (ctx.sampler.graph)
+        if (ctx.sampler.execution.graph)
         {
-            CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.graph));
-            ctx.sampler.graph = nullptr;
+            CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.execution.graph));
+            ctx.sampler.execution.graph = nullptr;
         }
-        cfg.dim_batch = ctx.sampler.dim_batch;
+        cfg.dim_batch = ctx.sampler.execution.dim_batch;
     }
 
     const auto dim_batch = cfg.dim_batch;
@@ -544,12 +561,12 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
     const int chi_s{cfg.chi_s};
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
-    const i64 lane_samples{static_cast<i64>(dim_batch) * cfg.lx * cfg.ly};
+    const i64 lane_samples{static_cast<i64>(dim_batch) * cfg.num_sites()};
     auto& la = samp.linalg();
-    auto* device_seed = ctx.sampler.device_seed;
-    auto& all_samples = ctx.sampler.all_samples;
-    auto& all_logpc = ctx.sampler.all_logpc;
-    auto& all_lognorm = ctx.sampler.all_lognorm;
+    auto* device_seed = ctx.sampler.allocation.device_seed;
+    auto& all_samples = ctx.sampler.staging.all_samples;
+    auto& all_logpc = ctx.sampler.staging.all_logpc;
+    auto& all_lognorm = ctx.sampler.staging.all_lognorm;
 
     const auto lane_samples_u = static_cast<usize>(lane_samples);
     const auto dim_batch_u = static_cast<usize>(dim_batch);
@@ -562,7 +579,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
 
     {
         const auto num_env = num_rows - 1;
-        const auto cap = static_cast<usize>(k_max_batch_size);
+        const auto cap = static_cast<usize>(ctx.sampler.allocation.dim_batch_capacity);
         cf* const views = ctx.dlenv.views[ctx.dlenv.active];
         ctx.dlenv.ptr_host.assign(2 * num_env * num_cols * cap, nullptr);
         usize slot{};
@@ -579,6 +596,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
             for (auto col = 0_uz; col < num_cols; ++col)
                 fill(ctx.dlenv.sigma_off[row][col]);
         if (num_env > 0)
+        {
             CUDA_CHECK(cudaMemcpyAsync(
                 samp.dlenv_env_ptrs()[0][0],
                 ctx.dlenv.ptr_host.data(),
@@ -586,6 +604,14 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
                 cudaMemcpyHostToDevice,
                 la.stream()
             ));
+        }
+        const auto expected_slots = 2 * num_env * num_cols;
+        if (slot != expected_slots)
+        {
+            set_err(QNPEPS_ERR_INTERNAL);
+            return;
+        }
+        assert(slot == expected_slots);
     }
 
     auto bondsK = [&](const std::vector<int>& bond_above, usize row)
@@ -634,10 +660,8 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
         const u64 batch_seed{
             cfg.seed * k_seed_multiplier + cfg.batch_base + static_cast<u64>(batch_id)
         };
-        ctx.sampler.h_seed = batch_seed;
-        CUDA_CHECK(cudaMemcpyAsync(
-            device_seed, &ctx.sampler.h_seed, sizeof(u64), cudaMemcpyHostToDevice, la.stream()
-        ));
+        ctx.sampler.staging.h_seed = batch_seed;
+        copy_h2d_async(device_seed, &ctx.sampler.staging.h_seed, 1, la.stream());
 
         auto enqueue_batch = [&]()
         {
@@ -672,60 +696,54 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
             }
         };
 
-        if (ctx.use_graph and ctx.sampler.graph)
+        if (ctx.use_graph and ctx.sampler.execution.graph)
         {
             if (std::getenv("QNPEPS_GRAPH_LOG"))
                 std::fprintf(stderr, "[qnpeps] sample_graph replayed\n");
-            CUDA_CHECK(cudaGraphLaunch(ctx.sampler.graph, la.stream()));
+            CUDA_CHECK(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
         }
-        else if (ctx.use_graph and ctx.sampler.warmed)
+        else if (ctx.use_graph and ctx.sampler.execution.warmed)
         {
             cudaGraph_t graph{};
             CUDA_CHECK(cudaStreamBeginCapture(la.stream(), cudaStreamCaptureModeThreadLocal));
             enqueue_batch();
             const cudaError_t cap_rc = cudaStreamEndCapture(la.stream(), &graph);
             if (cap_rc == cudaSuccess
-                and instantiate_graph(ctx.sampler.graph, graph) == cudaSuccess)
+                and instantiate_graph(ctx.sampler.execution.graph, graph) == cudaSuccess)
             {
                 CUDA_CHECK(cudaGraphDestroy(graph));
                 if (std::getenv("QNPEPS_GRAPH_LOG"))
                     std::fprintf(stderr, "[qnpeps] sample_graph captured\n");
-                CUDA_CHECK(cudaGraphLaunch(ctx.sampler.graph, la.stream()));
+                CUDA_CHECK(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
             }
             else
             {
                 cudaGetLastError();
-                ctx.sampler.graph = nullptr;
+                ctx.sampler.execution.graph = nullptr;
                 enqueue_batch();
             }
         }
         else
         {
             enqueue_batch();
-            ctx.sampler.warmed = true;
+            ctx.sampler.execution.warmed = true;
         }
 
-        CUDA_CHECK(cudaMemcpyAsync(
-            ctx.sampler.h_samples,
+        copy_d2h_async(
+            ctx.sampler.staging.h_samples,
             samp.samples(),
-            static_cast<usize>(lane_samples) * sizeof(u8),
-            cudaMemcpyDeviceToHost,
+            static_cast<usize>(lane_samples),
             la.stream()
-        ));
-        CUDA_CHECK(cudaMemcpyAsync(
-            ctx.sampler.h_logpc,
-            samp.logpc(),
-            static_cast<usize>(dim_batch) * sizeof(f64),
-            cudaMemcpyDeviceToHost,
-            la.stream()
-        ));
-        CUDA_CHECK(cudaMemcpyAsync(
-            ctx.sampler.h_lognorm,
+        );
+        copy_d2h_async(
+            ctx.sampler.staging.h_logpc, samp.logpc(), static_cast<usize>(dim_batch), la.stream()
+        );
+        copy_d2h_async(
+            ctx.sampler.staging.h_lognorm,
             samp.lognorm(),
-            static_cast<usize>(dim_batch) * sizeof(f64),
-            cudaMemcpyDeviceToHost,
+            static_cast<usize>(dim_batch),
             la.stream()
-        ));
+        );
         CUDA_CHECK(cudaStreamSynchronize(la.stream()));
         int fail_host{};
         CUDA_CHECK(cudaMemcpy(&fail_host, samp.fail(), sizeof(int), cudaMemcpyDeviceToHost));
@@ -735,12 +753,26 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
             break;
         }
         all_samples.insert(
-            all_samples.end(), ctx.sampler.h_samples, ctx.sampler.h_samples + lane_samples
+            all_samples.end(),
+            ctx.sampler.staging.h_samples,
+            ctx.sampler.staging.h_samples + lane_samples
         );
-        all_logpc.insert(all_logpc.end(), ctx.sampler.h_logpc, ctx.sampler.h_logpc + dim_batch);
+        all_logpc.insert(
+            all_logpc.end(), ctx.sampler.staging.h_logpc, ctx.sampler.staging.h_logpc + dim_batch
+        );
         all_lognorm.insert(
-            all_lognorm.end(), ctx.sampler.h_lognorm, ctx.sampler.h_lognorm + dim_batch
+            all_lognorm.end(),
+            ctx.sampler.staging.h_lognorm,
+            ctx.sampler.staging.h_lognorm + dim_batch
         );
+    }
+
+    if (err_state() == QNPEPS_OK)
+    {
+        const auto batch_count = batch_ids.size();
+        assert(all_samples.size() == lane_samples_u * batch_count);
+        assert(all_logpc.size() == dim_batch_u * batch_count);
+        assert(all_lognorm.size() == dim_batch_u * batch_count);
     }
 }
 }

@@ -5,26 +5,27 @@ import ..QnpepsConfig
 import ..QnpepsSampleArgs
 import ..QnpepsCtxSampleArgs
 
-capi_version()::Cstring = @ccall $(_sym(:qnpeps_capi_version))()::Cstring
+capi_version()::Cstring = @ccall $(_sym(; name=:qnpeps_capi_version))()::Cstring
 
-strerror(status)::Cstring = @ccall $(_sym(:qnpeps_strerror))(status::Cint)::Cstring
+strerror(status)::Cstring = @ccall $(_sym(; name=:qnpeps_strerror))(status::Cint)::Cstring
 
-last_error_file()::Cstring = @ccall $(_sym(:qnpeps_last_error_file))()::Cstring
+last_error_file()::Cstring = @ccall $(_sym(; name=:qnpeps_last_error_file))()::Cstring
 
-last_error_line()::Cint = @ccall $(_sym(:qnpeps_last_error_line))()::Cint
+last_error_line()::Cint = @ccall $(_sym(; name=:qnpeps_last_error_line))()::Cint
 
 function ctx_create(config, out; stream)::Cint
-    return @ccall $(_sym(:qnpeps_ctx_create))(
+    return @ccall $(_sym(; name=:qnpeps_ctx_create))(
         config::Ref{QnpepsConfig},
         stream::Ptr{Cvoid},
         out::Ptr{Ptr{Cvoid}},
     )::Cint
 end
 
-ctx_destroy(ctx)::Nothing = @ccall $(_sym(:qnpeps_ctx_destroy))(ctx::Ptr{Cvoid})::Cvoid
+ctx_destroy(ctx)::Nothing =
+    @ccall $(_sym(; name=:qnpeps_ctx_destroy))(ctx::Ptr{Cvoid})::Cvoid
 
 function ctx_build_dlenv(ctx, peps; cumulative_row_logs)::Cint
-    return @ccall $(_sym(:qnpeps_ctx_build_dlenv))(
+    return @ccall $(_sym(; name=:qnpeps_ctx_build_dlenv))(
         ctx::Ptr{Cvoid},
         peps::Ptr{Cvoid},
         cumulative_row_logs::Ptr{Float64},
@@ -40,11 +41,13 @@ function ctx_sample(ctx, samples_out; log_prob_config, log_gauge, n_samples, bat
         UInt64(n_samples),
         UInt64(batch_base),
     )
-    return @ccall $(_sym(:qnpeps_ctx_sample))(ctx::Ptr{Cvoid}, args::Ref{QnpepsCtxSampleArgs})::Cint
+    return @ccall $(_sym(; name=:qnpeps_ctx_sample))(
+        ctx::Ptr{Cvoid}, args::Ref{QnpepsCtxSampleArgs}
+    )::Cint
 end
 
 function build_dlenv(config, peps; dlenv_out, cumulative_row_logs, stream)::Cint
-    return @ccall $(_sym(:qnpeps_build_dlenv))(
+    return @ccall $(_sym(; name=:qnpeps_build_dlenv))(
         config::Ref{QnpepsConfig},
         peps::Ptr{Cvoid},
         dlenv_out::Ptr{Cvoid},
@@ -83,7 +86,7 @@ function sample(
         UInt64(dim_batch),
         UInt(stream),
     )
-    return @ccall $(_sym(:qnpeps_sample))(
+    return @ccall $(_sym(; name=:qnpeps_sample))(
         config::Ref{QnpepsConfig},
         args::Ref{QnpepsSampleArgs},
     )::Cint
@@ -99,7 +102,7 @@ function double_layer_row(
     row_log_out,
     stream,
 )::Cint
-    return @ccall $(_sym(:qnpeps_double_layer_row))(
+    return @ccall $(_sym(; name=:qnpeps_double_layer_row))(
         config::Ref{QnpepsConfig},
         row::Cint,
         maxdim::Cint,
@@ -112,7 +115,9 @@ function double_layer_row(
 end
 
 dlenv_row_bytes(config, maxdim)::Int64 =
-    @ccall $(_sym(:qnpeps_dlenv_row_bytes))(config::Ref{QnpepsConfig}, maxdim::Cint)::Int64
+    @ccall $(_sym(; name=:qnpeps_dlenv_row_bytes))(
+        config::Ref{QnpepsConfig}, maxdim::Cint
+    )::Int64
 
 function batched_rangefinder(
     input;
@@ -130,7 +135,7 @@ function batched_rangefinder(
     scratch_bytes,
     stream,
 )::Cint
-    return @ccall $(_sym(:qnpeps_batched_rangefinder))(
+    return @ccall $(_sym(; name=:qnpeps_batched_rangefinder))(
         input::Ptr{Cvoid},
         rows::Cint,
         cols::Cint,
@@ -149,25 +154,32 @@ function batched_rangefinder(
 end
 
 function batched_rangefinder_scratch_bytes(rows, cols, rank, batch)::Int64
-    fn = _sym(:qnpeps_batched_rangefinder_scratch_bytes)
+    fn = _sym(; name=:qnpeps_batched_rangefinder_scratch_bytes)
     return @ccall $fn(rows::Cint, cols::Cint, rank::Cint, batch::Cint)::Int64
 end
 
-peps_bytes(config)::Int64 = @ccall $(_sym(:qnpeps_peps_bytes))(config::Ref{QnpepsConfig})::Int64
+peps_bytes(config)::Int64 =
+    @ccall $(_sym(; name=:qnpeps_peps_bytes))(config::Ref{QnpepsConfig})::Int64
 
-dlenv_bytes(config)::Int64 = @ccall $(_sym(:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
+dlenv_bytes(config)::Int64 =
+    @ccall $(_sym(; name=:qnpeps_dlenv_bytes))(config::Ref{QnpepsConfig})::Int64
 
-sample_bytes(config, n_samples)::Int64 =
-    @ccall $(_sym(:qnpeps_sample_bytes))(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
-
-function sample_footprint_bytes(config, n_samples)::Int64
-    fn = _sym(:qnpeps_sample_footprint_bytes)
+function sample_bytes(config, n_samples)::Int64
+    fn = _sym(; name=:qnpeps_sample_bytes)
     return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
-sample_scratch_bytes(config)::Int64 =
-    @ccall $(_sym(:qnpeps_sample_scratch_bytes))(config::Ref{QnpepsConfig})::Int64
+function sample_footprint_bytes(config, n_samples)::Int64
+    fn = _sym(; name=:qnpeps_sample_footprint_bytes)
+    return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
+end
 
-sampler_pool_release()::Nothing = @ccall $(_sym(:qnpeps_sampler_pool_release))()::Cvoid
+function sample_scratch_bytes(config)::Int64
+    fn = _sym(; name=:qnpeps_sample_scratch_bytes)
+    return @ccall $fn(config::Ref{QnpepsConfig})::Int64
+end
+
+sampler_pool_release()::Nothing =
+    @ccall $(_sym(; name=:qnpeps_sampler_pool_release))()::Cvoid
 
 end

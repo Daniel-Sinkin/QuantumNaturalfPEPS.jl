@@ -5,7 +5,7 @@ The following command sets up the project and the CUDA dependencies. This has to
 source cuQuantumNaturalfPEPS/setup.sh
 ```
 
-You should see something akin to this (Visibile NVIDIA GPUs of course varies whether you are on login node or compute node):
+You should see something akin to this (Visible NVIDIA GPUs of course is different on Login and Compute Nodes):
 ```
 cuQuantumNaturalfPEPS JURECA toolchain
   Host: jrlogin04.jureca

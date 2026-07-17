@@ -17,12 +17,12 @@ auto batched_rangefinder(Linalg& la, const RangefinderArgs& args) -> void
     const CuMatrixBatched gram_mat{args.gram, k, k};
 
     la.matmul_batched(input, mat_omega, sketch_mat, dim_batch);
-    la.matmul_batched_adj_none(input, sketch_mat, proj_mat, dim_batch);
+    la.matmul_batched_left_adj(input, sketch_mat, proj_mat, dim_batch);
     la.matmul_batched(input, proj_mat, sketch_mat, dim_batch);
 
     for (auto pass = 0; pass < 2; ++pass)
     {
-        la.matmul_batched_adj_none(sketch_mat, sketch_mat, gram_mat, dim_batch);
+        la.matmul_batched_left_adj(sketch_mat, sketch_mat, gram_mat, dim_batch);
         cu_chol_shift<<<grid_blocks_exact(dim_batch), k_threads_per_block, 0, la.stream()>>>(
             args.gram.p, k, args.gram.stride, dim_batch
         );
@@ -63,6 +63,6 @@ auto batched_rangefinder(Linalg& la, const RangefinderArgs& args) -> void
         cudaMemcpyDeviceToDevice,
         la.stream()
     ));
-    la.matmul_batched_adj_none(sketch_mat, input, args.r_out, dim_batch);
+    la.matmul_batched_left_adj(sketch_mat, input, args.r_out, dim_batch);
 }
 }

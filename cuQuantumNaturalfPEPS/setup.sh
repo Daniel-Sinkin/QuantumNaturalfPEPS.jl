@@ -18,7 +18,7 @@ _qnpeps_setup() {
             "$package_dir/util/runtime_info.jl" || return 1
     fi
 
-    echo "cuQuantumNaturalfPEPS setup complete, for future shells/terminals run: source activate.sh"
+    echo "cuQuantumNaturalfPEPS setup complete"
 }
 
 _qnpeps_setup "$@"

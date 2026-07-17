@@ -1,6 +1,7 @@
 #ifndef QNPEPS_DLENV_BUILD_CUH
 #define QNPEPS_DLENV_BUILD_CUH
 
+#include "arena_cursor.cuh"
 #include "capi/qnpeps.h"
 #include "dtensor.cuh"
 #include "types.cuh"
@@ -26,9 +27,9 @@ using qnpeps::DeviceTensor;
 
 struct Arenas
 {
-    Carver& known;
-    Carver& rolling_r;
-    Carver& scratch;
+    ArenaCursor& known;
+    ArenaCursor& rolling_r;
+    ArenaCursor& scratch;
 };
 
 auto build_dlenv_row(

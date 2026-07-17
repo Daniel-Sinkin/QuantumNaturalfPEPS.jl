@@ -1,9 +1,12 @@
+#include "arena_cursor.cuh"
 #include "cuda_utils.cuh"
 #include "dtensor.cuh"
 #include "linalg.cuh"
 
+#include <cassert>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -20,11 +23,11 @@ auto stream() -> cudaStream_t
     return g_dlenv_stream;
 }
 
-auto alloc(Carver& carver, const Shape& dim) -> DeviceTensor
+auto alloc(ArenaCursor& arena, const Shape& dim) -> DeviceTensor
 {
     DeviceTensor tensor{};
     tensor.dim = dim;
-    tensor.d = carver.take<cuFloatComplex>(tensor.num_elems());
+    tensor.d = arena.take<cuFloatComplex>(tensor.num_elems());
     return tensor;
 }
 
@@ -38,11 +41,86 @@ auto view(cuFloatComplex* data, Shape dim) -> DeviceTensor
     return result;
 }
 
+auto PermutationCache::get_or_create(const Shape& dims, const Permutation& perm) -> int*
+{
+    if (not perm.can_apply_to(dims))
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return nullptr;
+    }
+    const Key key{dims.get(), perm.get()};
+    const auto cached = entries_.find(key);
+    if (cached != entries_.end()) return cached->second;
+
+    const auto gather_indices = permutation_index_map(dims, perm);
+    if (err_state() != QNPEPS_OK) return nullptr;
+    int* device_ptr{};
+    CUDA_CHECK(cudaMalloc(&device_ptr, gather_indices.size() * sizeof(int)));
+    if (err_state() != QNPEPS_OK) return nullptr;
+    CUDA_CHECK(cudaMemcpy(
+        device_ptr,
+        gather_indices.data(),
+        gather_indices.size() * sizeof(int),
+        cudaMemcpyHostToDevice
+    ));
+    if (err_state() != QNPEPS_OK)
+    {
+        CUDA_NOCHECK(cudaFree(device_ptr));
+        return nullptr;
+    }
+    entries_.emplace(key, device_ptr);
+    return device_ptr;
+}
+
+auto PermutationCache::release() -> void
+{
+    for (const auto& entry : entries_)
+        if (entry.second) CUDA_NOCHECK(cudaFree(entry.second));
+    entries_.clear();
+}
+
 struct DLPermutationPlan
 {
     int out_dim[k_max_tensor_rank];
     i64 in_stride[k_max_tensor_rank];
 };
+
+struct CuGatherArgs
+{
+    cf* out{};
+    const cf* in{};
+    const int* gather_indices{};
+    i64 element_count{};
+    i64 stride_out{};
+    i64 stride_in{};
+    int conjugate{};
+    int batch_count{};
+};
+
+__global__ auto cu_gather(CuGatherArgs args) -> void
+{
+    const auto out = args.out;
+    const auto in = args.in;
+    const auto gather_indices = args.gather_indices;
+    const auto element_count = args.element_count;
+    const auto stride_out = args.stride_out;
+    const auto stride_in = args.stride_in;
+    const auto conjugate = args.conjugate;
+    const auto batch_count = args.batch_count;
+
+    const i64 total{element_count * batch_count};
+    for (i64 tid{global_lane()}; tid < total; tid += grid_stride())
+    {
+        const auto lane = static_cast<int>(tid / element_count);
+        const auto elem = tid % element_count;
+        const auto lane_i64 = static_cast<i64>(lane);
+        const i64 in_idx{lane_i64 * stride_in + gather_indices[elem]};
+        const i64 out_idx{lane_i64 * stride_out + elem};
+        auto value = in[in_idx];
+        if (conjugate) value.im = -value.im;
+        out[out_idx] = value;
+    }
+}
 
 __global__ auto cu_permute(
     const cuFloatComplex* in,
@@ -78,7 +156,8 @@ auto permute_axes(
 ) -> void
 {
     const auto rank = perm.size();
-    if (rank > static_cast<usize>(k_max_tensor_rank))
+    if (rank > static_cast<usize>(k_max_tensor_rank) or not perm.can_apply_to(tensor.dim)
+        or not tensor.d or not out)
     {
         qnpeps::set_err(QNPEPS_ERR_INTERNAL);
         return;
@@ -100,142 +179,64 @@ auto permute_axes(
         permute_plan.out_dim[k] = outdim[k];
         permute_plan.in_stride[k] = in_stride[static_cast<usize>(perm[k])];
     }
-    i64 element_count{1};
-    for (int d : outdim)
-        element_count *= d;
-    const int threads{256};
-    const auto blocks = static_cast<u32>(ceil_div(element_count, threads));
-    const auto shmem_size = 0;
-    cu_permute<<<blocks, threads, shmem_size, g_dlenv_stream>>>(
+    const auto element_count_u = outdim.num_elems();
+    if (err_state() != QNPEPS_OK
+        or element_count_u > static_cast<usize>(std::numeric_limits<i64>::max()))
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
+    const auto element_count = static_cast<i64>(element_count_u);
+    assert(element_count == static_cast<i64>(tensor.num_elems()));
+    cu_permute<<<grid_blocks_exact(element_count), k_threads_per_block, 0, g_dlenv_stream>>>(
         tensor.d, out, permute_plan, static_cast<int>(rank), element_count, conj ? 1 : 0
     );
     CUDA_CHECK(cudaGetLastError());
 }
 
-auto permute_axes(Carver& carver, const DeviceTensor& tensor, const Permutation& perm, bool conj)
-    -> DeviceTensor
+auto permute_axes(
+    ArenaCursor& arena, const DeviceTensor& tensor, const Permutation& perm, bool conj
+) -> DeviceTensor
 {
-    auto result = alloc(carver, perm.apply(tensor.dim));
+    auto result = alloc(arena, perm.apply(tensor.dim));
     permute_axes(tensor, perm, conj, result.d);
     return result;
 }
 
-[[nodiscard]] auto contract_plan(
-    const Shape& a_dim,
-    const std::vector<int>& contracted_a,
-    const Shape& b_dim,
-    const std::vector<int>& contracted_b
-) -> ContractPlan
+auto permute_batched(Linalg& linalg, PermutationCache& permutation_cache, const PermuteOp& op)
+    -> void
 {
-    const auto free_axes_of = [](const Shape& dims, const std::vector<int>& contracted)
+    const auto element_count_u = op.dims_in.num_elems();
+    if (err_state() != QNPEPS_OK
+        or element_count_u > static_cast<usize>(std::numeric_limits<int>::max()))
     {
-        bool is_contracted[k_max_tensor_rank]{};
-        for (const auto ax : contracted)
-            is_contracted[static_cast<usize>(ax)] = true;
-        std::vector<int> free_axes{};
-        free_axes.reserve(dims.rank());
-        for (auto ax = 0; ax < static_cast<int>(dims.rank()); ++ax)
-            if (not is_contracted[static_cast<usize>(ax)]) free_axes.push_back(ax);
-        return free_axes;
-    };
-    const auto free_a = free_axes_of(a_dim, contracted_a);
-    const auto free_b = free_axes_of(b_dim, contracted_b);
-
-    std::vector<int> perm_a{free_a};
-    perm_a.insert(perm_a.end(), contracted_a.begin(), contracted_a.end());
-    std::vector<int> perm_b{contracted_b};
-    perm_b.insert(perm_b.end(), free_b.begin(), free_b.end());
-
-    int result_rows{1};
-    int result_cols{1};
-    int contracted_elems{1};
-    std::vector<int> result_dim{};
-    for (const auto ax : free_a)
-    {
-        result_rows *= a_dim[static_cast<usize>(ax)];
-        result_dim.push_back(a_dim[static_cast<usize>(ax)]);
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
     }
-    for (const auto ax : free_b)
+    const auto element_count = static_cast<i64>(element_count_u);
+    const bool valid = op.perm.can_apply_to(op.dims_in) and op.batch_count > 0 and op.dst.p
+                       and op.src.p and op.dst.stride >= element_count
+                       and (op.src.stride == 0 or op.src.stride >= element_count);
+    if (not valid)
     {
-        result_cols *= b_dim[static_cast<usize>(ax)];
-        result_dim.push_back(b_dim[static_cast<usize>(ax)]);
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
     }
-    for (const auto ax : contracted_a)
-        contracted_elems *= a_dim[static_cast<usize>(ax)];
-    if (result_dim.empty()) result_dim.push_back(1);
-
-    return ContractPlan{
-        .perm_a = Permutation{std::move(perm_a)},
-        .perm_b = Permutation{std::move(perm_b)},
-        .result_dim = Shape{std::move(result_dim)},
-        .M = result_rows,
-        .K = contracted_elems,
-        .N = result_cols,
+    assert(valid);
+    auto* gather_indices = permutation_cache.get_or_create(op.dims_in, op.perm);
+    if (not gather_indices or err_state() != QNPEPS_OK) return;
+    const auto blocks = grid_blocks_capped(element_count * op.batch_count);
+    const CuGatherArgs gather_args{
+        .out = op.dst.p,
+        .in = op.src.p,
+        .gather_indices = gather_indices,
+        .element_count = element_count,
+        .stride_out = op.dst.stride,
+        .stride_in = op.src.stride,
+        .conjugate = op.conjugate ? 1 : 0,
+        .batch_count = op.batch_count,
     };
-}
-
-auto contract(
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const DeviceTensor& tensor_b,
-    ContractFlags flags,
-    const ContractPlan& plan,
-    void* scratch,
-    cuFloatComplex* out
-) -> void
-{
-    const auto lhs_rows = static_cast<usize>(plan.M);
-    const auto inner_dim = static_cast<usize>(plan.K);
-    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
-    auto* a_perm = byte_offset<cuFloatComplex>(scratch, 0);
-    auto* b_perm = byte_offset<cuFloatComplex>(scratch, a_perm_bytes);
-    permute_axes(tensor_a, plan.perm_a, flags.conj_a, a_perm);
-    permute_axes(tensor_b, plan.perm_b, flags.conj_b, b_perm);
-
-    la.matmul(
-        CuMatrixConst{cf_cast(a_perm), plan.M, plan.K},
-        CuMatrixConst{cf_cast(b_perm), plan.K, plan.N},
-        CuMatrix{cf_cast(out), plan.M, plan.N}
-    );
-}
-
-auto contract(
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const std::vector<int>& contracted_a,
-    const DeviceTensor& tensor_b,
-    const std::vector<int>& contracted_b,
-    ContractFlags flags,
-    void* scratch,
-    cuFloatComplex* out
-) -> void
-{
-    const auto plan = contract_plan(tensor_a.dim, contracted_a, tensor_b.dim, contracted_b);
-    contract(la, tensor_a, tensor_b, flags, plan, scratch, out);
-}
-
-auto contract(
-    Carver& carver,
-    Linalg& la,
-    const DeviceTensor& tensor_a,
-    const std::vector<int>& contracted_a,
-    const DeviceTensor& tensor_b,
-    const std::vector<int>& contracted_b,
-    ContractFlags flags
-) -> DeviceTensor
-{
-    const auto plan = contract_plan(tensor_a.dim, contracted_a, tensor_b.dim, contracted_b);
-    auto result = alloc(carver, plan.result_dim);
-
-    Carver scratch_frame{carver};
-    const auto lhs_rows = static_cast<usize>(plan.M);
-    const auto inner_dim = static_cast<usize>(plan.K);
-    const auto rhs_cols = static_cast<usize>(plan.N);
-    const auto a_perm_bytes = device_align(sizeof(cuFloatComplex) * lhs_rows * inner_dim);
-    const auto b_perm_bytes = device_align(sizeof(cuFloatComplex) * inner_dim * rhs_cols);
-    const auto scratch_bytes = a_perm_bytes + b_perm_bytes;
-    auto* scratch = scratch_frame.take<char>(scratch_bytes);
-    contract(la, tensor_a, tensor_b, flags, plan, scratch, result.d);
-    return result;
+    cu_gather<<<blocks, k_threads_per_block, 0, linalg.stream()>>>(gather_args);
+    CUDA_CHECK(cudaGetLastError());
 }
 }

@@ -49,7 +49,15 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto n_samples_i = static_cast<i64>(n_samples);
     auto dim_batch = std::min<i64>(n_samples_i, k_max_batch_size);
     if (dim_batch < 1) dim_batch = 1;
-    ctx.sampler.dim_batch = static_cast<int>(dim_batch);
+    if (ctx.sampler.allocation.allocated and dim_batch > ctx.sampler.allocation.dim_batch_capacity)
+    {
+        CUDA_CHECK(cudaStreamSynchronize(ctx.linalg.stream()));
+        ctx_sampler_free(ctx);
+        ctx.sampler = {};
+    }
+    ctx.sampler.execution.dim_batch = static_cast<int>(dim_batch);
+    if (ctx.sampler.allocation.dim_batch_capacity == 0)
+        ctx.sampler.allocation.dim_batch_capacity = static_cast<int>(dim_batch);
     const auto batches = static_cast<int>(ceil_div(n_samples_i, dim_batch));
 
     const int sites{(lx - 1) * ly};
@@ -66,10 +74,10 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     if (err_state() != QNPEPS_OK) return err_state();
     ctx.sampler.samp.cfg().batch_base = batch_base;
 
-    if (ctx.sampler.refresh_gen != ctx.dlenv.build_count)
+    if (ctx.sampler.execution.refresh_gen != ctx.dlenv.build_count)
     {
         ctx_sample_refresh(ctx, ctx.dl.peps_buf, PepsLayout::reverse_packed);
-        ctx.sampler.refresh_gen = ctx.dlenv.build_count;
+        ctx.sampler.execution.refresh_gen = ctx.dlenv.build_count;
     }
 
     std::vector<int> all_batch_ids{};
@@ -81,27 +89,31 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
     };
-    if (ctx.sampler.all_samples.size() < total_sample_count) return set_err(QNPEPS_ERR_INTERNAL);
+    if (ctx.sampler.staging.all_samples.size() < total_sample_count)
+        return set_err(QNPEPS_ERR_INTERNAL);
     CUDA_CHECK(cudaMemcpy(
         output,
-        ctx.sampler.all_samples.data(),
+        ctx.sampler.staging.all_samples.data(),
         total_sample_count * sizeof(u8),
         cudaMemcpyHostToDevice
     ));
 
     if (logpc_out)
     {
-        if (ctx.sampler.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        if (ctx.sampler.staging.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
         CUDA_CHECK(cudaMemcpy(
-            logpc_out, ctx.sampler.all_logpc.data(), n_samples * sizeof(f64), cudaMemcpyHostToDevice
+            logpc_out,
+            ctx.sampler.staging.all_logpc.data(),
+            n_samples * sizeof(f64),
+            cudaMemcpyHostToDevice
         ));
     }
     if (lognorm_out)
     {
-        if (ctx.sampler.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        if (ctx.sampler.staging.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
         CUDA_CHECK(cudaMemcpy(
             lognorm_out,
-            ctx.sampler.all_lognorm.data(),
+            ctx.sampler.staging.all_lognorm.data(),
             n_samples * sizeof(f64),
             cudaMemcpyHostToDevice
         ));
@@ -135,7 +147,8 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     auto dim_batch = dim_batch_pin != 0 ? static_cast<i64>(dim_batch_pin)
                                         : std::min<i64>(n_samples_i, k_max_batch_size);
     if (dim_batch < 1) dim_batch = 1;
-    ctx.sampler.dim_batch = static_cast<int>(dim_batch);
+    ctx.sampler.execution.dim_batch = static_cast<int>(dim_batch);
+    ctx.sampler.allocation.dim_batch_capacity = static_cast<int>(dim_batch);
     const auto batches = static_cast<int>(ceil_div(n_samples_i, dim_batch));
 
     const int sites{(lx - 1) * ly};
@@ -193,27 +206,31 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
     };
-    if (ctx.sampler.all_samples.size() < total_sample_count) return set_err(QNPEPS_ERR_INTERNAL);
+    if (ctx.sampler.staging.all_samples.size() < total_sample_count)
+        return set_err(QNPEPS_ERR_INTERNAL);
     CUDA_CHECK(cudaMemcpy(
         output,
-        ctx.sampler.all_samples.data(),
+        ctx.sampler.staging.all_samples.data(),
         total_sample_count * sizeof(u8),
         cudaMemcpyHostToDevice
     ));
 
     if (logpc_out)
     {
-        if (ctx.sampler.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        if (ctx.sampler.staging.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
         CUDA_CHECK(cudaMemcpy(
-            logpc_out, ctx.sampler.all_logpc.data(), n_samples * sizeof(f64), cudaMemcpyHostToDevice
+            logpc_out,
+            ctx.sampler.staging.all_logpc.data(),
+            n_samples * sizeof(f64),
+            cudaMemcpyHostToDevice
         ));
     }
     if (lognorm_out)
     {
-        if (ctx.sampler.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        if (ctx.sampler.staging.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
         CUDA_CHECK(cudaMemcpy(
             lognorm_out,
-            ctx.sampler.all_lognorm.data(),
+            ctx.sampler.staging.all_lognorm.data(),
             n_samples * sizeof(f64),
             cudaMemcpyHostToDevice
         ));
@@ -378,7 +395,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
 
         qnpeps_ctx ctx{};
         ctx.cfg = config;
-        ctx.sampler.dim_batch = dim_batch_i;
+        ctx.sampler.execution.dim_batch = dim_batch_i;
+        ctx.sampler.allocation.dim_batch_capacity = dim_batch_i;
         ctx.dlenv.dims = dims;
         ctx.dlenv.buf[0] = device_dlenv_copy;
         ctx.dlenv.active = 0;
@@ -408,9 +426,9 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             ctx_sample_run(ctx, batches_of_gpu[g]);
         }
         cudaStreamSynchronize(ctx.linalg.stream());
-        shard.samples = std::move(ctx.sampler.all_samples);
-        shard.logpc = std::move(ctx.sampler.all_logpc);
-        shard.lognorm = std::move(ctx.sampler.all_lognorm);
+        shard.samples = std::move(ctx.sampler.staging.all_samples);
+        shard.logpc = std::move(ctx.sampler.staging.all_logpc);
+        shard.lognorm = std::move(ctx.sampler.staging.all_lognorm);
         capture_error();
 
         ctx_sampler_free(ctx);
@@ -429,8 +447,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
 
     CUDA_CHECK(cudaSetDevice(0));
     for (const auto& shard : shards)
-        if (shard.err != QNPEPS_OK)
-            return set_err_at(shard.err, shard.err_file, shard.err_line);
+        if (shard.err != QNPEPS_OK) return set_err_at(shard.err, shard.err_file, shard.err_line);
 
     const i64 sample_len{static_cast<i64>(lx) * ly};
     const auto sample_len_u = static_cast<usize>(sample_len);

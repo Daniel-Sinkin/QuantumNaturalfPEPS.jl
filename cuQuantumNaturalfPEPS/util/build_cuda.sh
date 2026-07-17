@@ -21,7 +21,7 @@ if ! command -v cmake >/dev/null 2>&1; then
     fi
 fi
 if ! command -v cmake >/dev/null 2>&1; then
-    echo "[build_cuda.sh] cmake not found (did you run 'module load CMake' ?)" >&2
+    echo "[build_cuda.sh] cmake not found" >&2
     exit 1
 fi
 if ! command -v nvcc >/dev/null 2>&1; then
@@ -36,10 +36,10 @@ echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
 if command -v nvidia-smi >/dev/null 2>&1; then
     if gpu_info="$(nvidia-smi --query-gpu=index,name,compute_cap,driver_version --format=csv,noheader 2>&1)"; then
         echo "NVIDIA GPUs"
-        echo "index, name, compute capability, driver" # TODO: Pad this properly
-        printf '%s\n' "$gpu_info"
+        printf '%s\n%s\n' "index, name, compute capability, driver" "$gpu_info" \
+            | column -t -s,
     elif gpu_info="$(nvidia-smi -L 2>&1)"; then
-        echo "Nvidai GPUs:"
+        echo "Nvidia GPUs:"
         printf '%s\n' "$gpu_info"
     else
         echo "NVIDIA GPUs: unavailable ($gpu_info)" >&2
