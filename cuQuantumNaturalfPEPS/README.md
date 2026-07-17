@@ -70,11 +70,6 @@ set the `QNPEPS_JULIA_DEPOT=...` environment variable beforehand to change that 
 
 The library always contains native CUDA code for compute capabilities 7.5, 8.0, and 9.0.
 
-Setup prints the compiler paths, complete loader environment, embedded CUDA images, resolved
-native dependencies, CUDA.jl versions and preferences, and the shared libraries actually loaded by
-Julia. CMake is loaded only in the build subprocess so its dependencies do not alter the calling
-shell's `LD_LIBRARY_PATH`.
-
 Once that is done every new shell (terminal) needs to run this once to activate the modules and dependencies
 ```bash
 source cuQuantumNaturalfPEPS/activate.sh
