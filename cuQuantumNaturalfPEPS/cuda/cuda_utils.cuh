@@ -1,104 +1,45 @@
 #ifndef QNPEPS_CUDA_UTILS_CUH
 #define QNPEPS_CUDA_UTILS_CUH
 
-#include "capi/qnpeps.h"
+#include "error.cuh"
 #include "types.cuh"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
-#include <cusolverDn.h>
-#include <source_location>
+#include <cstdlib>
+
+#if defined(__clang__) || defined(__GNUC__)
+#    define QNPEPS_UNREACHABLE()                                                                   \
+        do                                                                                         \
+        {                                                                                          \
+            assert(false);                                                                         \
+            __builtin_unreachable();                                                               \
+        } while (false)
+#elif defined(_MSC_VER)
+#    define QNPEPS_UNREACHABLE()                                                                   \
+        do                                                                                         \
+        {                                                                                          \
+            assert(false);                                                                         \
+            __assume(false);                                                                       \
+        } while (false)
+#else
+#    define QNPEPS_UNREACHABLE()                                                                   \
+        do                                                                                         \
+        {                                                                                          \
+            assert(false);                                                                         \
+            std::abort();                                                                          \
+        } while (false)
+#endif
 
 namespace qnpeps
 {
 constexpr i64 k_tree_reduce_threads{256};
-
-struct ErrorState
-{
-    qnpeps_status status{QNPEPS_OK};
-    const char* file{};
-    int32_t line{};
-};
-
-inline auto error_state() -> ErrorState&
-{
-    static thread_local ErrorState state{};
-    return state;
 }
-
-inline auto err_state() -> qnpeps_status&
-{
-    return error_state().status;
-}
-
-inline auto reset_err() -> void
-{
-    error_state() = {};
-}
-
-inline auto set_err_at(qnpeps_status status, const char* file, int32_t line) -> qnpeps_status
-{
-    auto& state = error_state();
-    if (state.status == QNPEPS_OK)
-    {
-        state.status = status;
-        state.file = file;
-        state.line = line;
-    }
-    return state.status;
-}
-
-inline auto
-set_err(qnpeps_status status, std::source_location where = std::source_location::current())
-    -> qnpeps_status
-{
-    return set_err_at(status, where.file_name(), static_cast<int32_t>(where.line()));
-}
-
-inline auto err_file() -> const char*
-{
-    return error_state().file;
-}
-
-inline auto err_line() -> int32_t
-{
-    return error_state().line;
-}
-}
-
-#define CUDA_CHECK(x)                                                                              \
-    do                                                                                             \
-    {                                                                                              \
-        const auto e_ = (x);                                                                       \
-        if (e_ != cudaSuccess) qnpeps::set_err(QNPEPS_ERR_CUDA);                                   \
-    } while (0)
-
-#define CUBLAS_CHECK(x)                                                                            \
-    do                                                                                             \
-    {                                                                                              \
-        const auto s_ = (x);                                                                       \
-        if (s_ != CUBLAS_STATUS_SUCCESS) qnpeps::set_err(QNPEPS_ERR_CUDA);                         \
-    } while (0)
-
-#define CUSOLVER_CHECK(x)                                                                          \
-    do                                                                                             \
-    {                                                                                              \
-        const auto s_ = (x);                                                                       \
-        if (s_ != CUSOLVER_STATUS_SUCCESS) qnpeps::set_err(QNPEPS_ERR_CUDA);                       \
-    } while (0)
-
-#define CUDA_NOCHECK(x)                                                                            \
-    do                                                                                             \
-    {                                                                                              \
-        (void) (x);                                                                                \
-    } while (0)
 
 namespace qnpeps
 {
-static_assert(sizeof(cf) == sizeof(cuFloatComplex));
-static_assert(alignof(cf) == alignof(cuFloatComplex));
+static_assert(sizeof(cf32) == sizeof(cuFloatComplex));
 
 inline constexpr u32 k_threads_per_block{256};
 inline constexpr i64 k_max_blocks{4096};
@@ -145,46 +86,28 @@ template <class T>
     return static_cast<i64>(i) * (1 + n);
 }
 
-[[nodiscard]] inline auto cu_cast(const cf* p) noexcept -> const cuFloatComplex*
+template <typename T>
+__global__ auto cu_set_constant(T* output, T value) -> void
 {
-    return reinterpret_cast<const cuFloatComplex*>(p);
-}
-[[nodiscard]] inline auto cu_cast(cf* p) noexcept -> cuFloatComplex*
-{
-    return reinterpret_cast<cuFloatComplex*>(p);
-}
-[[nodiscard]] inline auto cu_cast(cf** p) noexcept -> cuFloatComplex**
-{
-    return reinterpret_cast<cuFloatComplex**>(p);
-}
-[[nodiscard]] inline auto cu_cast(cf* const* p) noexcept -> cuFloatComplex* const*
-{
-    return reinterpret_cast<cuFloatComplex* const*>(p);
-}
-[[nodiscard]] inline auto cu_cast(const cf* const* p) noexcept -> const cuFloatComplex* const*
-{
-    return reinterpret_cast<const cuFloatComplex* const*>(p);
-}
-
-[[nodiscard]] inline auto cf_cast(cuFloatComplex* p) noexcept -> cf*
-{
-    return reinterpret_cast<cf*>(p);
-}
-[[nodiscard]] inline auto cf_cast(const cuFloatComplex* p) noexcept -> const cf*
-{
-    return reinterpret_cast<const cf*>(p);
+    *output = value;
 }
 
 template <typename T>
-inline auto copy_h2d_async(T* dst, const T* src, usize count, cudaStream_t stream) -> void
+inline auto copy_h2d_async(T* destination, const T* source, usize count, cudaStream_t stream)
+    -> void
 {
-    CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(T), cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(
+        cudaMemcpyAsync(destination, source, count * sizeof(T), cudaMemcpyHostToDevice, stream)
+    );
 }
 
 template <typename T>
-inline auto copy_d2h_async(T* dst, const T* src, usize count, cudaStream_t stream) -> void
+inline auto copy_d2h_async(T* destination, const T* source, usize count, cudaStream_t stream)
+    -> void
 {
-    CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(T), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(
+        cudaMemcpyAsync(destination, source, count * sizeof(T), cudaMemcpyDeviceToHost, stream)
+    );
 }
 
 [[nodiscard]] inline auto instantiate_graph(cudaGraphExec_t& executable, cudaGraph_t graph)

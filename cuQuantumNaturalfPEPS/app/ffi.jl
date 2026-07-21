@@ -15,6 +15,7 @@ function ffi()::Nothing
     println("capi_version $(unsafe_string(FFI.capi_version()))")
 
     n_samples = 8
+    dim_batch = min(n_samples, MAX_BATCH_SIZE)
 
     device_peps = upload_peps(load_peps(grid_peps(LX, LY, DIM_BOND)))
     peps_data = device_peps.data
@@ -40,7 +41,7 @@ function ffi()::Nothing
     )
     @assert build_status == 0
 
-    scratch = CUDA.zeros(UInt8, FFI.sample_scratch_bytes(config))
+    scratch = CUDA.zeros(UInt8, FFI.sample_scratch_bytes(config, dim_batch))
     samples = CUDA.zeros(UInt8, FFI.sample_bytes(config, n_samples))
     log_prob_config = CUDA.zeros(Float64, n_samples)
     log_gauge = CUDA.zeros(Float64, n_samples)
@@ -57,7 +58,7 @@ function ffi()::Nothing
         log_gauge=raw_f64(log_gauge),
         n_samples=n_samples,
         batch_base=0,
-        dim_batch=0,
+        dim_batch,
         stream=stream,
     )
     @assert sample_status == 0

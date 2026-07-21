@@ -13,6 +13,9 @@ last_error_file()::Cstring = @ccall $(_sym(; name=:qnpeps_last_error_file))()::C
 
 last_error_line()::Cint = @ccall $(_sym(; name=:qnpeps_last_error_line))()::Cint
 
+last_error_message()::Cstring =
+    @ccall $(_sym(; name=:qnpeps_last_error_message))()::Cstring
+
 function ctx_create(config, out; stream)::Cint
     return @ccall $(_sym(; name=:qnpeps_ctx_create))(
         config::Ref{QnpepsConfig},
@@ -169,14 +172,18 @@ function sample_bytes(config, n_samples)::Int64
     return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
 end
 
-function sample_footprint_bytes(config, n_samples)::Int64
+function sample_footprint_bytes(config, n_samples, dim_batch)::Int64
     fn = _sym(; name=:qnpeps_sample_footprint_bytes)
-    return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
+    return @ccall $fn(
+        config::Ref{QnpepsConfig},
+        n_samples::UInt64,
+        dim_batch::UInt64,
+    )::Int64
 end
 
-function sample_scratch_bytes(config)::Int64
+function sample_scratch_bytes(config, dim_batch)::Int64
     fn = _sym(; name=:qnpeps_sample_scratch_bytes)
-    return @ccall $fn(config::Ref{QnpepsConfig})::Int64
+    return @ccall $fn(config::Ref{QnpepsConfig}, dim_batch::UInt64)::Int64
 end
 
 sampler_pool_release()::Nothing =

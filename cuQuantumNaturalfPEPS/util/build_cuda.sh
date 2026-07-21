@@ -1,15 +1,32 @@
 #!/usr/bin/env bash
+
+show_paths=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --show-path)
+            show_paths=1
+            ;;
+        *)
+            echo "[build_cuda.sh] unknown option: $1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
 CUDA_ARCHITECTURES="75;80;90"
 JOBS="${JOBS:-8}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-build_dir="${QNPEPS_CUDA_BUILD_DIR:-$root/cuda/build}"
+build_dir="$root/build/cuda"
 
 if [ -d /p/home ] && [ "${QNPEPS_ACTIVE_ROOT:-}" != "$root" ]; then
-    source "$root/activate.sh" || exit 1
-elif ! command -v cmake >/dev/null 2>&1 || ! command -v nvcc >/dev/null 2>&1; then
-    if [ -r "$root/activate.sh" ]; then
-        source "$root/activate.sh" || exit 1
-    fi
+    environment_args=()
+    [ "$show_paths" -eq 0 ] || environment_args+=(--show-path)
+    source "$root/util/environment.sh" "${environment_args[@]}" || exit 1
+elif ! command -v nvcc >/dev/null 2>&1; then
+    environment_args=()
+    [ "$show_paths" -eq 0 ] || environment_args+=(--show-path)
+    source "$root/util/environment.sh" "${environment_args[@]}" || exit 1
 fi
 if [ -d /p/home ] && [ "${QNPEPS_ACTIVE_ROOT:-}" != "$root" ]; then
     echo "[build_cuda.sh] cuQuantumNaturalfPEPS environment activation failed" >&2
@@ -30,7 +47,9 @@ if ! command -v nvcc >/dev/null 2>&1; then
 fi
 
 printf 'CMake: %s\n' "$(cmake --version | head -n 1)"
-printf 'CMake executable: %s\n' "$(readlink -f "$(command -v cmake)")"
+if [ "$show_paths" -eq 1 ]; then
+    printf 'Build PATH: %s\n' "$PATH"
+fi
 echo "CUDA build architectures: $CUDA_ARCHITECTURES"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -39,7 +58,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         printf '%s\n%s\n' "index, name, compute capability, driver" "$gpu_info" \
             | column -t -s,
     elif gpu_info="$(nvidia-smi -L 2>&1)"; then
-        echo "Nvidia GPUs:"
+        echo "NVIDIA GPUs:"
         printf '%s\n' "$gpu_info"
     else
         echo "NVIDIA GPUs: unavailable ($gpu_info)" >&2
@@ -53,9 +72,14 @@ cmake -S "$root/cuda" -B "$build_dir" \
 cmake --build "$build_dir" -j"$JOBS" || exit 1
 
 so="$build_dir/qnpeps.so"
-echo "$so"
-if ! version="$(strings "$so" | grep -m1 -E '^cuQuantumNaturalfPEPS [0-9.]+ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$')"; then
-    echo "[build_cuda.sh] Failed to find ABI version string in $so" >&2
+echo "Native library: build/cuda/qnpeps.so"
+if ! version="$(strings "$so" | grep -m1 -E '^cuQuantumNaturalfPEPS [0-9]+\.[0-9]+\.[0-9]+$')"; then
+    echo "[build_cuda.sh] failed to find version in $so" >&2
+    exit 1
+fi
+expected_version="$(<"$root/c_api_version.txt")"
+if [ "$version" != "cuQuantumNaturalfPEPS $expected_version" ]; then
+    echo "[build_cuda.sh] version mismatch: $version, expected $expected_version" >&2
     exit 1
 fi
 printf '%s\n' "$version"
@@ -78,7 +102,7 @@ while read -r name arrow path remainder; do
                 printf '  %s => not found\n' "$name" >&2
                 missing_cuda_library=1
             else
-                printf '  %s => %s\n' "$name" "$(readlink -f "$path")"
+                printf '  %s => %s\n' "$name" "$(basename "$(readlink -f "$path")")"
             fi
             ;;
     esac

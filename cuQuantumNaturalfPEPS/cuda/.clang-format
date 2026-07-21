@@ -32,6 +32,7 @@ AlwaysBreakAfterReturnType: None
 AlwaysBreakTemplateDeclarations: Yes
 BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeTernaryOperators: true
+PenaltyReturnTypeOnItsOwnLine: 1000
 
 SpaceBeforeParens: ControlStatements
 SpacesInParentheses: false

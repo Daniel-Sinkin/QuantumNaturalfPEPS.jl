@@ -1,6 +1,7 @@
 Manifest.toml
 /LocalPreferences.toml
 cuQuantumNaturalfPEPS/cuda/build*/
+cuQuantumNaturalfPEPS/build/
 *.so
 *.jld2
 examples/born_hist_*.csv

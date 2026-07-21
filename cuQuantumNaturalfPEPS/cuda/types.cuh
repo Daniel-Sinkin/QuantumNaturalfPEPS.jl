@@ -1,9 +1,10 @@
 #ifndef QNPEPS_TYPES_CUH
 #define QNPEPS_TYPES_CUH
 
-#include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cuComplex.h>
 
 namespace qnpeps
 {
@@ -19,6 +20,8 @@ using usize = std::size_t;
 
 using f32 = float;
 using f64 = double;
+using cf32 = std::complex<f32>;
+using cf64 = std::complex<f64>;
 
 [[nodiscard]] __host__ __device__ constexpr auto operator""_i32(unsigned long long value) -> i32
 {
@@ -48,18 +51,6 @@ using f64 = double;
 inline constexpr usize k_device_malloc_align{256};
 inline constexpr int k_max_batch_size{2048};
 
-struct alignas(8) cf
-{
-    f32 re;
-    f32 im;
-
-    [[nodiscard]] __host__ __device__ constexpr auto norm() const noexcept -> f32
-    {
-        return re * re + im * im;
-    }
-    [[nodiscard]] __host__ __device__ auto abs() const noexcept -> f32 { return sqrtf(norm()); }
-};
-
 struct Dims
 {
     i32 lx{};
@@ -80,31 +71,34 @@ struct Dims
 
 struct CuArray
 {
-    cf* p{};
+    cuFloatComplex* p{};
     i64 stride{};
 };
 
 struct CuArrayConst
 {
-    const cf* p{};
+    const cuFloatComplex* p{};
     i64 stride{};
 
     CuArrayConst() = default;
-    CuArrayConst(const cf* p_, i64 stride_) noexcept : p(p_), stride(stride_) {}
+    CuArrayConst(const cuFloatComplex* p_, i64 stride_) noexcept : p(p_), stride(stride_) {}
     CuArrayConst(const CuArray& buffer) noexcept : p(buffer.p), stride(buffer.stride) {}
 };
 
 class CuMatrix
 {
   public:
-    CuMatrix(cf* data, int rows, int cols) noexcept : data_(data), rows_(rows), cols_(cols) {}
-    [[nodiscard]] auto data() const noexcept -> cf* { return data_; }
+    CuMatrix(cuFloatComplex* data, int rows, int cols) noexcept
+        : data_(data), rows_(rows), cols_(cols)
+    {
+    }
+    [[nodiscard]] auto data() const noexcept -> cuFloatComplex* { return data_; }
     [[nodiscard]] auto rows() const noexcept -> int { return rows_; }
     [[nodiscard]] auto cols() const noexcept -> int { return cols_; }
     [[nodiscard]] auto ld() const noexcept -> int { return rows_; }
 
   private:
-    cf* data_{};
+    cuFloatComplex* data_{};
     int rows_{};
     int cols_{};
 };
@@ -112,18 +106,18 @@ class CuMatrix
 class CuMatrixConst
 {
   public:
-    CuMatrixConst(const cf* data, int rows, int cols) noexcept
+    CuMatrixConst(const cuFloatComplex* data, int rows, int cols) noexcept
         : data_(data), rows_(rows), cols_(cols)
     {
     }
     CuMatrixConst(const CuMatrix& m) noexcept : data_(m.data()), rows_(m.rows()), cols_(m.cols()) {}
-    [[nodiscard]] auto data() const noexcept -> const cf* { return data_; }
+    [[nodiscard]] auto data() const noexcept -> const cuFloatComplex* { return data_; }
     [[nodiscard]] auto rows() const noexcept -> int { return rows_; }
     [[nodiscard]] auto cols() const noexcept -> int { return cols_; }
     [[nodiscard]] auto ld() const noexcept -> int { return rows_; }
 
   private:
-    const cf* data_{};
+    const cuFloatComplex* data_{};
     int rows_{};
     int cols_{};
 };
@@ -132,7 +126,7 @@ class CuMatrixBatched
 {
   public:
     CuMatrixBatched() = default;
-    CuMatrixBatched(cf* data, i64 stride, int rows, int cols) noexcept
+    CuMatrixBatched(cuFloatComplex* data, i64 stride, int rows, int cols) noexcept
         : data_(data), stride_(stride), rows_(rows), cols_(cols)
     {
     }
@@ -140,14 +134,14 @@ class CuMatrixBatched
         : CuMatrixBatched(buffer.p, buffer.stride, rows, cols)
     {
     }
-    [[nodiscard]] auto data() const noexcept -> cf* { return data_; }
+    [[nodiscard]] auto data() const noexcept -> cuFloatComplex* { return data_; }
     [[nodiscard]] auto rows() const noexcept -> int { return rows_; }
     [[nodiscard]] auto cols() const noexcept -> int { return cols_; }
     [[nodiscard]] auto ld() const noexcept -> int { return rows_; }
     [[nodiscard]] auto stride() const noexcept -> i64 { return stride_; }
 
   private:
-    cf* data_{};
+    cuFloatComplex* data_{};
     i64 stride_{};
     int rows_{};
     int cols_{};
@@ -157,7 +151,7 @@ class CuMatrixConstBatched
 {
   public:
     CuMatrixConstBatched() = default;
-    CuMatrixConstBatched(const cf* data, i64 stride, int rows, int cols) noexcept
+    CuMatrixConstBatched(const cuFloatComplex* data, i64 stride, int rows, int cols) noexcept
         : data_(data), stride_(stride), rows_(rows), cols_(cols)
     {
     }
@@ -173,14 +167,14 @@ class CuMatrixConstBatched
         : data_(m.data()), stride_(m.stride()), rows_(m.rows()), cols_(m.cols())
     {
     }
-    [[nodiscard]] auto data() const noexcept -> const cf* { return data_; }
+    [[nodiscard]] auto data() const noexcept -> const cuFloatComplex* { return data_; }
     [[nodiscard]] auto rows() const noexcept -> int { return rows_; }
     [[nodiscard]] auto cols() const noexcept -> int { return cols_; }
     [[nodiscard]] auto ld() const noexcept -> int { return rows_; }
     [[nodiscard]] auto stride() const noexcept -> i64 { return stride_; }
 
   private:
-    const cf* data_{};
+    const cuFloatComplex* data_{};
     i64 stride_{};
     int rows_{};
     int cols_{};

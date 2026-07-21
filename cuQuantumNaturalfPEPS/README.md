@@ -1,83 +1,49 @@
 # cuQuantumNaturalfPEPS.jl
-## Setup
-The following command sets up the project and the CUDA dependencies. This has to be done once and can take a bit of time.
+
+## Setup and activation
+
+To use the library on the cluster you need to compile the newest version and activate the required modules.
+
+This is done via the same script, which detects if there is an up to date compiled version or not. Note that
+this fused the previously used activation.sh and setup.sh into one script, so you just have use it independent
+of if the library is compiled or not.
+
+The compiled .so library will work on compute capabilities:
+ * 7.5 which is JURECA login node
+ * 8.0 which is the A100 generation (JURECA compute)
+ * 9.0 which is the H100/200 generation (Jupiter compute).
+
+This library was never tested on blackwell cards (B200, compute capability 10.0)
+
+Make sure your are in the repo root and simply run this command. 
+It will detect whether you need to recompile or just active the modules.
 ```bash
 source cuQuantumNaturalfPEPS/setup.sh
 ```
-
-You should see something akin to this (Visible NVIDIA GPUs of course is different on Login and Compute Nodes):
-```
-cuQuantumNaturalfPEPS JURECA toolchain
-  Host: jrlogin04.jureca
-  Julia: julia version 1.12.3
-  Julia executable: /p/software/fs/jurecadc/stages/2026/software/Julia/1.12.3-gpsmpi-2025b/bin/julia
-  CUDA compiler: Build cuda_13.0.r13.0/compiler.36260728_0
-  CUDA compiler executable: /p/software/fs/jurecadc/stages/2026/software/CUDA/13/bin/nvcc
-  CUDA_HOME: /p/software/default/stages/2026/software/CUDA/13
-  CUDA toolkit libraries: /p/software/fs/jurecadc/stages/2026/software/CUDA/13/targets/x86_64-linux/lib
-  JULIA_DEPOT_PATH: /p/scratch/cslai/sinkin1/julia-peps-cuda
-  QNPEPS_ACTIVE_ROOT: /p/home/jusers/sinkin1/jureca/QuantumNaturalfPEPS.jl/cuQuantumNaturalfPEPS
-  PATH: ...
-  LD_LIBRARY_PATH: ...
-  LD_PRELOAD: <unset>
-  Visible NVIDIA GPUs (index, name, compute capability, driver):
-    0, Quadro RTX 8000, 7.5, 595.71.05
-    1, Quadro RTX 8000, 7.5, 595.71.05
-...
-  Activating project at `~/QuantumNaturalfPEPS.jl`
-  Activating project at `~/QuantumNaturalfPEPS.jl/cuQuantumNaturalfPEPS`
-...
-Building qnpeps.so
-CMake: cmake version 4.0.3
-CMake executable: /p/software/fs/jurecadc/stages/2026/software/CMake/4.0.3-GCCcore-14.3.0/bin/cmake
-CUDA build architectures: 75;80;90
-CUDA_VISIBLE_DEVICES: <unset>
-NVIDIA GPUs (index, name, compute capability, driver):
-0, Quadro RTX 8000, 7.5, 595.71.05
-1, Quadro RTX 8000, 7.5, 595.71.05
-...
-cuQuantumNaturalfPEPS 0.0.4 (2026-07-17)
-Native CUDA images: cubin=sm_75,sm_80,sm_90 ptx=sm_75,sm_80,sm_90
-Resolved CUDA library dependencies:
-  libcudart.so.13 => .../libcudart.so.13.0.48
-  libcublas.so.13 => .../libcublas.so.13.0.0.19
-  libcusolver.so.12 => .../libcusolver.so.12.0.3.29
-  libcurand.so.10 => .../libcurand.so.10.4.0.35
-  libcublasLt.so.13 => .../libcublasLt.so.13.0.0.19
-  libcusparse.so.12 => .../libcusparse.so.12.6.2.49
-  libnvJitLink.so.13 => .../libnvJitLink.so.13.0.39
-Inspecting Julia and native CUDA runtime
-cuQuantumNaturalfPEPS runtime
-  native library: .../cuda/build/qnpeps.so
-  loaded C API: cuQuantumNaturalfPEPS 0.0.4 (2026-07-17)
-CUDA toolchain:
-- runtime 13.0, local installation
-- driver 595.71.5 for 13.3
-- compiler 13.3, artifact installation
-CUDA libraries:
-- CUBLAS: 13.0.0
-- CUSOLVER: 12.0.3
-- CUSPARSE: 12.6.2
-...
-Loaded native library paths:
-- .../CUDA/13/lib/libcublas.so => .../libcublas.so.13.0.0.19
-- .../CUDA/13/lib/libcusolver.so => .../libcusolver.so.12.0.3.29
-- .../Julia/1.12.3-gpsmpi-2025b/lib/julia/libcurl.so.4 => .../libcurl.so.4.8.0
-```
-
-By default the julia packaging information is placed at `$SCRATCH/$USER/julia-peps-cuda`. You can
-set the `QNPEPS_JULIA_DEPOT=...` environment variable beforehand to change that location.
-
-The library always contains native CUDA code for compute capabilities 7.5, 8.0, and 9.0.
-
-Once that is done every new shell (terminal) needs to run this once to activate the modules and dependencies
+If you want to force a recompilation you can use
 ```bash
-source cuQuantumNaturalfPEPS/activate.sh
+source cuQuantumNaturalfPEPS/setup.sh --force
 ```
-
-Successful activation sets `QNPEPS_ACTIVE_ROOT` to the package directory.
+By default the $PATH is not printed as it is a lot of text, if you want it to show then use
 ```bash
-test "${QNPEPS_ACTIVE_ROOT:-}" = "$(cd cuQuantumNaturalfPEPS && pwd)"
+source cuQuantumNaturalfPEPS/setup.sh --show-path
+```
+If you run into any compilation issues please re-run it with --show-path and provide the entire terminal output
+in the corresponding Github issue.
+
+Julia tends to use a lot of space and create a lot of small files. This can cause problems on the cluster
+as the there are storage and filecount limits, so by default the temporary files (packages, precompilation data and so on)
+are written on  the users scratch space at `$SCRATCH/$USER/julia-peps-cuda` . If you want to change this then simply set
+the `QNPEPS_JULIA_DEPOT` environment variable to that filepath before running the setup.
+
+Note that you must use `source` to activate the modules because those are only valid for that shell, in particular
+you must use the library in the same shell that you activated the library in. I don't think there is a way around 
+this with the way that the module loading is handled on the JSC cluster.
+
+If the activation is successful, then the `QNPEPS_ACTIVE_ROOT` environment variable is set. You can check if the
+environment for this checkout is active by running this command.
+```bash
+source cuQuantumNaturalfPEPS/setup.sh --check
 ```
 
 ## Running the examples

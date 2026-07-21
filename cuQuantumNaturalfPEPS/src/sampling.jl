@@ -17,7 +17,7 @@ function _unpack_samples(
         config_matrix = Matrix{UInt8}(undef, lx, ly)
         base = (sample - 1) * lx * ly
         for row in 1:lx, col in 1:ly
-            config_matrix[row, col] = bytes[base+(row-1)*ly+col]
+            config_matrix[row, col] = bytes[base + (row-1) * ly + col]
         end
         out[sample] = config_matrix
     end
@@ -30,46 +30,45 @@ function _sample_all(
     n_samples::Integer;
     gpus::Integer,
     seed::Integer,
+    sampling_mode,
+    chi_c::Integer,
+    batch_size::Integer,
 )::SampleResult
-    config = _cfg_of(dlenv; seed=seed)
+    n_samples >= 0 || throw(ArgumentError("n_samples must be nonnegative"))
+    if batch_size < 0
+        throw(ArgumentError("batch_size must be nonnegative"))
+    end
+    if batch_size > MAX_BATCH_SIZE
+        throw(
+            ArgumentError(
+                "batch_size must not exceed $MAX_BATCH_SIZE (batch_size=$batch_size)",
+            ),
+        )
+    end
+    dim_batch = batch_size == 0 ? max(1, min(n_samples, MAX_BATCH_SIZE)) : batch_size
+    config = _cfg_of(dlenv; seed, sampling_mode, chi_c)
     samples = CUDA.zeros(UInt8, _sample_bytes(; config, n_samples))
     log_prob_config = CUDA.zeros(Float64, n_samples)
     log_gauge = CUDA.zeros(Float64, n_samples)
-    if gpus > 1
-        GC.@preserve device_peps dlenv samples log_prob_config log_gauge begin
-            _ffi_sample(;
-                config,
-                peps=pointer(device_peps.data),
-                dlenv=pointer(dlenv.data),
-                gpus,
-                scratch=CuPtr{Cvoid}(0),
-                scratch_bytes=0,
-                samples=pointer(samples),
-                log_prob_config=pointer(log_prob_config),
-                log_gauge=pointer(log_gauge),
-                n_samples,
-                batch_base=0,
-                dim_batch=0,
-            )
-        end
-    else
-        scratch = CUDA.zeros(UInt8, _scratch_bytes(; config))
-        GC.@preserve device_peps dlenv samples log_prob_config log_gauge scratch begin
-            _ffi_sample(;
-                config,
-                peps=pointer(device_peps.data),
-                dlenv=pointer(dlenv.data),
-                gpus=1,
-                scratch=pointer(scratch),
-                scratch_bytes=length(scratch),
-                samples=pointer(samples),
-                log_prob_config=pointer(log_prob_config),
-                log_gauge=pointer(log_gauge),
-                n_samples,
-                batch_base=0,
-                dim_batch=0,
-            )
-        end
+    is_multigpu = gpus > 1
+    scratch_bytes = is_multigpu ? 0 : _scratch_bytes(; config, dim_batch)
+    scratch = CUDA.zeros(UInt8, scratch_bytes)
+    scratch_pointer = is_multigpu ? CuPtr{Cvoid}(0) : pointer(scratch)
+    GC.@preserve device_peps dlenv samples log_prob_config log_gauge scratch begin
+        _ffi_sample(;
+            config,
+            peps=pointer(device_peps.data),
+            dlenv=pointer(dlenv.data),
+            gpus=is_multigpu ? gpus : 1,
+            scratch=scratch_pointer,
+            scratch_bytes,
+            samples=pointer(samples),
+            log_prob_config=pointer(log_prob_config),
+            log_gauge=pointer(log_gauge),
+            n_samples,
+            batch_base=0,
+            dim_batch,
+        )
     end
     CUDA.synchronize()
     return (
@@ -85,6 +84,9 @@ function sample_peps(
     n_samples::Integer;
     gpus::Integer=CUDA.ndevices(),
     seed::Integer=0,
+    sampling_mode=:fast,
+    chi_c::Integer=3 * dlenv.dim_bond,
+    batch_size::Integer=0,
 )::SampleResult
     device_peps = peps isa Peps ? upload_peps(peps) : peps
     lx_match = device_peps.lx == dlenv.lx
@@ -93,14 +95,18 @@ function sample_peps(
     dim_bond_match = device_peps.dim_bond == dlenv.dim_bond
     dims_match = lx_match && ly_match && dim_phys_match && dim_bond_match
     if !dims_match
-        peps_desc =
-            "$(device_peps.lx)x$(device_peps.ly), " *
-            "dim_phys=$(device_peps.dim_phys), dim_bond=$(device_peps.dim_bond)"
-        dlenv_desc =
-            "$(dlenv.lx)x$(dlenv.ly), " * "dim_phys=$(dlenv.dim_phys), dim_bond=$(dlenv.dim_bond)"
-        throw(PepsError("peps ($peps_desc) and dlenv ($dlenv_desc) disagree"))
+        throw(DimensionMismatch("$device_peps and $dlenv disagree"))
     end
-    return _sample_all(device_peps, dlenv, n_samples; gpus, seed)
+    return _sample_all(
+        device_peps,
+        dlenv,
+        n_samples;
+        gpus,
+        seed,
+        sampling_mode,
+        chi_c,
+        batch_size,
+    )
 end
 
 function sample_peps!(
@@ -111,12 +117,17 @@ function sample_peps!(
     seed::Integer=0,
     log_prob_config=nothing,
     log_gauge=nothing,
+    batch_size::Integer=0,
 )::CuArray{UInt8}
+    0 <= batch_size <= MAX_BATCH_SIZE ||
+        throw(ArgumentError("batch_size must be between 0 and $MAX_BATCH_SIZE"))
     seeded = _reseed(config, seed)
     n_samples = length(samples) ÷ (Int(seeded.lx) * Int(seeded.ly))
-    scratch = CUDA.zeros(UInt8, _scratch_bytes(; config=seeded))
-    log_prob_config_ptr = log_prob_config === nothing ? CuPtr{Float64}(0) : pointer(log_prob_config)
-    log_gauge_ptr = log_gauge === nothing ? CuPtr{Float64}(0) : pointer(log_gauge)
+    dim_batch = batch_size == 0 ? max(1, min(n_samples, MAX_BATCH_SIZE)) : batch_size
+    scratch = CUDA.zeros(UInt8, _scratch_bytes(; config=seeded, dim_batch))
+    log_prob_config_ptr =
+        log_prob_config !== nothing ? pointer(log_prob_config) : CuPtr{Float64}(0)
+    log_gauge_ptr = log_gauge !== nothing ? pointer(log_gauge) : CuPtr{Float64}(0)
     GC.@preserve peps_data dlenv_data samples scratch log_prob_config log_gauge begin
         _ffi_sample(;
             config=seeded,
@@ -130,7 +141,7 @@ function sample_peps!(
             log_gauge=log_gauge_ptr,
             n_samples,
             batch_base=0,
-            dim_batch=0,
+            dim_batch,
         )
     end
     return samples
