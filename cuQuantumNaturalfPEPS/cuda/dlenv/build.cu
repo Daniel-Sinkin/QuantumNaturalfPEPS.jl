@@ -2,8 +2,9 @@
 #include "cuda_utils.cuh"
 #include "defer.cuh"
 #include "dlenv/build.cuh"
-#include "dtensor.cuh"
 #include "linalg.cuh"
+#include "peps.cuh"
+#include "permutation.cuh"
 #include "qnpeps_ctx.cuh"
 
 #include <cmath>
@@ -13,7 +14,7 @@
 #include <cuda_runtime.h>
 #include <cusolverDn.h>
 #include <map>
-#include <random>
+#include <span>
 #include <vector>
 
 namespace qnpeps::dlenv
@@ -21,17 +22,14 @@ namespace qnpeps::dlenv
 using PepsRow = std::vector<DeviceTensor>;
 using DlEnvRow = std::vector<DeviceTensor>;
 
-__global__ auto cu_dl_set_one(cuFloatComplex* p) -> void
+static auto init_dl_units(
+    Linalg& la, cuFloatComplex* unit_environment, cuFloatComplex* initial_factor
+) -> void
 {
-    p->x = 1.0f;
-    p->y = 0.0f;
-}
-
-static auto init_dl_units(Linalg& la, cf* triv, cf* scalar_r) -> void
-{
-    cu_dl_set_one<<<1, 1, 0, la.stream()>>>(cu_cast(triv));
+    constexpr cuFloatComplex one{1.0f, 0.0f};
+    cu_set_constant<<<1, 1, 0, la.stream()>>>(unit_environment, one);
     CUDA_CHECK(cudaGetLastError());
-    cu_dl_set_one<<<1, 1, 0, la.stream()>>>(cu_cast(scalar_r));
+    cu_set_constant<<<1, 1, 0, la.stream()>>>(initial_factor, one);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -90,42 +88,50 @@ static auto pack_peps_row(
     const Dims& dims,
     int row_up,
     int row_down,
-    const cuFloatComplex* src_base,
-    i64& src_off,
+    const cuFloatComplex* source_base,
+    i64& source_offset,
     cuFloatComplex* packed_base,
-    i64& packed_off,
-    std::vector<DeviceTensor>& out_row
+    i64& packed_offset,
+    std::vector<DeviceTensor>& output_row,
+    cudaStream_t stream
 ) -> void
 {
-    const auto reversed = Permutation::reverse(5);
+    const auto reversed = Permutation::reverse(k_peps_site_rank);
     for (auto col = 0; col < dims.ly; ++col)
     {
-        const auto src_shape = peps_site_shape(dims, row_up, row_down, col);
-        const auto nsite = static_cast<i64>(src_shape.num_elems());
-        const DeviceTensor src{src_shape, const_cast<cuFloatComplex*>(src_base + src_off)};
-        permute_axes(src, reversed, false, packed_base + packed_off);
-        out_row[static_cast<usize>(col)] =
-            DeviceTensor{reversed.apply(src_shape), packed_base + packed_off};
-        src_off += nsite;
-        packed_off += nsite;
+        const auto source_shape = peps_site_shape(dims, row_up, row_down, col);
+        const auto site_elements = static_cast<i64>(source_shape.num_elems());
+        const DeviceTensor source{
+            source_shape, const_cast<cuFloatComplex*>(source_base + source_offset)
+        };
+        permute_axes(source, reversed, false, packed_base + packed_offset, stream);
+        output_row[static_cast<usize>(col)] =
+            DeviceTensor{reversed.apply(source_shape), packed_base + packed_offset};
+        source_offset += site_elements;
+        packed_offset += site_elements;
     }
 }
 
-auto rf_omega(qnpeps_ctx& ctx, int n, int k) -> cf*
+auto rangefinder_omega(qnpeps_ctx::DlBuild& dl, int cols, int rank) -> cuFloatComplex*
 {
-    const auto key = static_cast<i64>(n) * 1000000 + k;
-    auto it = ctx.dl.rf_omega.find(key);
-    if (it != ctx.dl.rf_omega.end()) return it->second;
-    std::normal_distribution<f32> gauss(0.0f, 1.0f);
-    std::vector<cf> host{};
-    host.resize(static_cast<usize>(n) * static_cast<usize>(k));
-    for (auto& z : host)
-        z = cf{gauss(ctx.dl.rf_rng), gauss(ctx.dl.rf_rng)};
-    cf* d{};
-    CUDA_CHECK(cudaMalloc(&d, host.size() * sizeof(cf)));
-    CUDA_CHECK(cudaMemcpy(d, host.data(), host.size() * sizeof(cf), cudaMemcpyHostToDevice));
-    ctx.dl.rf_omega[key] = d;
-    return d;
+    const auto key = std::pair{cols, rank};
+    if (const auto it = dl.omegas.find(key); it != dl.omegas.end())
+    {
+        return it->second;
+    }
+    std::vector<cuFloatComplex> host_omega{};
+    host_omega.resize(static_cast<usize>(cols) * static_cast<usize>(rank));
+    dl.rangefinder_rng.fill_complex_normal(std::span{host_omega});
+    cuFloatComplex* device_omega{};
+    CUDA_CHECK(cudaMalloc(&device_omega, host_omega.size() * sizeof(cuFloatComplex)));
+    CUDA_CHECK(cudaMemcpy(
+        device_omega,
+        host_omega.data(),
+        host_omega.size() * sizeof(cuFloatComplex),
+        cudaMemcpyHostToDevice
+    ));
+    dl.omegas[key] = device_omega;
+    return device_omega;
 }
 
 auto set_dl_capturing(qnpeps_ctx& ctx, bool on) -> void
@@ -135,64 +141,69 @@ auto set_dl_capturing(qnpeps_ctx& ctx, bool on) -> void
 
 auto ensure_dlenv_views(qnpeps_ctx& ctx) -> void
 {
-    if (ctx.dlenv.views_allocated) return;
+    auto& dlenv = ctx.dlenv;
+    if (dlenv.views_allocated) return;
     const auto num_env_rows = static_cast<usize>(ctx.cfg.lx - 1);
     const auto num_cols = static_cast<usize>(ctx.cfg.ly);
-    ctx.dlenv.env_off.assign(num_env_rows, std::vector<i64>(num_cols, 0));
-    ctx.dlenv.sigma_off.assign(num_env_rows, std::vector<i64>(num_cols, 0));
-    i64 cursor{};
-    for (auto row = 0_uz; row < num_env_rows; ++row)
+    dlenv.env_off.assign(num_env_rows, std::vector<i64>(num_cols, 0));
+    dlenv.sigma_off.assign(num_env_rows, std::vector<i64>(num_cols, 0));
+    const auto total_env = [&]
     {
-        for (auto col = 0_uz; col < num_cols; ++col)
+        i64 out{};
+        for (auto row = 0_uz; row < num_env_rows; ++row)
         {
-            const auto site = read_site_dims(ctx.dlenv.dims.data(), row * num_cols + col);
-            ctx.dlenv.env_off[row][col] = cursor;
-            cursor += site.num_elems();
+            for (auto col = 0_uz; col < num_cols; ++col)
+            {
+                const auto site = read_site_dims(dlenv.dims.data(), row * num_cols + col);
+                dlenv.env_off[row][col] = out;
+                out += site.num_elems();
+            }
         }
-    }
-    const i64 total_env{cursor};
+        return out;
+    }();
+
     for (auto row = 0_uz; row < num_env_rows; ++row)
         for (auto col = 0_uz; col < num_cols; ++col)
-            ctx.dlenv.sigma_off[row][col] = total_env + ctx.dlenv.env_off[row][col];
-    ctx.dlenv.views_elems = 2 * total_env;
-    if (not ctx.dlenv.views[0])
+            dlenv.sigma_off[row][col] = total_env + dlenv.env_off[row][col];
+
+    dlenv.views_elems = static_cast<i64>(k_sampling_layout_count) * total_env;
+    for (auto& view : dlenv.views)
+    {
+        if (view) continue;
         CUDA_CHECK(cudaMalloc(
-            reinterpret_cast<void**>(&ctx.dlenv.views[0]),
-            static_cast<usize>(ctx.dlenv.views_elems) * sizeof(cf)
+            reinterpret_cast<void**>(&view),
+            static_cast<usize>(dlenv.views_elems) * sizeof(cuFloatComplex)
         ));
-    if (err_state() != QNPEPS_OK) return;
-    if (not ctx.dlenv.views[1])
-        CUDA_CHECK(cudaMalloc(
-            reinterpret_cast<void**>(&ctx.dlenv.views[1]),
-            static_cast<usize>(ctx.dlenv.views_elems) * sizeof(cf)
-        ));
-    if (err_state() != QNPEPS_OK) return;
-    ctx.dlenv.views_allocated = true;
+        if (err_state() != QNPEPS_OK) return;
+    }
+    dlenv.views_allocated = true;
 }
 
-auto materialize_dlenv_views(qnpeps_ctx& ctx, const cf* raw_values, cf* views_out) -> void
+auto materialize_dlenv_views(
+    qnpeps_ctx& ctx, const cuFloatComplex* raw_values, cuFloatComplex* views_out
+) -> void
 {
     const auto num_env_rows = static_cast<usize>(ctx.cfg.lx - 1);
     const auto num_cols = static_cast<usize>(ctx.cfg.ly);
-    set_stream(ctx.linalg.stream());
-    const auto* base = cu_cast(raw_values);
-    i64 raw_off{};
+    const auto stream = ctx.linalg().stream();
+    const auto* device_raw_values = raw_values;
+    i64 raw_offset{};
     for (auto row = 0_uz; row < num_env_rows; ++row)
     {
         for (auto col = 0_uz; col < num_cols; ++col)
         {
-            const auto d = read_site_dims(ctx.dlenv.dims.data(), row * num_cols + col);
+            const auto site_dims = read_site_dims(ctx.dlenv.dims.data(), row * num_cols + col);
             DeviceTensor site{
-                {d.bond_left, d.ket, d.bra, d.bond_right},
-                const_cast<cuFloatComplex*>(base + raw_off)
+                {site_dims.bond_left, site_dims.ket, site_dims.bra, site_dims.bond_right},
+                const_cast<cuFloatComplex*>(device_raw_values + raw_offset)
             };
             permute_axes(
-                site, {1, 3, 2, 0}, false, cu_cast(views_out + ctx.dlenv.env_off[row][col])
+                site, {1, 3, 2, 0}, false, views_out + ctx.dlenv.env_off[row][col], stream
             );
             permute_axes(
-                site, {1, 0, 2, 3}, false, cu_cast(views_out + ctx.dlenv.sigma_off[row][col])
+                site, {1, 0, 2, 3}, false, views_out + ctx.dlenv.sigma_off[row][col], stream
             );
-            raw_off += static_cast<i64>(site.num_elems());
+            raw_offset += static_cast<i64>(site.num_elems());
         }
     }
 }
@@ -214,8 +225,9 @@ struct DlRangefinderArgs
     int* fail_flag{};
 };
 
-static auto
-rangefinder(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DlRangefinderArgs& args) -> void
+static auto rangefinder(
+    qnpeps_ctx::DlBuild& dl, Linalg& la, const Arenas& ar, const DlRangefinderArgs& args
+) -> void
 {
     const auto& input = args.input;
     const int rows{args.rows};
@@ -229,111 +241,87 @@ rangefinder(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const DlRangefinderAr
     if (rank > cols) rank = cols;
     if (rank < 1) rank = 1;
     *args.rank_out = rank;
-    const CuMatrix m_ac{cf_cast(input.d), rows, cols};
+    const CuMatrix input_matrix{input.d, rows, cols};
 
-    auto Y = alloc(ar.scratch, {rows, rank});
-    DEFER([&] { free(Y); });
-    auto Z = alloc(ar.scratch, {cols, rank});
-    DEFER([&] { free(Z); });
-    auto* omega = rf_omega(ctx, cols, rank);
-    const CuMatrix m_omega{omega, cols, rank};
-    const CuMatrix m_y{cf_cast(Y.d), rows, rank};
-    const CuMatrix m_z{cf_cast(Z.d), cols, rank};
-    la.matmul(m_ac, m_omega, m_y);
-    for (auto it = 0; it < 2; ++it)
+    auto sketch = alloc(ar.scratch, {rows, rank});
+    DEFER([&] { free(sketch); });
+    auto projection = alloc(ar.scratch, {cols, rank});
+    DEFER([&] { free(projection); });
+    auto* omega = rangefinder_omega(dl, cols, rank);
+    const CuMatrix omega_matrix{omega, cols, rank};
+    const CuMatrix sketch_matrix{sketch.d, rows, rank};
+    const CuMatrix projection_matrix{projection.d, cols, rank};
+    la.matmul(input_matrix, omega_matrix, sketch_matrix);
+    for (auto iteration = 0; iteration < 2; ++iteration)
     {
-        la.matmul_left_adj(m_ac, m_y, m_z);
-        la.matmul(m_ac, m_z, m_y);
+        la.matmul_left_adj(input_matrix, sketch_matrix, projection_matrix);
+        la.matmul(input_matrix, projection_matrix, sketch_matrix);
     }
 
-    const auto qr_layout = qr_scratch(la, m_y);
-    void* qr_scratch_mem{ar.scratch.take<char>(qr_layout.total())};
-    qr(la, m_y, qr_scratch_mem, qr_layout);
+    const auto qr_layout = la.qr_scratch(sketch_matrix);
+    void* qr_scratch{ar.scratch.take<char>(qr_layout.total())};
+    la.qr(sketch_matrix, qr_scratch, qr_layout);
     if (fail_flag)
     {
-        const auto* qr_status = byte_offset<int>(qr_scratch_mem, qr_layout.reflector_bytes);
-        cu_or_status<<<1, 1, 0, stream()>>>(qr_status, fail_flag);
+        const auto* qr_status = byte_offset<int>(qr_scratch, qr_layout.reflector_bytes);
+        cu_or_status<<<1, 1, 0, la.stream()>>>(qr_status, fail_flag);
         CUDA_CHECK(cudaGetLastError());
     }
 
     q = alloc(ar.known, {rows, rank});
     CUDA_CHECK(cudaMemcpyAsync(
         q.d,
-        Y.d,
+        sketch.d,
         static_cast<usize>(rows) * static_cast<usize>(rank) * sizeof(cuFloatComplex),
         cudaMemcpyDeviceToDevice,
         la.stream()
     ));
     r = alloc(ar.scratch, {rank, cols});
-    la.matmul_left_adj(m_y, m_ac, CuMatrix{cf_cast(r.d), rank, cols});
+    la.matmul_left_adj(sketch_matrix, input_matrix, CuMatrix{r.d, rank, cols});
 }
 
-__global__ auto
-cu_absmax_inverse(const cuFloatComplex* r, i64 n, f32* device_inverse_scale, f64* device_scale)
-    -> void
+__global__ auto cu_absmax_inverse(
+    const cuFloatComplex* factor, i64 element_count, f32* device_inverse_scale, f64* device_scale
+) -> void
 {
-    __shared__ f64 sh[k_tree_reduce_threads];
-    f64 local{0.0};
+    __shared__ f64 shared_max[k_tree_reduce_threads];
+    f64 local_max{0.0};
 
-    // There are k_tree_reduce_threads many threads, the first (threadidx.x = 0) thread
-    // is responsible for r[0], r[256], r[512], ...
-    // and locally computes
-    //   local = 0.0;
-    //   local = max(local, r[0]), local = max(local, r[256]), ...
-    // so that at the end local = max({256 * i : 0 <= i, 256 * i  < n}) and that value is
-    // writte into sh[0] <- shared memory visible to all threads
-    // Similiarly for the jth thread (threadidx.x = j)
-    // it computes max({j + 256 * i : 0 <= i, j + 256 * i< n}) and that value is
-    // written into sh[j]
-    for (auto i = threadIdx.x; i < n; i += blockDim.x)
+    for (auto index = threadIdx.x; index < element_count; index += blockDim.x)
     {
-        // i = threadIdx.x + iteration * blockDim.x
-        // i = j, j + 256, j + 512, ...
-        const f64 abs{fabs(static_cast<f64>(r[i].x)) + fabs(static_cast<f64>(r[i].y))};
-        if (abs > local) local = abs;
+        const auto component_abs_sum =
+            fabs(static_cast<f64>(factor[index].x)) + fabs(static_cast<f64>(factor[index].y));
+        if (component_abs_sum > local_max) local_max = component_abs_sum;
     }
-    sh[threadIdx.x] = local;  // Recall that all 256 threads are runnign in parallel
-    __syncthreads();          // Blocks until all threads have reached this point
+    shared_max[threadIdx.x] = local_max;
+    __syncthreads();
 
-    // Tree Reduce the 256 values into one
-    // [0, 1, ..., 127, 128, ..., 255], 256 = blockDim.x
-    // s = blockDim.x / 2 = 128, threadIdx.x < s makes sure only the first half of the
-    // threads do any work in the first iteration. The jth thread (0 <= j <= 127) is
-    // responsible for the values sh[j], sh[j + s] = sh[j + 128], meaning the threads look at
-    // {0, 128}, {1, 129}, {2, 130}, ..., {127, 255} and check if the right value is larger.
-
-    // Then they copy it over into the left value:
-    // r[0] = max(r[0], r[128]) <- thread 0
-    // r[1] = max(r[1], r[128]) <- thread 1
-    // ...
-    // r[127] = max(r[127], r[255]) <- thread 127
-
-    // Recall that
-
-    for (auto s = blockDim.x / 2; s > 0; s >>= 1)
+    for (auto offset = blockDim.x / 2; offset > 0; offset >>= 1)
     {
-        if (threadIdx.x < s and sh[threadIdx.x + s] > sh[threadIdx.x])
+        if (threadIdx.x < offset and shared_max[threadIdx.x + offset] > shared_max[threadIdx.x])
         {
-            sh[threadIdx.x] = sh[threadIdx.x + s];
+            shared_max[threadIdx.x] = shared_max[threadIdx.x + offset];
         }
         __syncthreads();
     }
     if (threadIdx.x == 0)
     {
-        const f64 s{sh[0]};
-        *device_scale = s;
-        const bool ok{(s > 0.0) and isfinite(s)};
-        *device_inverse_scale = ok ? static_cast<f32>(1.0 / s) : 1.0f;
+        const auto scale = shared_max[0];
+        *device_scale = scale;
+        const auto valid_scale = (scale > 0.0) and isfinite(scale);
+        *device_inverse_scale = valid_scale ? static_cast<f32>(1.0 / scale) : 1.0f;
     }
 }
 
-__global__ auto cu_scale_inv(cuFloatComplex* r, i64 n, const f32* device_inverse_scale) -> void
+__global__ auto cu_apply_inverse_scale(
+    cuFloatComplex* factor, i64 element_count, const f32* device_inverse_scale
+) -> void
 {
-    const f32 inv{*device_inverse_scale};
-    for (i64 i{global_lane()}; i < n; i += grid_stride())
+    const auto inverse_scale = *device_inverse_scale;
+    for (auto index = global_lane(); index < element_count; index += grid_stride())
     {
-        r[i].x *= inv;
-        r[i].y *= inv;
+        factor[index].x *= inverse_scale;
+        factor[index].y *= inverse_scale;
     }
 }
 
@@ -349,9 +337,9 @@ struct BuildEnvRowArgs
     bool defer_scales{};
 };
 
-static auto
-build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowArgs& args)
-    -> std::vector<DeviceTensor>
+static auto build_env_row(
+    qnpeps_ctx::DlBuild& dl, Linalg& la, const Arenas& ar, const BuildEnvRowArgs& args
+) -> std::vector<DeviceTensor>
 {
     const std::vector<DeviceTensor>& row_ket = *args.row_ket;
     const std::vector<DeviceTensor>* env_below = args.env_below;
@@ -366,10 +354,10 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
     std::vector<DeviceTensor> out{};
     out.resize(num_cols);
 
-    f64* device_scales = ctx.dl.scales_all + static_cast<usize>(build_step) * num_cols;
+    f64* device_scales = dl.scales_all + static_cast<usize>(build_step) * num_cols;
 
-    auto carried_r = view(cu_cast(ctx.dl.scalar_r), {1, 1, 1, 1});
-    auto triv = view(cu_cast(ctx.dl.triv), {1, 1, 1, 1});
+    auto carried_factor = DeviceTensor{{1, 1, 1, 1}, dl.initial_factor};
+    const auto unit_environment = DeviceTensor{{1, 1, 1, 1}, dl.unit_environment};
 
     for (auto col = 0_uz; col < num_cols; ++col)
     {
@@ -378,57 +366,68 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         const Arenas column_arenas{ar.known, ar.rolling_r, column_scratch};
 
         const DeviceTensor& ket = row_ket[col];
-        const DeviceTensor& env = env_below ? (*env_below)[col] : triv;
+        const auto& environment = env_below ? (*env_below)[col] : unit_environment;
 
-        auto r_env = contract(
-            column_scratch,
-            la,
-            {
-                .dims_a = carried_r.dim,
-                .contracted_a = {3},
-                .dims_b = env.dim,
-                .contracted_b = {0},
-            },
-            carried_r,
-            env
-        );
-        DEFER([&] { free(r_env); });
-        auto r_env_ket = contract(
-            column_scratch,
-            la,
-            {
-                .dims_a = r_env.dim,
-                .contracted_a = {1, 3},
-                .dims_b = ket.dim,
-                .contracted_b = {4, 3},
-            },
-            r_env,
-            ket
-        );
-        DEFER([&] { free(r_env_ket); });
-        auto rab = contract(
-            column_scratch,
-            la,
-            {
-                .dims_a = r_env_ket.dim,
-                .contracted_a = {1, 2, 4},
-                .dims_b = ket.dim,
-                .contracted_b = {4, 3, 0},
-                .transforms = {.conj_b = true},
-            },
-            r_env_ket,
-            ket
-        );
-        DEFER([&] { free(rab); });
+        DeviceTensor left_environment{};
+        if (not contract(
+                column_scratch,
+                la,
+                {
+                    .dims_a = carried_factor.dim,
+                    .contracted_a = {3},
+                    .dims_b = environment.dim,
+                    .contracted_b = {0},
+                },
+                carried_factor,
+                environment,
+                left_environment
+            ))
+            return out;
+        DEFER([&] { free(left_environment); });
+        DeviceTensor left_environment_ket{};
+        if (not contract(
+                column_scratch,
+                la,
+                {
+                    .dims_a = left_environment.dim,
+                    .contracted_a = {1, 3},
+                    .dims_b = ket.dim,
+                    .contracted_b = {4, 3},
+                },
+                left_environment,
+                ket,
+                left_environment_ket
+            ))
+            return out;
+        DEFER([&] { free(left_environment_ket); });
+        DeviceTensor column_tensor{};
+        if (not contract(
+                column_scratch,
+                la,
+                {
+                    .dims_a = left_environment_ket.dim,
+                    .contracted_a = {1, 2, 4},
+                    .dims_b = ket.dim,
+                    .contracted_b = {4, 3, 0},
+                    .transforms = {.conj_b = true},
+                },
+                left_environment_ket,
+                ket,
+                column_tensor
+            ))
+            return out;
+        DEFER([&] { free(column_tensor); });
 
-        auto rab_mat = permute_axes(column_scratch, rab, {0, 2, 4, 1, 3, 5}, false);
-        DEFER([&] { free(rab_mat); });
-        const int bond_left{rab.dim[0]};
-        const int bond_right{rab.dim[1]};
-        const int ket_vertical{rab.dim[2]};
-        const int ket_horizontal{rab.dim[3]};
-        const int bra_vertical{rab.dim[4]};
-        const int bra_horizontal{rab.dim[5]};
+        auto column_matrix = permute_axes(
+            column_scratch, column_tensor, {0, 2, 4, 1, 3, 5}, false, la.stream()
+        );
+        DEFER([&] { free(column_matrix); });
+        const int bond_left{column_tensor.dim[0]};
+        const int bond_right{column_tensor.dim[1]};
+        const int ket_vertical{column_tensor.dim[2]};
+        const int ket_horizontal{column_tensor.dim[3]};
+        const int bra_vertical{column_tensor.dim[4]};
+        const int bra_horizontal{column_tensor.dim[5]};
         const int rows{bond_left * ket_vertical * bra_vertical};
         const int cols{bond_right * ket_horizontal * bra_horizontal};
 
@@ -436,11 +435,11 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         DeviceTensor r_factor{};
         int rank{};
         rangefinder(
-            ctx,
+            dl,
             la,
             column_arenas,
             {
-                .input = rab_mat,
+                .input = column_matrix,
                 .rows = rows,
                 .cols = cols,
                 .maxdim = maxdim,
@@ -455,13 +454,13 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
             const auto r_factor_elems = static_cast<i64>(rank) * cols;
 
             auto* device_inverse_scale = column_scratch.take<f32>(1);
-            cu_absmax_inverse<<<1, k_tree_reduce_threads, 0, stream()>>>(
+            cu_absmax_inverse<<<1, k_tree_reduce_threads, 0, la.stream()>>>(
                 r_factor.d, r_factor_elems, device_inverse_scale, device_scales + col
             );
             CUDA_CHECK(cudaGetLastError());
 
             const auto blocks = static_cast<u32>(ceil_div(r_factor_elems, k_tree_reduce_threads));
-            cu_scale_inv<<<blocks, k_tree_reduce_threads, 0, stream()>>>(
+            cu_apply_inverse_scale<<<blocks, k_tree_reduce_threads, 0, la.stream()>>>(
                 r_factor.d, r_factor_elems, device_inverse_scale
             );
             CUDA_CHECK(cudaGetLastError());
@@ -469,9 +468,11 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
 
         out[col] = DeviceTensor{{bond_left, ket_vertical, bra_vertical, rank}, q.d};
 
-        auto r_reshaped = view(r_factor.d, {rank, bond_right, ket_horizontal, bra_horizontal});
+        const auto r_reshaped =
+            DeviceTensor{{rank, bond_right, ket_horizontal, bra_horizontal}, r_factor.d};
         ar.rolling_r.rewind();
-        carried_r = permute_axes(ar.rolling_r, r_reshaped, {0, 2, 3, 1}, false);
+        carried_factor =
+            permute_axes(ar.rolling_r, r_reshaped, {0, 2, 3, 1}, false, la.stream());
     }
 
     if (not defer_scales)
@@ -483,37 +484,40 @@ build_env_row(qnpeps_ctx& ctx, Linalg& la, const Arenas& ar, const BuildEnvRowAr
         );
         for (auto col = 0_uz; col < num_cols; ++col)
         {
-            const auto s = scales[col];
-            if (not std::isfinite(s))
+            const auto scale = scales[col];
+            if (not std::isfinite(scale))
             {
                 set_err(QNPEPS_ERR_INTERNAL);
                 break;
             }
-            if (s > 0.0) row_log_scale += std::log(s);
+            if (scale > 0.0) row_log_scale += std::log(scale);
         }
     }
 
     DeviceTensor& last = out[num_cols - 1];
     {
-        auto folded = contract(
-            ar.known,
-            la,
-            {
-                .dims_a = last.dim,
-                .contracted_a = {3},
-                .dims_b = carried_r.dim,
-                .contracted_b = {0},
-            },
-            last,
-            carried_r
-        );
+        DeviceTensor folded{};
+        if (not contract(
+                ar.known,
+                la,
+                {
+                    .dims_a = last.dim,
+                    .contracted_a = {3},
+                    .dims_b = carried_factor.dim,
+                    .contracted_b = {0},
+                },
+                last,
+                carried_factor,
+                folded
+            ))
+            return out;
         last = DeviceTensor{{folded.dim[0], folded.dim[1], folded.dim[2], 1}, folded.d};
     }
     return out;
 }
 
 static auto build_env_rows(
-    qnpeps_ctx& ctx,
+    qnpeps_ctx::DlBuild& dl,
     Linalg& la,
     const Arenas& ar,
     const Dims& dims,
@@ -522,8 +526,6 @@ static auto build_env_rows(
     int* fail_flag
 ) -> std::vector<DlEnvRow>
 {
-    set_stream(la.stream());
-
     const auto num_env_rows = static_cast<usize>(dims.lx - 1);
     std::vector<DlEnvRow> env_rows{};
     env_rows.resize(num_env_rows);
@@ -531,7 +533,7 @@ static auto build_env_rows(
     f64 ignored{};
     const auto last_env = num_env_rows - 1;
     env_rows[last_env] = build_env_row(
-        ctx,
+        dl,
         la,
         ar,
         {
@@ -551,7 +553,7 @@ static auto build_env_rows(
         if (err_state() != QNPEPS_OK) return env_rows;
         const int build_step{static_cast<int>(num_env_rows - row + 1)};
         env_rows[row - 2] = build_env_row(
-            ctx,
+            dl,
             la,
             ar,
             {
@@ -591,7 +593,7 @@ static auto plan_dl_arena(Linalg& la, const Dims& dims, int maxdim) -> DlSizes
     const auto chi2 = chi * chi;
 
     const auto dim_phys = static_cast<usize>(dims.dim_phys);
-    const auto num_envs = static_cast<usize>(dims.lx - 1);
+    const auto num_env_rows = static_cast<usize>(dims.lx - 1);
     const auto num_cols = static_cast<usize>(dims.ly);
 
     const auto out_slot = device_align(sizeof(cuFloatComplex) * chi2 * dim_bond2);
@@ -606,7 +608,7 @@ static auto plan_dl_arena(Linalg& la, const Dims& dims, int maxdim) -> DlSizes
         out += device_align(sizeof(int));
         return out;
     }();
-    const auto known = num_envs * (num_cols * out_slot + per_row);
+    const auto known = num_env_rows * (num_cols * out_slot + per_row);
 
     const auto rolling_r = out_slot;
 
@@ -616,21 +618,21 @@ static auto plan_dl_arena(Linalg& la, const Dims& dims, int maxdim) -> DlSizes
 
     const auto qr_rows = static_cast<int>(chi * dim_bond2);
     const auto qr_cols = static_cast<int>(chi);
-    scratch += qr_scratch(la, qr_rows, qr_cols).total();
+    scratch += la.qr_scratch(qr_rows, qr_cols).total();
 
     scratch += arena_tail_pad;
 
     return DlSizes{known, rolling_r, scratch};
 }
 
-static auto
-carve_dl_arena(qnpeps_ctx::DlBuild& dl, const DlSizes& sz, usize scales_count, ArenaCursor arena)
-    -> ArenaCursor
+static auto carve_dl_arena(
+    qnpeps_ctx::DlBuild& dl, const DlSizes& sz, usize scales_count, ArenaCursor arena
+) -> ArenaCursor
 {
     dl.fail = arena.take<int>(1);
     dl.scales_all = arena.take<f64>(scales_count);
-    dl.triv = arena.take<cf>(1);
-    dl.scalar_r = arena.take<cf>(1);
+    dl.unit_environment = arena.take<cuFloatComplex>(1);
+    dl.initial_factor = arena.take<cuFloatComplex>(1);
     dl.known = arena.take_subarena(sz.known);
     dl.rolling_r = arena.take_subarena(sz.rolling_r);
     dl.scratch = arena.take_subarena(sz.scratch);
@@ -679,23 +681,33 @@ static auto dl_ensure_allocated(qnpeps_ctx& ctx, Linalg& la) -> void
         CUDA_CHECK(cudaMalloc(&ctx.dlenv.buf[1], static_cast<usize>(dlenv_bytes)));
     if (err_state() != QNPEPS_OK) return;
 
-    init_dl_units(la, ctx.dl.triv, ctx.dl.scalar_r);
+    init_dl_units(la, ctx.dl.unit_environment, ctx.dl.initial_factor);
 
     ctx.dl.allocated = true;
 }
 
+static auto free_dl_build(qnpeps_ctx::DlBuild& dl) -> void
+{
+    if (dl.peps_buf)
+    {
+        CUDA_NOCHECK(cudaFree(dl.peps_buf));
+        dl.peps_buf = nullptr;
+    }
+    if (dl.arena)
+    {
+        CUDA_NOCHECK(cudaFree(dl.arena));
+        dl.arena = nullptr;
+    }
+    for (auto& entry : dl.omegas)
+    {
+        if (entry.second) CUDA_NOCHECK(cudaFree(entry.second));
+    }
+    dl.omegas.clear();
+}
+
 auto dl_free(qnpeps_ctx& ctx) -> void
 {
-    if (ctx.dl.peps_buf)
-    {
-        CUDA_NOCHECK(cudaFree(ctx.dl.peps_buf));
-        ctx.dl.peps_buf = nullptr;
-    }
-    if (ctx.dl.arena)
-    {
-        CUDA_NOCHECK(cudaFree(ctx.dl.arena));
-        ctx.dl.arena = nullptr;
-    }
+    free_dl_build(ctx.dl);
     for (auto& buf : ctx.dlenv.buf)
     {
         if (buf)
@@ -704,11 +716,6 @@ auto dl_free(qnpeps_ctx& ctx) -> void
             buf = nullptr;
         }
     }
-    for (auto& entry : ctx.dl.rf_omega)
-    {
-        if (entry.second) CUDA_NOCHECK(cudaFree(entry.second));
-    }
-    ctx.dl.rf_omega.clear();
     for (auto& graph : ctx.dlenv.graph)
     {
         if (graph)
@@ -724,7 +731,7 @@ namespace qnpeps::dlenv
 {
 auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int
 {
-    Linalg& la = ctx.linalg;
+    auto& la = ctx.linalg();
     const auto& cfg = ctx.cfg;
     const int lx{cfg.lx};
     const int ly{cfg.ly};
@@ -732,8 +739,6 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     const auto dim_phys = cfg.dim_phys;
     const auto num_rows = static_cast<usize>(lx);
     const auto num_cols = static_cast<usize>(ly);
-
-    set_stream(la.stream());
 
     dl_ensure_allocated(ctx, la);
     if (err_state() != QNPEPS_OK) return err_state();
@@ -743,9 +748,9 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     std::vector<PepsRow> device_peps_grid{};
     device_peps_grid.resize(num_rows);
 
-    const auto peps_base = reinterpret_cast<const cuFloatComplex*>(device_peps);
-    i64 off{};
-    i64 boff{};
+    const auto device_peps_base = reinterpret_cast<const cuFloatComplex*>(device_peps);
+    i64 source_offset{};
+    i64 packed_offset{};
     for (auto row = 0; row < lx; ++row)
     {
         const auto row_u = static_cast<usize>(row);
@@ -754,11 +759,12 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
             dims,
             row,
             row + 1,
-            peps_base,
-            off,
-            cu_cast(ctx.dl.peps_buf),
-            boff,
-            device_peps_grid[row_u]
+            device_peps_base,
+            source_offset,
+            ctx.dl.peps_buf,
+            packed_offset,
+            device_peps_grid[row_u],
+            la.stream()
         );
     }
 
@@ -770,31 +776,28 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     const int chi_c{std::min(cfg.chi_dl, dim_bond * dim_bond)};
     const Arenas ar{ctx.dl.known, ctx.dl.rolling_r, ctx.dl.scratch};
 
-    const int target{ctx.dlenv.build_count % 2};
-    const auto nsites = (num_rows - 1) * num_cols;
-    auto* header_ptr = reinterpret_cast<int32_t*>(ctx.dlenv.buf[target]);
-    auto* values_ptr = reinterpret_cast<cuFloatComplex*>(header_ptr + nsites * k_dl_axis_count);
+    const auto target = static_cast<usize>(ctx.dlenv.build_count) % ctx.dlenv.buf.size();
+    const auto num_sites = (num_rows - 1) * num_cols;
+    auto* device_header = reinterpret_cast<int32_t*>(ctx.dlenv.buf[target]);
+    auto* device_values =
+        reinterpret_cast<cuFloatComplex*>(device_header + num_sites * k_dl_axis_count);
 
     const auto build_region = [&]
     {
-        auto env_rows = build_env_rows(ctx, la, ar, dims, device_peps_grid, chi_c, ctx.dl.fail);
+        auto env_rows = build_env_rows(ctx.dl, la, ar, dims, device_peps_grid, chi_c, ctx.dl.fail);
         if (err_state() != QNPEPS_OK) return;
 
         if (not ctx.dlenv.header_written[target])
         {
-            ctx.dlenv.dims.resize(nsites * k_dl_axis_count);
+            ctx.dlenv.dims.resize(num_sites * k_dl_axis_count);
             for (auto row = 0_uz; row < num_rows - 1; ++row)
                 for (auto col = 0_uz; col < num_cols; ++col)
                     write_site_dims(
                         ctx.dlenv.dims.data(), row * num_cols + col, env_rows[row][col].dim
                     );
-            CUDA_CHECK(cudaMemcpyAsync(
-                header_ptr,
-                ctx.dlenv.dims.data(),
-                ctx.dlenv.dims.size() * sizeof(int32_t),
-                cudaMemcpyHostToDevice,
-                la.stream()
-            ));
+            copy_h2d_async(
+                device_header, ctx.dlenv.dims.data(), ctx.dlenv.dims.size(), la.stream()
+            );
             ctx.dlenv.header_written[target] = true;
         }
 
@@ -805,7 +808,7 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
             {
                 const DeviceTensor& site = env_rows[row][col];
                 CUDA_CHECK(cudaMemcpyAsync(
-                    values_ptr + values_offset,
+                    device_values + values_offset,
                     site.d,
                     site.num_elems() * sizeof(cuFloatComplex),
                     cudaMemcpyDeviceToDevice,
@@ -819,7 +822,7 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     if (ctx.use_graph and ctx.dlenv.graph[target])
     {
         if (std::getenv("QNPEPS_GRAPH_LOG"))
-            std::fprintf(stderr, "[qnpeps] dl_graph replayed buf=%d\n", target);
+            std::fprintf(stderr, "[qnpeps] dl_graph replayed buf=%zu\n", target);
         CUDA_CHECK(cudaGraphLaunch(ctx.dlenv.graph[target], la.stream()));
     }
     else if (ctx.use_graph and ctx.dl.warmed)
@@ -828,14 +831,14 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
         set_dl_capturing(ctx, true);
         CUDA_CHECK(cudaStreamBeginCapture(la.stream(), cudaStreamCaptureModeThreadLocal));
         build_region();
-        const cudaError_t cap_rc = cudaStreamEndCapture(la.stream(), &graph);
+        const auto capture_status = cudaStreamEndCapture(la.stream(), &graph);
         set_dl_capturing(ctx, false);
-        if (cap_rc == cudaSuccess and err_state() == QNPEPS_OK
+        if (capture_status == cudaSuccess and err_state() == QNPEPS_OK
             and instantiate_graph(ctx.dlenv.graph[target], graph) == cudaSuccess)
         {
             CUDA_CHECK(cudaGraphDestroy(graph));
             if (std::getenv("QNPEPS_GRAPH_LOG"))
-                std::fprintf(stderr, "[qnpeps] dl_graph captured buf=%d\n", target);
+                std::fprintf(stderr, "[qnpeps] dl_graph captured buf=%zu\n", target);
             CUDA_CHECK(cudaGraphLaunch(ctx.dlenv.graph[target], la.stream()));
         }
         else
@@ -909,12 +912,12 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     {
         ensure_dlenv_views(ctx);
         if (err_state() != QNPEPS_OK) return err_state();
-        materialize_dlenv_views(ctx, cf_cast(values_ptr), ctx.dlenv.views[target]);
+        materialize_dlenv_views(ctx, device_values, ctx.dlenv.views[target]);
     }
 
     ctx.dlenv.valid[target] = true;
     ctx.dlenv.active = target;
-    ++ctx.dlenv.build_count;
+    ctx.dlenv.build_count += 1;
     return err_state();
 }
 
@@ -934,8 +937,6 @@ auto build_dlenv_row(
     const auto dim_bond = cfg.dim_bond;
     const auto dim_phys = cfg.dim_phys;
     const auto num_cols = static_cast<usize>(ly);
-    set_stream(la.stream());
-
     const Dims dims{lx, ly, dim_phys, dim_bond};
 
     const i64 row_total{peps_row_elems(dims, row - 1, row)};
@@ -951,30 +952,42 @@ auto build_dlenv_row(
     row_ket.resize(num_cols);
 
     {
-        const auto peps_base = reinterpret_cast<const cuFloatComplex*>(device_peps_row);
-        i64 off{};
-        i64 boff{};
-        pack_peps_row(dims, row - 1, row, peps_base, off, peps_buf, boff, row_ket);
+        const auto device_peps_base = reinterpret_cast<const cuFloatComplex*>(device_peps_row);
+        i64 source_offset{};
+        i64 packed_offset{};
+        pack_peps_row(
+            dims,
+            row - 1,
+            row,
+            device_peps_base,
+            source_offset,
+            peps_buf,
+            packed_offset,
+            row_ket,
+            la.stream()
+        );
     }
 
     std::vector<DeviceTensor> env_below{};
     if (device_env_below)
     {
         env_below.resize(num_cols);
-        std::vector<int32_t> below_dims{};
-        below_dims.resize(num_cols * k_dl_axis_count);
-        const usize hb{below_dims.size() * sizeof(int32_t)};
-        CUDA_CHECK(cudaMemcpy(below_dims.data(), device_env_below, hb, cudaMemcpyDeviceToHost));
-        const auto values_base = byte_offset<cuFloatComplex>(device_env_below, hb);
+        std::vector<int32_t> environment_dims{};
+        environment_dims.resize(num_cols * k_dl_axis_count);
+        const auto header_bytes = environment_dims.size() * sizeof(int32_t);
+        CUDA_CHECK(cudaMemcpy(
+            environment_dims.data(), device_env_below, header_bytes, cudaMemcpyDeviceToHost
+        ));
+        const auto device_values = byte_offset<cuFloatComplex>(device_env_below, header_bytes);
         i64 values_offset{};
         for (auto col = 0_uz; col < num_cols; ++col)
         {
-            const auto d = read_site_dims(below_dims.data(), col);
+            const auto site_dims = read_site_dims(environment_dims.data(), col);
             env_below[col] = DeviceTensor{
-                {d.bond_left, d.ket, d.bra, d.bond_right},
-                const_cast<cuFloatComplex*>(values_base + values_offset)
+                {site_dims.bond_left, site_dims.ket, site_dims.bra, site_dims.bond_right},
+                const_cast<cuFloatComplex*>(device_values + values_offset)
             };
-            values_offset += d.num_elems();
+            values_offset += site_dims.num_elems();
         }
     }
 
@@ -989,19 +1002,18 @@ auto build_dlenv_row(
     auto scratch = ArenaCursor::carve(arena_base + sz.known + sz.rolling_r, sz.scratch);
     const Arenas ar{known, rolling_r, scratch};
 
-    qnpeps_ctx tmp{};
-    DEFER([&] { dl_free(tmp); });
-    tmp.cfg = cfg;
-    tmp.dl.fail = known.take<int>(1);
-    tmp.dl.scales_all = known.take<f64>(num_cols);
-    tmp.dl.triv = known.take<cf>(1);
-    tmp.dl.scalar_r = known.take<cf>(1);
-    init_dl_units(la, tmp.dl.triv, tmp.dl.scalar_r);
-    CUDA_CHECK(cudaMemsetAsync(tmp.dl.fail, 0, sizeof(int), la.stream()));
+    qnpeps_ctx::DlBuild dl{};
+    DEFER([&] { free_dl_build(dl); });
+    dl.fail = known.take<int>(1);
+    dl.scales_all = known.take<f64>(num_cols);
+    dl.unit_environment = known.take<cuFloatComplex>(1);
+    dl.initial_factor = known.take<cuFloatComplex>(1);
+    init_dl_units(la, dl.unit_environment, dl.initial_factor);
+    CUDA_CHECK(cudaMemsetAsync(dl.fail, 0, sizeof(int), la.stream()));
 
     f64 row_log{0.0};
     auto env_row = build_env_row(
-        tmp,
+        dl,
         la,
         ar,
         {
@@ -1010,25 +1022,25 @@ auto build_dlenv_row(
             .env_below = device_env_below ? &env_below : nullptr,
             .maxdim = chi_dl,
             .row_log_scale = &row_log,
-            .fail_flag = tmp.dl.fail,
+            .fail_flag = dl.fail,
             .build_step = 0,
             .defer_scales = false,
         }
     );
     if (err_state() != QNPEPS_OK) return err_state();
 
-    {  // Copy finished dlenv out
-        auto* header_ptr = reinterpret_cast<int32_t*>(dlenv_row_out);
+    {
+        auto* device_header = reinterpret_cast<int32_t*>(dlenv_row_out);
         std::vector<int32_t> header{};
         header.resize(num_cols * k_dl_axis_count);
-        auto* values_ptr = reinterpret_cast<cuFloatComplex*>(header_ptr + header.size());
+        auto* device_values = reinterpret_cast<cuFloatComplex*>(device_header + header.size());
         i64 values_offset{};
         for (auto col = 0_uz; col < num_cols; ++col)
         {
             const DeviceTensor& site = env_row[col];
             write_site_dims(header.data(), col, site.dim);
             CUDA_CHECK(cudaMemcpyAsync(
-                values_ptr + values_offset,
+                device_values + values_offset,
                 site.d,
                 site.num_elems() * sizeof(cuFloatComplex),
                 cudaMemcpyDeviceToDevice,
@@ -1036,16 +1048,10 @@ auto build_dlenv_row(
             ));
             values_offset += static_cast<i64>(site.num_elems());
         }
-        CUDA_CHECK(cudaMemcpyAsync(
-            header_ptr,
-            header.data(),
-            header.size() * sizeof(int32_t),
-            cudaMemcpyHostToDevice,
-            la.stream()
-        ));
+        copy_h2d_async(device_header, header.data(), header.size(), la.stream());
         CUDA_CHECK(cudaStreamSynchronize(la.stream()));
         int fail_host{};
-        CUDA_CHECK(cudaMemcpy(&fail_host, tmp.dl.fail, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&fail_host, dl.fail, sizeof(int), cudaMemcpyDeviceToHost));
         if (fail_host != 0) set_err(QNPEPS_ERR_CUDA);
         if (row_log_out) *row_log_out = row_log;
     }

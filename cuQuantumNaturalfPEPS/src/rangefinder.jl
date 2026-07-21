@@ -5,10 +5,15 @@ function batched_rangefinder(
     rank::Integer;
     seed::Integer=0,
 )::Tuple{CuArray{ComplexF32,3},CuArray{ComplexF32,3}}
+    if rank < 1
+        throw(ArgumentError("rank must be positive (rank=$rank)"))
+    end
     rows, cols, batch = size(input)
-    if !(1 <= rank <= min(rows, cols))
+    if rank > min(rows, cols)
         throw(
-            ArgumentError("rank must be in 1:min(rows, cols) (rank=$rank, rows=$rows, cols=$cols)"),
+            ArgumentError(
+                "rank must not exceed min(rows, cols) (rank=$rank, rows=$rows, cols=$cols)",
+            ),
         )
     end
     qs = CUDA.zeros(ComplexF32, rows, rank, batch)

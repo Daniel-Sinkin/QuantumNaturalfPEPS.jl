@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.18)
 project(cuqnpeps LANGUAGES CXX CUDA)
 
+set(QNPEPS_C_API_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../c_api_version.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${QNPEPS_C_API_VERSION_FILE}")
+file(READ "${QNPEPS_C_API_VERSION_FILE}" QNPEPS_C_API_VERSION)
+string(STRIP "${QNPEPS_C_API_VERSION}" QNPEPS_C_API_VERSION)
+if(NOT QNPEPS_C_API_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+  message(FATAL_ERROR
+    "c_api_version.txt must contain one major.minor.patch version, got: ${QNPEPS_C_API_VERSION}"
+  )
+endif()
+
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 80)
 endif()
@@ -15,7 +25,9 @@ find_package(CUDAToolkit REQUIRED)
 add_library(qnpeps SHARED
   capi/capi.cu
   contraction.cu
-  dtensor.cu
+  error.cu
+  tensor.cu
+  permutation.cu
   dlenv/build.cu
   sampler/kernels.cu
   sampler/rangefinder.cu
@@ -24,6 +36,7 @@ add_library(qnpeps SHARED
   sampler/entry.cu
 )
 target_include_directories(qnpeps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(qnpeps PRIVATE QNPEPS_C_API_VERSION="${QNPEPS_C_API_VERSION}")
 set_target_properties(qnpeps PROPERTIES
   OUTPUT_NAME qnpeps
   PREFIX ""

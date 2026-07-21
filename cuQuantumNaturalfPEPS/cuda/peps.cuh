@@ -1,10 +1,12 @@
 #ifndef QNPEPS_PEPS_CUH
 #define QNPEPS_PEPS_CUH
 
-#include "dtensor.cuh"
+#include "tensor.cuh"
 
 namespace qnpeps
 {
+inline constexpr int k_peps_site_rank{5};
+
 struct PepsDims
 {
     i32 lx{};
@@ -30,7 +32,7 @@ struct PepsSiteDims
 [[nodiscard]] inline constexpr auto peps_site_dims(const PepsDims& dims, int row, int col) noexcept
     -> PepsSiteDims
 {
-    return PepsSiteDims{
+    return {
         .bond_left = bond_dim(dims.ly, col, dims.dim_bond),
         .bond_down = bond_dim(dims.lx, row + 1, dims.dim_bond),
         .bond_right = bond_dim(dims.ly, col + 1, dims.dim_bond),
@@ -42,7 +44,7 @@ struct PepsSiteDims
 [[nodiscard]] inline auto peps_site_shape(const PepsDims& dims, int row, int col) -> Shape
 {
     const auto site = peps_site_dims(dims, row, col);
-    return Shape{site.bond_left, site.bond_down, site.bond_right, site.bond_up, site.dim_phys};
+    return {site.bond_left, site.bond_down, site.bond_right, site.bond_up, site.dim_phys};
 }
 
 [[nodiscard]] inline constexpr auto peps_site_elems(const PepsDims& dims, int row, int col) noexcept

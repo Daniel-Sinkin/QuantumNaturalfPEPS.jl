@@ -20,6 +20,12 @@ extern "C"
         QNPEPS_ERR_INTERNAL = 6
     } qnpeps_status;
 
+    typedef enum qnpeps_sampling_mode
+    {
+        QNPEPS_SAMPLING_FAST = 0,
+        QNPEPS_SAMPLING_FULL = 1
+    } qnpeps_sampling_mode;
+
     typedef struct QnpepsConfig
     {
         uint32_t struct_size;
@@ -30,6 +36,8 @@ extern "C"
         int32_t chi_s;
         int32_t chi_dl;
         uint64_t seed;
+        int32_t sampling_mode;
+        int32_t chi_c;
     } QnpepsConfig;
 
     typedef struct qnpeps_device_peps qnpeps_device_peps;
@@ -114,14 +122,17 @@ extern "C"
     int64_t qnpeps_peps_bytes(const QnpepsConfig* config);
     int64_t qnpeps_dlenv_bytes(const QnpepsConfig* config);
     int64_t qnpeps_sample_bytes(const QnpepsConfig* config, uint64_t count);
-    int64_t qnpeps_sample_footprint_bytes(const QnpepsConfig* config, uint64_t count);
+    int64_t qnpeps_sample_footprint_bytes(
+        const QnpepsConfig* config, uint64_t count, uint64_t dim_batch
+    );
 
-    int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config);
+    int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config, uint64_t dim_batch);
 
     void qnpeps_sampler_pool_release(void);
     const char* qnpeps_strerror(qnpeps_status status);
     const char* qnpeps_last_error_file(void);
     int32_t qnpeps_last_error_line(void);
+    const char* qnpeps_last_error_message(void);
     const char* qnpeps_capi_version(void);
 
 #ifdef __cplusplus

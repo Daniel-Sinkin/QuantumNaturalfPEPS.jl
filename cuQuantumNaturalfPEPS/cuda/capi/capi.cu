@@ -4,13 +4,19 @@
 #include "linalg.cuh"
 #include "peps.cuh"
 #include "qnpeps_ctx.cuh"
+#include "rangefinder_rng.cuh"
 #include "sampler/draw.cuh"
 
 #include <algorithm>
 #include <cstdint>
 #include <new>
-#include <random>
+#include <span>
+#include <utility>
 #include <vector>
+
+#ifndef QNPEPS_C_API_VERSION
+#    error "QNPEPS_C_API_VERSION must be provided by CMake"
+#endif
 
 using namespace qnpeps;
 
@@ -30,6 +36,13 @@ auto check_cfg(const QnpepsConfig* config) -> qnpeps_status
     {
         return QNPEPS_ERR_BAD_CONFIG;
     }
+    if (config->sampling_mode != QNPEPS_SAMPLING_FAST
+        and config->sampling_mode != QNPEPS_SAMPLING_FULL)
+    {
+        return QNPEPS_ERR_BAD_CONFIG;
+    }
+    if (config->sampling_mode == QNPEPS_SAMPLING_FULL and config->chi_c < 1)
+        return QNPEPS_ERR_BAD_CONFIG;
     return QNPEPS_OK;
 }
 }
@@ -43,26 +56,32 @@ qnpeps_ctx_create(const QnpepsConfig* config, void* stream, qnpeps_ctx** out)
     const auto config_status = check_cfg(config);
     if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
 
-    auto* ctx = new (std::nothrow) qnpeps_ctx{};
-    if (not ctx) return qnpeps::set_err(QNPEPS_ERR_OOM);
-    ctx->cfg = *config;
+    cudaStream_t stream_use{};
+    bool stream_owned{};
     if (stream)
     {
-        ctx->stream = static_cast<cudaStream_t>(stream);
-        ctx->stream_owned = false;
+        stream_use = static_cast<cudaStream_t>(stream);
     }
     else
     {
-        CUDA_CHECK(cudaStreamCreate(&ctx->stream));
-        ctx->stream_owned = true;
+        const auto stream_status = cudaStreamCreate(&stream_use);
+        if (stream_status != cudaSuccess) return qnpeps::set_cuda_err(stream_status);
+        stream_owned = true;
     }
-    ctx->linalg.create(ctx->stream);
-    if (qnpeps::err_state() != QNPEPS_OK)
+
+    auto linalg = make_linalg(stream_use);
+    if (not linalg)
     {
-        ctx->linalg.destroy();
-        if (ctx->stream_owned and ctx->stream) CUDA_NOCHECK(cudaStreamDestroy(ctx->stream));
-        delete ctx;
+        if (stream_owned) CUDA_NOCHECK(cudaStreamDestroy(stream_use));
         return qnpeps::err_state();
+    }
+
+    auto* ctx = new (std::nothrow) qnpeps_ctx{*config, stream_use, stream_owned, std::move(linalg)};
+    if (not ctx)
+    {
+        linalg.reset();
+        if (stream_owned) CUDA_NOCHECK(cudaStreamDestroy(stream_use));
+        return qnpeps::set_err(QNPEPS_ERR_OOM);
     }
     *out = ctx;
     return QNPEPS_OK;
@@ -74,9 +93,10 @@ extern "C" void qnpeps_ctx_destroy(qnpeps_ctx* ctx)
     if (ctx->stream) CUDA_NOCHECK(cudaStreamSynchronize(ctx->stream));
     qnpeps::sampler::ctx_sampler_free(*ctx);
     qnpeps::dlenv::dl_free(*ctx);
-    ctx->linalg.destroy();
-    if (ctx->stream_owned and ctx->stream) CUDA_NOCHECK(cudaStreamDestroy(ctx->stream));
+    const auto stream = ctx->stream;
+    const auto stream_owned = ctx->owns_stream;
     delete ctx;
+    if (stream_owned and stream) CUDA_NOCHECK(cudaStreamDestroy(stream));
 }
 
 extern "C" qnpeps_status
@@ -151,6 +171,8 @@ extern "C" qnpeps_status qnpeps_sample(const QnpepsConfig* config, const QnpepsS
 
     const auto config_status = check_cfg(config);
     if (config_status != QNPEPS_OK) return qnpeps::set_err(config_status);
+    if (args->dim_batch < 1 or args->dim_batch > static_cast<uint64_t>(k_max_batch_size))
+        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
 
     if (args->gpus > 1)
     {
@@ -166,13 +188,12 @@ extern "C" qnpeps_status qnpeps_sample(const QnpepsConfig* config, const QnpepsS
                 .logpc_out = args->log_prob_config,
                 .lognorm_out = args->log_gauge,
                 .n_samples = args->n_samples,
+                .dim_batch = args->dim_batch,
             }
         );
         return qnpeps::err_state();
     }
 
-    if (args->dim_batch > static_cast<uint64_t>(k_max_batch_size))
-        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     if (args->n_samples == 0) return QNPEPS_OK;
     qnpeps::sampler::sample(
         *config,
@@ -186,7 +207,7 @@ extern "C" qnpeps_status qnpeps_sample(const QnpepsConfig* config, const QnpepsS
             .lognorm_out = args->log_gauge,
             .n_samples = args->n_samples,
             .batch_base = args->batch_base,
-            .dim_batch_pin = args->dim_batch,
+            .dim_batch = args->dim_batch,
             .stream = args->stream,
         }
     );
@@ -211,13 +232,12 @@ extern "C" qnpeps_status qnpeps_double_layer_row(
     if (row < 1 or row > config->lx) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     if (maxdim < 1) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
 
-    Linalg linalg{};
-    linalg.create(static_cast<cudaStream_t>(stream));
+    auto linalg = make_linalg(static_cast<cudaStream_t>(stream));
+    if (not linalg) return qnpeps::err_state();
     qnpeps::dlenv::build_dlenv_row(
-        linalg, *config, row, maxdim, device_peps_row, device_env_below, dlenv_row_out, row_log_out
+        *linalg, *config, row, maxdim, device_peps_row, device_env_below, dlenv_row_out, row_log_out
     );
-    CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
-    linalg.destroy();
+    CUDA_CHECK(cudaStreamSynchronize(linalg->stream()));
     return qnpeps::err_state();
 }
 
@@ -245,8 +265,8 @@ extern "C" int64_t qnpeps_batched_rangefinder_scratch_bytes(int rows, int cols, 
     const auto cols_u = static_cast<usize>(cols);
     const auto rank_u = static_cast<usize>(rank);
     const auto batch_u = static_cast<usize>(batch);
-    const auto cf_bytes = sizeof(cf);
-    const auto ptr_bytes = sizeof(cf*);
+    const auto cf_bytes = sizeof(cuFloatComplex);
+    const auto ptr_bytes = sizeof(cuFloatComplex*);
     const auto int_bytes = sizeof(int);
     usize total{};
     total += device_align(cf_bytes * rows_u * rank_u * batch_u);
@@ -284,98 +304,102 @@ extern "C" qnpeps_status qnpeps_batched_rangefinder(
         return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     if (rank > rows or rank > cols) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
 
-    const i64 rows_i{rows};
-    const i64 cols_i{cols};
-    const i64 rank_i{rank};
-    const i64 batch_i{batch};
-    if (input_stride < rows_i * cols_i or q_stride < rows_i * rank_i or r_stride < rank_i * cols_i)
+    const auto rows_i64 = static_cast<i64>(rows);
+    const auto cols_i64 = static_cast<i64>(cols);
+    const auto rank_i64 = static_cast<i64>(rank);
+    const auto batch_i64 = static_cast<i64>(batch);
+    if (input_stride < rows_i64 * cols_i64 or q_stride < rows_i64 * rank_i64
+        or r_stride < rank_i64 * cols_i64)
     {
         return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
     }
 
-    const auto needed = qnpeps_batched_rangefinder_scratch_bytes(rows, cols, rank, batch);
-    if (needed < 0) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
-    if (scratch_bytes < static_cast<uint64_t>(needed))
+    const auto required_scratch_bytes =
+        qnpeps_batched_rangefinder_scratch_bytes(rows, cols, rank, batch);
+    if (required_scratch_bytes < 0) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
+    if (scratch_bytes < static_cast<uint64_t>(required_scratch_bytes))
         return qnpeps::set_err(QNPEPS_ERR_OOM);
 
     auto* cursor = static_cast<char*>(scratch);
-    auto carve = [&cursor](i64 count, usize elem_size) -> void*
+    const auto carve = [&cursor](i64 count, usize element_size) -> void*
     {
-        void* slot{cursor};
-        cursor += device_align(elem_size * static_cast<usize>(count));
+        auto* slot = cursor;
+        cursor += device_align(element_size * static_cast<usize>(count));
         return slot;
     };
-    auto carve_cf = [&carve](i64 count) -> cf*
-    { return static_cast<cf*>(carve(count, sizeof(cf))); };
-    auto carve_cfp = [&carve](i64 count) -> cf**
-    { return static_cast<cf**>(carve(count, sizeof(cf*))); };
-    auto* sketch_p = carve_cf(rows_i * rank_i * batch_i);
-    auto* proj_p = carve_cf(cols_i * rank_i * batch_i);
-    auto* gram_p = carve_cf(rank_i * rank_i * batch_i);
-    auto* omega_p = carve_cf(cols_i * rank_i);
-    auto* gram_ptrs = carve_cfp(batch_i);
-    auto* sketch_ptrs = carve_cfp(batch_i);
-    auto* info = static_cast<int*>(carve(batch_i, sizeof(int)));
-    auto* fail_flag = static_cast<int*>(carve(1, sizeof(int)));
+    const auto carve_complex = [&carve](i64 count) -> cuFloatComplex*
+    { return static_cast<cuFloatComplex*>(carve(count, sizeof(cuFloatComplex))); };
+    const auto carve_complex_pointers = [&carve](i64 count) -> cuFloatComplex**
+    { return static_cast<cuFloatComplex**>(carve(count, sizeof(cuFloatComplex*))); };
+    auto* device_sketch = carve_complex(rows_i64 * rank_i64 * batch_i64);
+    auto* device_projection = carve_complex(cols_i64 * rank_i64 * batch_i64);
+    auto* device_gram = carve_complex(rank_i64 * rank_i64 * batch_i64);
+    auto* device_omega = carve_complex(cols_i64 * rank_i64);
+    auto* device_gram_pointers = carve_complex_pointers(batch_i64);
+    auto* device_sketch_pointers = carve_complex_pointers(batch_i64);
+    auto* device_info = static_cast<int*>(carve(batch_i64, sizeof(int)));
+    auto* device_fail_flag = static_cast<int*>(carve(1, sizeof(int)));
+    const auto cuda_stream = static_cast<cudaStream_t>(stream);
+    auto linalg = make_linalg(cuda_stream);
+    if (not linalg) return qnpeps::err_state();
 
-    std::mt19937_64 rng(seed ^ (static_cast<uint64_t>(cols) << 20));
-    std::normal_distribution<f32> gauss(0.0f, 1.0f);
-    std::vector<cf> omega_host{};
-    omega_host.resize(static_cast<usize>(cols_i * rank_i));
-    for (auto& value : omega_host)
-        value = cf{gauss(rng), gauss(rng)};
-    CUDA_CHECK(cudaMemcpy(
-        omega_p, omega_host.data(), omega_host.size() * sizeof(cf), cudaMemcpyHostToDevice
-    ));
+    auto rng = RangefinderRng::from_seed_and_width(seed, cols);
+    std::vector<cuFloatComplex> host_omega{};
+    host_omega.resize(static_cast<usize>(cols_i64 * rank_i64));
+    rng.fill_complex_normal(std::span{host_omega});
+    copy_h2d_async(device_omega, host_omega.data(), host_omega.size(), cuda_stream);
 
-    const auto batch_u = static_cast<usize>(batch_i);
-    std::vector<cf*> gram_ptr_host{};
-    gram_ptr_host.resize(batch_u);
-    std::vector<cf*> sketch_ptr_host{};
-    sketch_ptr_host.resize(batch_u);
-    for (auto lane = 0_i64; lane < batch_i; ++lane)
+    const auto batch_size = static_cast<usize>(batch_i64);
+    std::vector<cuFloatComplex*> host_gram_pointers{};
+    host_gram_pointers.resize(batch_size);
+    std::vector<cuFloatComplex*> host_sketch_pointers{};
+    host_sketch_pointers.resize(batch_size);
+    for (auto lane = 0_i64; lane < batch_i64; ++lane)
     {
-        const auto lane_u = static_cast<usize>(lane);
-        gram_ptr_host[lane_u] = gram_p + lane * rank_i * rank_i;
-        sketch_ptr_host[lane_u] = sketch_p + lane * rows_i * rank_i;
+        const auto lane_index = static_cast<usize>(lane);
+        host_gram_pointers[lane_index] = device_gram + lane * rank_i64 * rank_i64;
+        host_sketch_pointers[lane_index] = device_sketch + lane * rows_i64 * rank_i64;
     }
-    CUDA_CHECK(cudaMemcpy(
-        gram_ptrs, gram_ptr_host.data(), gram_ptr_host.size() * sizeof(cf*), cudaMemcpyHostToDevice
-    ));
-    CUDA_CHECK(cudaMemcpy(
-        sketch_ptrs,
-        sketch_ptr_host.data(),
-        sketch_ptr_host.size() * sizeof(cf*),
-        cudaMemcpyHostToDevice
-    ));
-    if (qnpeps::err_state() != QNPEPS_OK) return qnpeps::err_state();
-
-    Linalg linalg{};
-    linalg.create(static_cast<cudaStream_t>(stream));
-    CUDA_CHECK(cudaMemsetAsync(fail_flag, 0, sizeof(int), linalg.stream()));
+    copy_h2d_async(
+        device_gram_pointers, host_gram_pointers.data(), host_gram_pointers.size(), cuda_stream
+    );
+    copy_h2d_async(
+        device_sketch_pointers,
+        host_sketch_pointers.data(),
+        host_sketch_pointers.size(),
+        cuda_stream
+    );
+    if (qnpeps::err_state() != QNPEPS_OK)
+    {
+        CUDA_NOCHECK(cudaStreamSynchronize(cuda_stream));
+        return qnpeps::err_state();
+    }
+    CUDA_CHECK(cudaMemsetAsync(device_fail_flag, 0, sizeof(int), linalg->stream()));
     batched_rangefinder(
-        linalg,
+        *linalg,
         {
-            .input = CuMatrixConstBatched{static_cast<const cf*>(input), input_stride, rows, cols},
-            .k = rank,
-            .omega = omega_p,
-            .q_out = CuMatrixBatched{static_cast<cf*>(q_out), q_stride, rows, rank},
-            .r_out = CuMatrixBatched{static_cast<cf*>(r_out), r_stride, rank, cols},
+            .input =
+                CuMatrixConstBatched{
+                    static_cast<const cuFloatComplex*>(input), input_stride, rows, cols
+                },
+            .rank = rank,
+            .omega = device_omega,
+            .q_out = CuMatrixBatched{static_cast<cuFloatComplex*>(q_out), q_stride, rows, rank},
+            .r_out = CuMatrixBatched{static_cast<cuFloatComplex*>(r_out), r_stride, rank, cols},
             .dim_batch = batch,
-            .sketch = CuArray{sketch_p, rows_i * rank_i},
-            .proj = CuArray{proj_p, cols_i * rank_i},
-            .gram = CuArray{gram_p, rank_i * rank_i},
-            .gram_ptrs = gram_ptrs,
-            .sketch_ptrs = sketch_ptrs,
-            .info = info,
-            .fail_flag = fail_flag,
+            .sketch = CuArray{device_sketch, rows_i64 * rank_i64},
+            .projection = CuArray{device_projection, cols_i64 * rank_i64},
+            .gram = CuArray{device_gram, rank_i64 * rank_i64},
+            .gram_ptrs = device_gram_pointers,
+            .sketch_ptrs = device_sketch_pointers,
+            .info = device_info,
+            .fail_flag = device_fail_flag,
         }
     );
-    CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
-    int fail_host{};
-    CUDA_CHECK(cudaMemcpy(&fail_host, fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
-    if (fail_host != 0) qnpeps::set_err(QNPEPS_ERR_CUDA);
-    linalg.destroy();
+    CUDA_CHECK(cudaStreamSynchronize(linalg->stream()));
+    int host_fail_flag{};
+    CUDA_CHECK(cudaMemcpy(&host_fail_flag, device_fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
+    if (host_fail_flag != 0) qnpeps::set_err(QNPEPS_ERR_CUDA);
     return qnpeps::err_state();
 }
 
@@ -383,7 +407,7 @@ extern "C" int64_t qnpeps_peps_bytes(const QnpepsConfig* config)
 {
     if (check_cfg(config) != QNPEPS_OK) return -1;
     const PepsDims dims{config->lx, config->ly, config->dim_phys, config->dim_bond};
-    return peps_elems(dims) * static_cast<i64>(sizeof(cf));
+    return peps_elems(dims) * static_cast<i64>(sizeof(cuFloatComplex));
 }
 
 extern "C" int64_t qnpeps_sample_bytes(const QnpepsConfig* config, uint64_t count)
@@ -406,32 +430,39 @@ extern "C" int64_t qnpeps_dlenv_bytes(const QnpepsConfig* config)
     const auto int32_bytes = static_cast<i64>(sizeof(int32_t));
     const auto f32_bytes = static_cast<i64>(sizeof(f32));
     const auto rows_below = lx - 1;
-    const auto sites = rows_below * ly;
+    const auto num_sites = rows_below * ly;
     const auto bond_pair = dim_bond * dim_bond;
     const auto chi_c = std::min(chi_dl, bond_pair);
-    const auto header = sites * 4 * int32_bytes;
-    const auto values = sites * chi_c * chi_c * bond_pair;
+    const auto header = num_sites * 4 * int32_bytes;
+    const auto values = num_sites * chi_c * chi_c * bond_pair;
     return header + values * 2 * f32_bytes;
 }
 
-extern "C" int64_t qnpeps_sample_footprint_bytes(const QnpepsConfig* config, uint64_t count)
+extern "C" int64_t
+qnpeps_sample_footprint_bytes(const QnpepsConfig* config, uint64_t count, uint64_t dim_batch)
 {
-    if (check_cfg(config) != QNPEPS_OK) return -1;
+    if (check_cfg(config) != QNPEPS_OK or dim_batch < 1
+        or dim_batch > static_cast<uint64_t>(k_max_batch_size))
+    {
+        return -1;
+    }
     const auto peps = qnpeps_peps_bytes(config);
     const auto dlenv = qnpeps_dlenv_bytes(config);
-    const auto scratch = qnpeps_sample_scratch_bytes(config);
+    const auto scratch = qnpeps_sample_scratch_bytes(config, dim_batch);
     const auto samples = qnpeps_sample_bytes(config, count);
     const auto count_i64 = static_cast<i64>(count);
-    const auto f64_bytes = static_cast<i64>(sizeof(f64));
-    const auto log_prob_config = count_i64 * f64_bytes;
-    const auto log_norm = count_i64 * f64_bytes;
-    return peps + dlenv + scratch + samples + log_prob_config + log_norm;
+    const auto output_scalars = count_i64 * static_cast<i64>(sizeof(f64));
+    return peps + dlenv + scratch + samples + 2 * output_scalars;
 }
 
-extern "C" int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config)
+extern "C" int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config, uint64_t dim_batch)
 {
-    if (check_cfg(config) != QNPEPS_OK) return -1;
-    return qnpeps::sampler::sample_arena_bytes(*config, k_max_batch_size);
+    if (check_cfg(config) != QNPEPS_OK or dim_batch < 1
+        or dim_batch > static_cast<uint64_t>(k_max_batch_size))
+    {
+        return -1;
+    }
+    return qnpeps::sampler::sample_arena_bytes(*config, static_cast<int>(dim_batch));
 }
 
 extern "C" void qnpeps_sampler_pool_release(void) {}
@@ -446,6 +477,11 @@ extern "C" int32_t qnpeps_last_error_line(void)
     return qnpeps::err_line();
 }
 
+extern "C" const char* qnpeps_last_error_message(void)
+{
+    return qnpeps::err_message();
+}
+
 extern "C" const char* qnpeps_strerror(qnpeps_status status)
 {
     switch (status)
@@ -455,9 +491,8 @@ extern "C" const char* qnpeps_strerror(qnpeps_status status)
         case QNPEPS_ERR_NULL_ARG:
             return "a required pointer was NULL";
         case QNPEPS_ERR_BAD_CONFIG:
-            return "descriptor failed validation "
-                   "(dim_phys<1/lx<2/ly<2/dim_bond<1/chi_s<1/chi_dl<1) "
-                   "or dlenv header inconsistent with the config";
+            return "descriptor or batch dimensions failed validation, or dlenv header is "
+                   "inconsistent with the config";
         case QNPEPS_ERR_BAD_VERSION:
             return "descriptor struct_size not recognized";
         case QNPEPS_ERR_CUDA:
@@ -472,5 +507,5 @@ extern "C" const char* qnpeps_strerror(qnpeps_status status)
 
 extern "C" const char* qnpeps_capi_version(void)
 {
-    return "cuQuantumNaturalfPEPS 0.0.4 (2026-07-17)";
+    return "cuQuantumNaturalfPEPS " QNPEPS_C_API_VERSION;
 }

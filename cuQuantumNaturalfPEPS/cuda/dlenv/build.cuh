@@ -3,7 +3,7 @@
 
 #include "arena_cursor.cuh"
 #include "capi/qnpeps.h"
-#include "dtensor.cuh"
+#include "tensor.cuh"
 #include "types.cuh"
 
 #include <cublas_v2.h>

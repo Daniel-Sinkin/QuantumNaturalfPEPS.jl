@@ -3,6 +3,7 @@
 
 #include "cuda_utils.cuh"
 
+#include <algorithm>
 #include <cassert>
 #include <limits>
 
@@ -22,7 +23,7 @@ class ArenaCursor
     {
         if (not base)
         {
-            assert(base);
+            assert(false);
             set_err(QNPEPS_ERR_INTERNAL);
             return {};
         }
@@ -34,30 +35,26 @@ class ArenaCursor
     {
         if (mode_ == Mode::unbound)
         {
-            assert(mode_ != Mode::unbound);
+            assert(false);
             set_err(QNPEPS_ERR_INTERNAL);
             return nullptr;
         }
 
-        constexpr auto max = std::numeric_limits<usize>::max();
         constexpr auto alignment_padding = k_device_malloc_align - 1;
-        if (offset_ > max - alignment_padding)
-        {
-            set_err(QNPEPS_ERR_OOM);
-            return nullptr;
-        }
+        constexpr auto max_safe_end = std::numeric_limits<usize>::max() - alignment_padding;
         const auto begin = device_align(offset_);
-        if (count > (max - begin) / sizeof(T))
+        const auto end_limit = [&]
+        {
+            auto out = max_safe_end;
+            if (mode_ == Mode::carve) return std::min(capacity_, out);
+            return out;
+        }();
+        if (begin > end_limit or count > (end_limit - begin) / sizeof(T))
         {
             set_err(QNPEPS_ERR_OOM);
             return nullptr;
         }
         const auto end = begin + count * sizeof(T);
-        if (end > max - alignment_padding or (mode_ == Mode::carve and end > capacity_))
-        {
-            set_err(QNPEPS_ERR_OOM);
-            return nullptr;
-        }
 
         offset_ = end;
         if (mode_ == Mode::measure) return nullptr;
@@ -82,7 +79,7 @@ class ArenaCursor
     {
         if (mode_ == Mode::unbound)
         {
-            assert(mode_ != Mode::unbound);
+            assert(false);
             set_err(QNPEPS_ERR_INTERNAL);
             return;
         }

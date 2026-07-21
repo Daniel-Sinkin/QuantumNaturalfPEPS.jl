@@ -10,10 +10,7 @@ function _env_arrays_to_mps(env::AbstractVector, site_indices::AbstractVector)::
         site_index = site_indices[col]
         site_index_prime = prime(site_index, 1)
         env_site = env[col]
-        bond_left = size(env_site, 1)
-        ket_dim = size(env_site, 2)
-        bra_dim = size(env_site, 3)
-        bond_right = size(env_site, 4)
+        bond_left, ket_dim, bra_dim, bond_right = size(env_site)
         if ly == 1
             reshaped = reshape(env_site, ket_dim, bra_dim)
             sites[col] = itensor(reshaped, site_index, site_index_prime)
@@ -42,7 +39,7 @@ function _mps_to_env_arrays(env::MPS, site_indices::AbstractVector)::Vector{<:Ar
         link_right = col < ly ? commonind(site_tensor, env[col+1]) : nothing
         legs = (link_left, site_index, site_index_prime, link_right)
         present = Tuple(leg for leg in legs if leg !== nothing)
-        dims = Tuple(leg === nothing ? 1 : dim(leg) for leg in legs)
+        dims = Tuple(leg !== nothing ? dim(leg) : 1 for leg in legs)
         raw = ITensors.array(site_tensor, present...)
         out[col] = reshape(Array{T}(raw), dims)
     end
@@ -130,7 +127,8 @@ function double_layer_step(
         vbonds = [_vbond(tensors, row_index, col) for col in 1:ly]
         _pack_env_row(_mps_to_env_arrays(env_below, vbonds))
     end
-    env_below_ptr = env_below_buffer === nothing ? CuPtr{Cvoid}(0) : pointer(env_below_buffer)
+    env_below_ptr =
+        env_below_buffer !== nothing ? pointer(env_below_buffer) : CuPtr{Cvoid}(0)
     out_bytes = CUDA.zeros(UInt8, _dlenv_row_bytes(; config, maxdim))
     row_log = Ref{Float64}(0.0)
     GC.@preserve row_buffer env_below_buffer out_bytes begin
@@ -160,7 +158,31 @@ struct CuDlenv
     chi_dl::Int
 end
 
-function _cfg_of(dlenv::CuDlenv; seed::Integer=0)::QnpepsConfig
+function Base.show(io::IO, dlenv::CuDlenv)::Nothing
+    return print(
+        io,
+        "CuDlenv(",
+        dlenv.lx,
+        "×",
+        dlenv.ly,
+        ", dim_phys=",
+        dlenv.dim_phys,
+        ", dim_bond=",
+        dlenv.dim_bond,
+        ", chi_s=",
+        dlenv.chi_s,
+        ", chi_dl=",
+        dlenv.chi_dl,
+        ")",
+    )
+end
+
+function _cfg_of(
+    dlenv::CuDlenv;
+    seed::Integer=0,
+    sampling_mode=:fast,
+    chi_c::Integer=3 * dlenv.dim_bond,
+)::QnpepsConfig
     return QnpepsConfig(
         lx=dlenv.lx,
         ly=dlenv.ly,
@@ -169,6 +191,8 @@ function _cfg_of(dlenv::CuDlenv; seed::Integer=0)::QnpepsConfig
         chi_s=dlenv.chi_s,
         chi_dl=dlenv.chi_dl,
         seed=seed,
+        sampling_mode=sampling_mode,
+        chi_c=chi_c,
     )
 end
 
@@ -179,7 +203,11 @@ function double_layer(
 )::CuDlenv
     config = _cfg_of(device_peps; chi_s=chi_s, chi_dl=chi_dl)
     n_bytes = _dlenv_bytes(; config)
-    n_bytes >= 0 || throw(PepsError("bad config for dlenv size"))
+    n_bytes >= 0 || throw(
+        ArgumentError(
+            "invalid double-layer configuration: $device_peps, chi_s=$chi_s, chi_dl=$chi_dl",
+        ),
+    )
     data = CUDA.zeros(UInt8, n_bytes)
     logs = CUDA.zeros(Float64, device_peps.lx - 1)
     GC.@preserve device_peps data logs begin

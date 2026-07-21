@@ -1,15 +1,30 @@
 using CUDA
 using Libdl
 
-const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
-const _SYM_CACHE = Dict{Symbol,Ptr{Cvoid}}()
+# This file handles the .so and the raw function pointers and is purely plumbing work
+# the ffi.jl contains the actual low level API endpoints to be used via Julia
 
-const EXPECTED_CAPI_VERSION = "cuQuantumNaturalfPEPS 0.0.4 (2026-07-17)"
+# This holds a reference to the .so file which has the low level CUDA api functions
+const _CUDA_LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
+# Each function is at a byte offset into the _CUDA_LIB_HANDLE and needs to be queried via
+# the string name, this caches those offsets so every function has to only be found once
+const _C_FFI_FUNCTION_PTR_CACHE = Dict{Symbol,Ptr{Cvoid}}()
+
+const _C_API_VERSION_FILE = normpath(joinpath(@__DIR__, "..", "c_api_version.txt"))
+Base.include_dependency(_C_API_VERSION_FILE)
+const EXPECTED_CAPI_VERSION = let
+    version = strip(read(_C_API_VERSION_FILE, String))
+    occursin(r"^[0-9]+\.[0-9]+\.[0-9]+$", version) ||
+        error("invalid C API version in $_C_API_VERSION_FILE: $version")
+    version
+end
+const _COMPILED_CAPI_VERSION_PATTERN =
+    r"^cuQuantumNaturalfPEPS ([0-9]+\.[0-9]+\.[0-9]+)(?: \([0-9]{4}-[0-9]{2}-[0-9]{2}\))?$"
 
 function _lib_path()::String
     override = get(ENV, "QNPEPS_LIB", "")
     isempty(override) || return override
-    return normpath(joinpath(@__DIR__, "..", "cuda", "build", "qnpeps.so"))
+    return normpath(joinpath(@__DIR__, "..", "build", "cuda", "qnpeps.so"))
 end
 
 function _lib_missing_error(; path::AbstractString)::Union{}
@@ -19,30 +34,46 @@ end
 function _capi_version_mismatch_error(;
     path::AbstractString,
     got::AbstractString,
+    got_version::Union{Nothing,AbstractString},
 )::Union{}
+    detail = if isnothing(got_version)
+        "unrecognized CUDA library C API version \"$got\""
+    else
+        "CUDA library C API \"$got_version\" does not match expected \"$EXPECTED_CAPI_VERSION\""
+    end
     error(
-        "cuQuantumNaturalfPEPS: CUDA library version mismatch, " *
-        "got \"$got\" expected \"$EXPECTED_CAPI_VERSION\" ($path)",
+        "cuQuantumNaturalfPEPS: $detail ($path)",
     )
 end
 
+function _compiled_capi_version(version::AbstractString)::Union{Nothing,String}
+    matched = match(_COMPILED_CAPI_VERSION_PATTERN, version)
+    isnothing(matched) && return nothing
+    return String(matched.captures[1])
+end
+
 function _lib_handle()::Ptr{Cvoid}
-    _LIB_HANDLE[] == C_NULL || return _LIB_HANDLE[]
+    _CUDA_LIB_HANDLE[] == C_NULL || return _CUDA_LIB_HANDLE[]
     path = _lib_path()
     isfile(path) || _lib_missing_error(; path)
     handle = Libdl.dlopen(path)
+
+    # Calls the qnpepes_capi_version endpoint to get the compiled version string
     version_ptr = Libdl.dlsym(handle, :qnpeps_capi_version)
+    # Copies a C-Style string (null terminated)
     got = unsafe_string(@ccall $version_ptr()::Cstring)
-    got == EXPECTED_CAPI_VERSION || _capi_version_mismatch_error(; path, got)
-    _LIB_HANDLE[] = handle
-    return _LIB_HANDLE[]
+    got_version = _compiled_capi_version(got)
+    got_version == EXPECTED_CAPI_VERSION ||
+        _capi_version_mismatch_error(; path, got, got_version)
+    _CUDA_LIB_HANDLE[] = handle
+    return _CUDA_LIB_HANDLE[]
 end
 
 function _sym(; name::Symbol)::Ptr{Cvoid}
-    cached = get(_SYM_CACHE, name, C_NULL)
+    cached = get(_C_FFI_FUNCTION_PTR_CACHE, name, C_NULL)
     cached == C_NULL || return cached
     ptr = Libdl.dlsym(_lib_handle(), name)
-    _SYM_CACHE[name] = ptr
+    _C_FFI_FUNCTION_PTR_CACHE[name] = ptr
     return ptr
 end
 
@@ -64,13 +95,21 @@ function _last_error_location()::String
     return "$file:$line"
 end
 
+function _last_error_message()::String
+    message_ptr = @ccall $(_sym(; name=:qnpeps_last_error_message))()::Cstring
+    message_ptr == C_NULL && return ""
+    return unsafe_string(message_ptr)
+end
+
 @inline function _check(; status::Integer, what::AbstractString)::Nothing
     status == 0 && return
     location = _last_error_location()
     at = isempty(location) ? "" : " at $location"
+    message = _last_error_message()
+    backend = isempty(message) ? "" : "; $message"
     error(
         "cuQuantumNaturalfPEPS: $what failed$at " *
-        "(status $status: $(_strerror(; status)))",
+        "(status $status: $(_strerror(; status))$backend)",
     )
 end
 
@@ -84,18 +123,25 @@ function _sample_bytes(; config::QnpepsConfig, n_samples::Integer)::Int64
     )::Int64
 end
 
-function _scratch_bytes(; config::QnpepsConfig)::Int64
-    return @ccall $(_sym(; name=:qnpeps_sample_scratch_bytes))(
-        config::Ref{QnpepsConfig}
-    )::Int64
+function _scratch_bytes(;
+    config::QnpepsConfig,
+    dim_batch::Integer,
+)::Int64
+    fn = _sym(; name=:qnpeps_sample_scratch_bytes)
+    return @ccall $fn(config::Ref{QnpepsConfig}, dim_batch::UInt64)::Int64
 end
 
 function _sample_footprint_bytes(;
     config::QnpepsConfig,
     n_samples::Integer,
+    dim_batch::Integer,
 )::Int64
     fn = _sym(; name=:qnpeps_sample_footprint_bytes)
-    return @ccall $fn(config::Ref{QnpepsConfig}, n_samples::UInt64)::Int64
+    return @ccall $fn(
+        config::Ref{QnpepsConfig},
+        n_samples::UInt64,
+        dim_batch::UInt64,
+    )::Int64
 end
 
 function _peps_bytes(; config::QnpepsConfig)::Int64

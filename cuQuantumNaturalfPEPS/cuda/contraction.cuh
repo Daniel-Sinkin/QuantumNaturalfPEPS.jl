@@ -2,7 +2,8 @@
 #define QNPEPS_CONTRACTION_CUH
 
 #include "arena_cursor.cuh"
-#include "dtensor.cuh"
+#include "permutation.cuh"
+#include "tensor.cuh"
 
 #include <vector>
 
@@ -42,16 +43,25 @@ struct ContractOperand
 {
     CuArrayConst src{};
     CuArray scratch{};
-    cf* const* ptrs{};
+    cuFloatComplex* const* ptrs{};
 };
 
 struct ContractOut
 {
     CuArray view{};
-    cf* const* ptrs{};
+    cuFloatComplex* const* ptrs{};
 };
 
-auto contract(
+[[nodiscard]] auto contract(
+    ArenaCursor& arena,
+    Linalg& la,
+    const ContractSpec& spec,
+    const DeviceTensor& tensor_a,
+    const DeviceTensor& tensor_b,
+    DeviceTensor& output
+) -> bool;
+
+[[nodiscard]] auto contract(
     ArenaCursor& arena,
     Linalg& la,
     const ContractSpec& spec,
@@ -59,7 +69,7 @@ auto contract(
     const DeviceTensor& tensor_b
 ) -> DeviceTensor;
 
-auto contract_batched(
+[[nodiscard]] auto contract_batched(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -67,9 +77,9 @@ auto contract_batched(
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> void;
+) -> bool;
 
-auto contract_strided(
+[[nodiscard]] auto contract_strided(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -77,7 +87,7 @@ auto contract_strided(
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> void;
+) -> bool;
 }
 
 #endif

@@ -13,13 +13,6 @@ const REF_AX_R = 3
 const REF_AX_D = 2
 const REF_AX_L = 1
 
-struct PepsError <: Exception
-    msg::String
-end
-function Base.showerror(io::IO, e::PepsError)::Nothing
-    return print(io, "cuQuantumNaturalfPEPS PEPS error: ", e.msg)
-end
-
 struct Peps{T}
     tensors::Matrix{Array{T,5}}
 end
@@ -42,6 +35,21 @@ struct CuPeps
     ly::Int
     dim_phys::Int
     dim_bond::Int
+end
+
+function Base.show(io::IO, peps::CuPeps)::Nothing
+    return print(
+        io,
+        "CuPeps(",
+        peps.lx,
+        "×",
+        peps.ly,
+        ", dim_phys=",
+        peps.dim_phys,
+        ", dim_bond=",
+        peps.dim_bond,
+        ")",
+    )
 end
 
 function _cfg_of(
@@ -75,15 +83,19 @@ function _site_array(tensors::AbstractMatrix, row::Integer, col::Integer)::Array
     lx, ly = size(tensors)
     site = tensors[row, col]
     T = eltype(site)
+
     phys = _phys_index(tensors, row, col)
-    up = row > 1 ? commonind(site, tensors[row-1, col]) : nothing
-    right = col < ly ? commonind(site, tensors[row, col+1]) : nothing
-    down = row < lx ? commonind(site, tensors[row+1, col]) : nothing
-    left = col > 1 ? commonind(site, tensors[row, col-1]) : nothing
+    up    = row > 1  ? commonind(site, tensors[row-1, col  ]) : nothing
+    right = col < ly ? commonind(site, tensors[row  , col+1]) : nothing
+    down  = row < lx ? commonind(site, tensors[row+1, col  ]) : nothing
+    left  = col > 1  ? commonind(site, tensors[row  , col-1]) : nothing
     legs = (phys, up, right, down, left)
+
     present = Tuple(leg for leg in legs if leg !== nothing)
-    dims = Tuple(leg === nothing ? 1 : dim(leg) for leg in legs)
+    dims = Tuple(leg !== nothing ? dim(leg) : 1 for leg in legs)
+
     raw = ITensors.array(site, present...)
+
     return reshape(Array{T}(raw), dims)
 end
 
@@ -94,39 +106,49 @@ end
 
 function _validate(arrays::AbstractMatrix)::Nothing
     lx, ly = size(arrays)
-    (lx >= 2 && ly >= 2) || throw(PepsError("PEPS must be at least 2x2 (got $(size(arrays)))"))
+    (lx >= 2 && ly >= 2) ||
+        throw(DimensionMismatch("PEPS must be at least 2x2 (got $(size(arrays)))"))
     dim_phys = size(arrays[1, 1], AX_P)
     for row in 1:lx, col in 1:ly
         A = arrays[row, col]
         if ndims(A) != 5
-            throw(PepsError("site ($row,$col) is rank $(ndims(A)), expected 5 [p,u,r,d,l]"))
+            throw(
+                DimensionMismatch(
+                    "site ($row,$col) is rank $(ndims(A)), expected 5 [p,u,r,d,l]",
+                ),
+            )
         end
         if size(A, AX_P) != dim_phys
-            throw(PepsError("site ($row,$col) physical dim must be uniform ($dim_phys)"))
+            throw(
+                DimensionMismatch(
+                    "site ($row,$col) physical dim must be uniform ($dim_phys)",
+                ),
+            )
         end
     end
     for col in 1:ly
-        size(arrays[1, col], AX_U) == 1 || throw(PepsError("up leg of top site (1,$col) must be 1"))
+        size(arrays[1, col], AX_U) == 1 ||
+            throw(DimensionMismatch("up leg of top site (1,$col) must be 1"))
         if size(arrays[lx, col], AX_D) != 1
-            throw(PepsError("down leg of bottom site ($lx,$col) must be 1"))
+            throw(DimensionMismatch("down leg of bottom site ($lx,$col) must be 1"))
         end
     end
     for row in 1:lx
         if size(arrays[row, 1], AX_L) != 1
-            throw(PepsError("left leg of left site ($row,1) must be 1"))
+            throw(DimensionMismatch("left leg of left site ($row,1) must be 1"))
         end
         if size(arrays[row, ly], AX_R) != 1
-            throw(PepsError("right leg of right site ($row,$ly) must be 1"))
+            throw(DimensionMismatch("right leg of right site ($row,$ly) must be 1"))
         end
     end
     for row in 1:lx, col in 1:(ly-1)
         if size(arrays[row, col], AX_R) != size(arrays[row, col+1], AX_L)
-            throw(PepsError("horizontal bond ($row,$col) right != left"))
+            throw(DimensionMismatch("horizontal bond ($row,$col) right != left"))
         end
     end
     for row in 1:(lx-1), col in 1:ly
         if size(arrays[row, col], AX_D) != size(arrays[row+1, col], AX_U)
-            throw(PepsError("vertical bond ($row,$col) down != up"))
+            throw(DimensionMismatch("vertical bond ($row,$col) down != up"))
         end
     end
     dim_bond = size(arrays[1, 1], AX_R)
@@ -134,7 +156,7 @@ function _validate(arrays::AbstractMatrix)::Nothing
         actual = size(arrays[row, col], AX_R)
         if actual != dim_bond
             throw(
-                PepsError(
+                DimensionMismatch(
                     "horizontal bond ($row,$col) dim $actual != uniform dim_bond $dim_bond",
                 ),
             )
@@ -144,7 +166,7 @@ function _validate(arrays::AbstractMatrix)::Nothing
         actual = size(arrays[row, col], AX_D)
         if actual != dim_bond
             throw(
-                PepsError(
+                DimensionMismatch(
                     "vertical bond ($row,$col) dim $actual != uniform dim_bond $dim_bond",
                 ),
             )
@@ -183,7 +205,7 @@ function upload_peps(peps::Peps)::CuPeps
     packed_bytes = sizeof(ComplexF32) * length(buf)
     expected_bytes = _peps_bytes(; config)
     if packed_bytes != expected_bytes
-        throw(PepsError("packed PEPS is $packed_bytes bytes but C layout expects $expected_bytes"))
+        error("packed PEPS is $packed_bytes bytes but C layout expects $expected_bytes")
     end
     return CuPeps(CuArray(buf), lx, ly, _dim_phys(peps), _dim_bond(peps))
 end

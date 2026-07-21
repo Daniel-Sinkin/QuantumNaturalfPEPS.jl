@@ -19,7 +19,7 @@ struct SampleArgs
     f64* lognorm_out;
     uint64_t n_samples;
     uint64_t batch_base;
-    uint64_t dim_batch_pin;
+    uint64_t dim_batch;
     void* stream;
 };
 
@@ -32,6 +32,7 @@ struct SampleMultigpuArgs
     f64* logpc_out;
     f64* lognorm_out;
     uint64_t n_samples;
+    uint64_t dim_batch;
 };
 
 auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status;
