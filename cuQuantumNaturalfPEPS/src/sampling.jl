@@ -12,14 +12,34 @@ function _unpack_samples(
     n_samples::Integer,
 )::Vector{Matrix{UInt8}}
     lx, ly = Int(config.lx), Int(config.ly)
-    out = Vector{Matrix{UInt8}}(undef, n_samples)
+    out = [Matrix{UInt8}(undef, lx, ly) for _ in 1:n_samples]
+    return _unpack_samples!(out, bytes, config, n_samples)
+end
+
+function _unpack_samples!(
+    out::Vector{Matrix{UInt8}},
+    bytes::Vector{UInt8},
+    config::QnpepsConfig,
+    n_samples::Integer,
+)::Vector{Matrix{UInt8}}
+    lx, ly = Int(config.lx), Int(config.ly)
+    if length(out) != n_samples
+        throw(DimensionMismatch("sample output has $(length(out)) entries, expected $n_samples"))
+    end
+    if length(bytes) != n_samples * lx * ly
+        throw(DimensionMismatch("packed sample buffer has the wrong length"))
+    end
     @inbounds for sample in 1:n_samples
-        config_matrix = Matrix{UInt8}(undef, lx, ly)
+        config_matrix = out[sample]
+        if size(config_matrix) != (lx, ly)
+            throw(
+                DimensionMismatch("sample $sample has size $(size(config_matrix)), expected ($lx, $ly)"),
+            )
+        end
         base = (sample - 1) * lx * ly
         for row in 1:lx, col in 1:ly
             config_matrix[row, col] = bytes[base + (row-1) * ly + col]
         end
-        out[sample] = config_matrix
     end
     return out
 end
