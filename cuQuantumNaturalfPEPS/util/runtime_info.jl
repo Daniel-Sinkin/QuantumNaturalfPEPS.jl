@@ -3,8 +3,12 @@ using Downloads
 using Libdl
 using cuQuantumNaturalfPEPS
 
+const show_paths = "--show-path" in ARGS
+all(argument == "--show-path" for argument in ARGS) || error("unknown argument")
+
 println("cuQuantumNaturalfPEPS runtime")
-println("  native library: ", realpath(cuQuantumNaturalfPEPS._lib_path()))
+native_library = realpath(cuQuantumNaturalfPEPS._lib_path())
+println("  native library: ", show_paths ? native_library : "build/cuda/qnpeps.so")
 println("  loaded C API: ", cuQuantumNaturalfPEPS.capi_version())
 
 CUDA.versioninfo()
@@ -17,9 +21,9 @@ end
 println("Loaded native library paths:")
 for library in sort!(unique!(libraries))
     resolved = ispath(library) ? realpath(library) : library
-    if resolved == library
-        println("- $library")
+    if show_paths
+        println(resolved == library ? "- $library" : "- $library => $resolved")
     else
-        println("- $library => $resolved")
+        println("- ", basename(resolved))
     end
 end
