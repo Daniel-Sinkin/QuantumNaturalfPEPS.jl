@@ -2,4 +2,5 @@
 #include("DistributedArraysExtension.jl")
 #include("SerializationPatch.jl")
 include("Oks_and_Eks.jl")
+include("Oks_and_Eks_cuda.jl")
 include("Eks.jl")

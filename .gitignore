@@ -5,3 +5,4 @@ cuQuantumNaturalfPEPS/build/
 *.so
 *.jld2
 examples/born_hist_*.csv
+.ipynb_checkpoints/

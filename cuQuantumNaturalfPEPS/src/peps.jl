@@ -188,12 +188,37 @@ end
 _to_device_order(A)::Array{<:Number,5} =
     permutedims(A, (REF_AX_P, REF_AX_U, REF_AX_R, REF_AX_D, REF_AX_L))
 
-function upload_peps(peps::Peps)::CuPeps
-    lx, ly = size(peps)
-    buf = ComplexF32[]
-    for row in 1:lx, col in 1:ly
-        append!(buf, vec(ComplexF32.(_to_device_order(peps.tensors[row, col]))))
+function _packed_peps_length(peps::Peps)::Int
+    return sum(length, peps.tensors)
+end
+
+function _pack_peps!(buf::Vector{ComplexF32}, peps::Peps)::Vector{ComplexF32}
+    expected_elements = _packed_peps_length(peps)
+    if length(buf) != expected_elements
+        throw(
+            DimensionMismatch(
+                "packed PEPS buffer has $(length(buf)) elements, expected $expected_elements",
+            ),
+        )
     end
+
+    offset = 0
+    for row in axes(peps.tensors, 1), col in axes(peps.tensors, 2)
+        site = _to_device_order(peps.tensors[row, col])
+        @inbounds for value in site
+            offset += 1
+            buf[offset] = ComplexF32(value)
+        end
+    end
+    return buf
+end
+
+function _pack_peps(peps::Peps)::Vector{ComplexF32}
+    return _pack_peps!(Vector{ComplexF32}(undef, _packed_peps_length(peps)), peps)
+end
+
+function _check_packed_peps(peps::Peps, buf::Vector{ComplexF32})::Nothing
+    lx, ly = size(peps)
     config = QnpepsConfig(
         lx=lx,
         ly=ly,
@@ -207,5 +232,40 @@ function upload_peps(peps::Peps)::CuPeps
     if packed_bytes != expected_bytes
         error("packed PEPS is $packed_bytes bytes but C layout expects $expected_bytes")
     end
-    return CuPeps(CuArray(buf), lx, ly, _dim_phys(peps), _dim_bond(peps))
+    return nothing
+end
+
+function upload_peps(peps::Peps)::CuPeps
+    buf = _pack_peps(peps)
+    _check_packed_peps(peps, buf)
+    return CuPeps(CuArray(buf), _lx(peps), _ly(peps), _dim_phys(peps), _dim_bond(peps))
+end
+
+function _upload_peps!(
+    device_peps::CuPeps,
+    peps::Peps,
+    buf::Vector{ComplexF32},
+)::CuPeps
+    expected = (_lx(peps), _ly(peps), _dim_phys(peps), _dim_bond(peps))
+    actual = (
+        device_peps.lx,
+        device_peps.ly,
+        device_peps.dim_phys,
+        device_peps.dim_bond,
+    )
+    if actual != expected
+        throw(DimensionMismatch("$device_peps cannot store Peps$(expected)"))
+    end
+    _pack_peps!(buf, peps)
+    _check_packed_peps(peps, buf)
+    copyto!(device_peps.data, buf)
+    return device_peps
+end
+
+function upload_peps!(device_peps::CuPeps, peps::Peps)::CuPeps
+    return _upload_peps!(
+        device_peps,
+        peps,
+        Vector{ComplexF32}(undef, length(device_peps.data)),
+    )
 end
