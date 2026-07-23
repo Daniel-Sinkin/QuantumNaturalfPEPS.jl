@@ -9,15 +9,17 @@ raw_f64(a)::Ptr{Float64} = reinterpret(Ptr{Float64}, pointer(a))
 
 function ffi()::Nothing
     if !CUDA.functional()
-        println("app/ffi Needs CUDA.")
+        println("app/ffi needs CUDA.")
         return nothing
     end
     println("capi_version $(unsafe_string(FFI.capi_version()))")
 
+    # TODO: Rewrite this to introduce the persistent Julia Context struct
+
     n_samples = 8
     dim_batch = min(n_samples, MAX_BATCH_SIZE)
 
-    device_peps = upload_peps(load_peps(grid_peps(LX, LY, DIM_BOND)))
+    device_peps = upload_peps(load_peps(peps_as_itensors(LX, LY, DIM_BOND)))
     peps_data = device_peps.data
     config = QnpepsConfig(
         lx=device_peps.lx,
@@ -117,5 +119,3 @@ function ffi()::Nothing
     FFI.sampler_pool_release()
     return nothing
 end
-
-ffi()

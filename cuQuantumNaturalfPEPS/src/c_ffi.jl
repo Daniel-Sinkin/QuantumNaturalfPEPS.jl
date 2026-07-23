@@ -8,6 +8,7 @@ using Libdl
 const _CUDA_LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 # Each function is at a byte offset into the _CUDA_LIB_HANDLE and needs to be queried via
 # the string name, this caches those offsets so every function has to only be found once
+# this is accessed in the _sym() function
 const _C_FFI_FUNCTION_PTR_CACHE = Dict{Symbol,Ptr{Cvoid}}()
 
 const _C_API_VERSION_FILE = normpath(joinpath(@__DIR__, "..", "c_api_version.txt"))
@@ -18,6 +19,7 @@ const EXPECTED_CAPI_VERSION = let
         error("invalid C API version in $_C_API_VERSION_FILE: $version")
     version
 end
+# Regex (Regular Expressions) patterns which allows us to structurally recover the version
 const _COMPILED_CAPI_VERSION_PATTERN =
     r"^cuQuantumNaturalfPEPS ([0-9]+\.[0-9]+\.[0-9]+)(?: \([0-9]{4}-[0-9]{2}-[0-9]{2}\))?$"
 
@@ -69,6 +71,7 @@ function _lib_handle()::Ptr{Cvoid}
     return _CUDA_LIB_HANDLE[]
 end
 
+# This is a cache for the function pointers which we look up by name
 function _sym(; name::Symbol)::Ptr{Cvoid}
     cached = get(_C_FFI_FUNCTION_PTR_CACHE, name, C_NULL)
     cached == C_NULL || return cached
