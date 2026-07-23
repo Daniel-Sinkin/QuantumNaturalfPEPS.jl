@@ -1,4 +1,4 @@
-import cuQuantumNaturalfPEPS
+using cuQuantumNaturalfPEPS
 using CUDA
 using LinearAlgebra
 
