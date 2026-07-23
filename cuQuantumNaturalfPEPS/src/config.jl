@@ -92,4 +92,54 @@ struct QnpepsCtxSampleArgs
     log_gauge::UInt
     n_samples::UInt64
     batch_base::UInt64
+    dim_batch::UInt64
+end
+
+struct QnpepsSampleHostArgs
+    struct_size::UInt32
+    gpus::Int32
+    peps::UInt
+    dlenv::UInt
+    samples_out::UInt
+    log_prob_config::UInt
+    log_gauge::UInt
+    n_samples::UInt64
+    batch_base::UInt64
+    dim_batch::UInt64
+    stream::UInt
+end
+
+struct QnpepsZipupPepsRowArgs
+    struct_size::UInt32
+    row::Int32
+    peps_row::UInt
+    peps_row_bytes::UInt64
+    mps_dims::UInt
+    mps_values::UInt
+    mps_bytes::UInt64
+    output_dims::UInt
+    output_values::UInt
+    output_bytes::UInt64
+end
+
+struct QnpepsZipupMpoMpsDesc
+    struct_size::UInt32
+    num_sites::Int32
+    maxdim::Int32
+    reserved::Int32
+    mpo_dims::UInt
+    mps_dims::UInt
+end
+
+struct QnpepsZipupMpoMpsArgs
+    struct_size::UInt32
+    reserved::UInt32
+    mpo::UInt
+    mpo_bytes::UInt64
+    mps::UInt
+    mps_bytes::UInt64
+    output::UInt
+    output_bytes::UInt64
+    log_gauge::UInt
+    stream::UInt
 end

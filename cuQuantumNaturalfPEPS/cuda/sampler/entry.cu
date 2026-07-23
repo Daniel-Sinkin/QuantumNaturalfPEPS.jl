@@ -13,9 +13,9 @@
 
 namespace qnpeps
 {
-[[nodiscard]] static auto
-dlenv_dims_fit_sampler(const std::vector<int>& dims, int num_sites, int dim_bond, int bond_cap)
-    -> bool
+[[nodiscard]] static auto dlenv_dims_fit_sampler(
+    const std::vector<int>& dims, int num_sites, int dim_bond, int bond_cap
+) -> bool
 {
     for (auto site = 0; site < num_sites; ++site)
     {
@@ -40,7 +40,8 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto n_samples = args.n_samples;
     const auto batch_base = args.batch_base;
 
-    if (not ctx.dlenv.valid[ctx.dlenv.active]) return set_err(QNPEPS_ERR_BAD_CONFIG);
+    const auto& active_lane = ctx.dlenv.lanes[ctx.dlenv.active_lane];
+    if (not active_lane.valid) return set_err(QNPEPS_ERR_BAD_CONFIG);
     if (n_samples == 0) return QNPEPS_OK;
 
     const auto& config = ctx.cfg;
@@ -50,8 +51,7 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto chi_dl = std::min(config.chi_dl, dim_bond * dim_bond);
 
     const auto n_samples_i = static_cast<i64>(n_samples);
-    auto dim_batch = std::min<i64>(n_samples_i, k_max_batch_size);
-    if (dim_batch < 1) dim_batch = 1;
+    const auto dim_batch = static_cast<i64>(args.dim_batch);
     if (ctx.sampler.allocation.allocated and dim_batch > ctx.sampler.allocation.dim_batch_capacity)
     {
         CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
@@ -71,7 +71,7 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const usize header_bytes{ctx.dlenv.dims.size() * sizeof(int)};
     DlEnvView dlenv_view{};
     dlenv_view.dims = ctx.dlenv.dims.data();
-    dlenv_view.values = byte_offset<cuFloatComplex>(ctx.dlenv.buf[ctx.dlenv.active], header_bytes);
+    dlenv_view.values = byte_offset<cuFloatComplex>(active_lane.packed, header_bytes);
 
     ctx_sampler_setup(ctx, &dlenv_view, nullptr, 0);
     if (err_state() != QNPEPS_OK) return err_state();
@@ -86,8 +86,19 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     std::vector<int> all_batch_ids{};
     all_batch_ids.resize(static_cast<usize>(batches));
     std::iota(all_batch_ids.begin(), all_batch_ids.end(), 0);
-    ctx_sample_run(ctx, all_batch_ids);
+    HostSampleOutput host_output{
+        .samples = output,
+        .logpc = logpc_out,
+        .lognorm = lognorm_out,
+        .n_samples = n_samples,
+    };
+    ctx_sample_run(
+        ctx,
+        all_batch_ids,
+        args.output_location == SampleOutputLocation::host ? &host_output : nullptr
+    );
     CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
+    if (args.output_location == SampleOutputLocation::host) return err_state();
 
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
@@ -184,9 +195,10 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     DlEnvView dlenv_view{};
     dlenv_view.dims = ctx.dlenv.dims.data();
     dlenv_view.values = byte_offset<cuFloatComplex>(device_dlenv, header_bytes);
-    ctx.dlenv.buf[0] = const_cast<void*>(device_dlenv);
-    ctx.dlenv.active = 0;
-    ctx.dlenv.valid[0] = true;
+    auto& dlenv_lane = ctx.dlenv.lanes.front();
+    dlenv_lane.packed = const_cast<void*>(device_dlenv);
+    dlenv_lane.valid = true;
+    ctx.dlenv.active_lane = 0;
 
     DEFER(
         [&]
@@ -205,8 +217,19 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
     std::vector<int> all_batch_ids{};
     all_batch_ids.resize(static_cast<usize>(batches));
     std::iota(all_batch_ids.begin(), all_batch_ids.end(), 0);
-    ctx_sample_run(ctx, all_batch_ids);
+    HostSampleOutput host_output{
+        .samples = output,
+        .logpc = logpc_out,
+        .lognorm = lognorm_out,
+        .n_samples = n_samples,
+    };
+    ctx_sample_run(
+        ctx,
+        all_batch_ids,
+        args.output_location == SampleOutputLocation::host ? &host_output : nullptr
+    );
     CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
+    if (args.output_location == SampleOutputLocation::host) return err_state();
 
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
@@ -252,6 +275,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
     auto* const logpc_out = args.logpc_out;
     auto* const lognorm_out = args.lognorm_out;
     const auto n_samples = args.n_samples;
+    const auto batch_base = args.batch_base;
     const auto dim_batch = static_cast<i64>(args.dim_batch);
 
     if (gpus < 1) return set_err(QNPEPS_ERR_BAD_CONFIG);
@@ -343,6 +367,12 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
 
     std::vector<GpuShard> shards{};
     shards.resize(gpu_count);
+    HostSampleOutput host_output{
+        .samples = output,
+        .logpc = logpc_out,
+        .lognorm = lognorm_out,
+        .n_samples = n_samples,
+    };
 
     const auto dlenv_values_bytes = sizeof(cuFloatComplex) * static_cast<usize>(dlenv_nvals);
     const auto peps_bytes = sizeof(cuFloatComplex) * static_cast<usize>(peps_elems);
@@ -382,8 +412,9 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             capture_error();
             return;
         }
-        const auto header_status =
-            cudaMemcpy(device_dlenv_copy, dims.data(), header_bytes, cudaMemcpyHostToDevice);
+        const auto upload = [](void* destination, const void* source, usize bytes)
+        { return cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice); };
+        const auto header_status = upload(device_dlenv_copy, dims.data(), header_bytes);
         if (header_status != cudaSuccess)
         {
             CUDA_NOCHECK(cudaFree(device_dlenv_copy));
@@ -392,11 +423,10 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             capture_error();
             return;
         }
-        const auto values_status = cudaMemcpy(
+        const auto values_status = upload(
             byte_offset<cuFloatComplex>(device_dlenv_copy, header_bytes),
             host_dlenv.data(),
-            dlenv_values_bytes,
-            cudaMemcpyHostToDevice
+            dlenv_values_bytes
         );
         if (values_status != cudaSuccess)
         {
@@ -406,8 +436,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             capture_error();
             return;
         }
-        const auto peps_status =
-            cudaMemcpy(device_peps_copy, peps_staging.data(), peps_bytes, cudaMemcpyHostToDevice);
+        const auto peps_status = upload(device_peps_copy, peps_staging.data(), peps_bytes);
         if (peps_status != cudaSuccess)
         {
             CUDA_NOCHECK(cudaFree(device_dlenv_copy));
@@ -441,24 +470,33 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         ctx.sampler.execution.dim_batch = dim_batch_i;
         ctx.sampler.allocation.dim_batch_capacity = dim_batch_i;
         ctx.dlenv.dims = dims;
-        ctx.dlenv.buf[0] = device_dlenv_copy;
-        ctx.dlenv.active = 0;
-        ctx.dlenv.valid[0] = true;
+        auto& dlenv_lane = ctx.dlenv.lanes.front();
+        dlenv_lane.packed = device_dlenv_copy;
+        dlenv_lane.valid = true;
+        ctx.dlenv.active_lane = 0;
 
         DlEnvView view{};
         view.dims = ctx.dlenv.dims.data();
-        view.values = byte_offset<cuFloatComplex>(ctx.dlenv.buf[0], header_bytes);
+        view.values = byte_offset<cuFloatComplex>(dlenv_lane.packed, header_bytes);
 
         ctx_sampler_setup(ctx, &view, nullptr, 0);
         if (err_state() == QNPEPS_OK)
         {
+            ctx.sampler.samp.cfg().batch_base = batch_base;
             ctx_sample_refresh(ctx, device_peps_copy, PepsLayout::canonical);
-            ctx_sample_run(ctx, batches_of_gpu[g]);
+            ctx_sample_run(
+                ctx,
+                batches_of_gpu[g],
+                args.output_location == SampleOutputLocation::host ? &host_output : nullptr
+            );
         }
         CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
-        shard.samples = std::move(ctx.sampler.staging.all_samples);
-        shard.logpc = std::move(ctx.sampler.staging.all_logpc);
-        shard.lognorm = std::move(ctx.sampler.staging.all_lognorm);
+        if (args.output_location == SampleOutputLocation::device)
+        {
+            shard.samples = std::move(ctx.sampler.staging.all_samples);
+            shard.logpc = std::move(ctx.sampler.staging.all_logpc);
+            shard.lognorm = std::move(ctx.sampler.staging.all_lognorm);
+        }
         capture_error();
 
         ctx_sampler_free(ctx);
@@ -482,6 +520,7 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
             return set_err_at(shard.err, shard.err_file, shard.err_line, message);
         }
     }
+    if (args.output_location == SampleOutputLocation::host) return err_state();
 
     const i64 sample_len{static_cast<i64>(lx) * ly};
     const auto sample_len_u = static_cast<usize>(sample_len);
@@ -499,8 +538,8 @@ auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args)
         const auto slot_in_batch = static_cast<usize>(sample % dim_batch_u64);
         const GpuShard& shard = shards[static_cast<usize>(batch_id % gpus)];
 
-        const auto batch_offset =
-            static_cast<usize>(batch_id / gpus) * static_cast<usize>(dim_batch);
+        const auto batches_before = static_cast<usize>(batch_id / gpus);
+        const auto batch_offset = batches_before * static_cast<usize>(dim_batch);
         const auto shard_sample = batch_offset + slot_in_batch;
         if ((shard_sample + 1) * sample_len_u > shard.samples.size())
         {
