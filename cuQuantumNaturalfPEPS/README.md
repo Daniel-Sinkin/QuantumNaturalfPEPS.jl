@@ -46,6 +46,8 @@ environment for this checkout is active by running this command.
 source cuQuantumNaturalfPEPS/setup.sh --check
 ```
 
+You might see a warning that cuDNN is not compiled or not found, that is safe to ignore.
+
 ## Running the examples
 The following are the examples which show off most of the functionality of this library so far.
 ```bash

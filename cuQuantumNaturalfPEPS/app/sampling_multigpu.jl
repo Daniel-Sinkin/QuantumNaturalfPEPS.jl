@@ -5,12 +5,13 @@ include(joinpath(@__DIR__, "common.jl"))
 
 function sampling_multigpu()::Nothing
     if !CUDA.functional()
-        println("app/sampling_multigpu Needs CUDA.")
+        println("app/sampling_multigpu needs CUDA.")
         return nothing
     end
-    device_peps = upload_peps(load_peps(grid_peps(LX, LY, DIM_BOND)))
+    device_peps = upload_peps(load_peps(peps_as_itensors(LX, LY, DIM_BOND)))
     dlenv = double_layer(device_peps)
 
+    # TODO: Rewrite this, use this to show the sampling parallel efficiency instead
     sample_peps(device_peps, dlenv, 64; gpus=1, seed=SEED_SAMPLE)
     reference = sample_peps(device_peps, dlenv, NS; gpus=1, seed=SEED_SAMPLE)
     t1 = @elapsed sample_peps(device_peps, dlenv, NS; gpus=1, seed=SEED_SAMPLE)
@@ -29,5 +30,3 @@ function sampling_multigpu()::Nothing
     end
     return nothing
 end
-
-sampling_multigpu()

@@ -5,39 +5,52 @@ include(joinpath(@__DIR__, "common.jl"))
 
 function sampling()::Nothing
     if !CUDA.functional()
-        println("app/sampling Needs CUDA.")
+        println("app/sampling needs CUDA.")
         return nothing
     end
-    device_peps = upload_peps(load_peps(grid_peps(LX, LY, DIM_BOND)))
-    dlenv = double_layer(device_peps)
+    host_peps = cuQuantumNaturalfPEPS.load_peps(peps_as_itensors(LX, LY, DIM_BOND))
+    device_peps = cuQuantumNaturalfPEPS.upload_peps(host_peps)
+    dlenv = cuQuantumNaturalfPEPS.double_layer(device_peps)
 
-    result = sample_peps(device_peps, dlenv, NS; gpus=1, seed=SEED_SAMPLE)
-    println("n_samples $NS config_dims $(size(result.configs[1]))")
-    println("first_config $(result.configs[1])")
-    println("first_log_prob_config $(result.log_prob_config[1])")
-    println("first_log_gauge $(result.log_gauge[1])")
+    # TODO: Replace this with the sugar API (cpu peps only, result retval)
+    result = cuQuantumNaturalfPEPS.sample_peps(
+        device_peps,
+        dlenv,
+        NS;
+        gpus=1,
+        seed=SEED_SAMPLE,
+    )
 
-    config = QnpepsConfig(
-        lx=dlenv.lx,
-        ly=dlenv.ly,
-        dim_bond=dlenv.dim_bond,
+    num_returned = length(result.configs)
+    if num_returned != NS
+        println("sampling returned $num_returned samples but we queried $NS!")
+        return nothing
+    end
+    println("The sampling returned $num_returned samples as expected")
+
+    log_prob = result.log_prob_config[1]
+    log_gauge = result.log_gauge[1]
+    println("The first sample is $(result.configs[1]), log_prob=$log_prob, log_gauge=$log_gauge")
+
+    # TODO: Remove this and replace with the context preserving one, this mem prealloc julia path is deprecated
+    context = SamplerContext(
+        device_peps;
         chi_s=dlenv.chi_s,
         chi_dl=dlenv.chi_dl,
-        dim_phys=dlenv.dim_phys,
+        seed=SEED_SAMPLE,
+        batch_size=min(NS, MAX_BATCH_SIZE),
     )
     samples = CUDA.zeros(UInt8, NS * dlenv.lx * dlenv.ly)
     log_prob_config = CUDA.zeros(Float64, NS)
     log_gauge = CUDA.zeros(Float64, NS)
     sample_peps!(
-        device_peps.data,
-        dlenv.data,
-        samples,
-        config;
-        seed=SEED_SAMPLE,
-        log_prob_config=log_prob_config,
-        log_gauge=log_gauge,
+        context,
+        samples;
+        log_prob_config,
+        log_gauge,
     )
     CUDA.synchronize()
+    close(context)
 
     flat = Array(samples)
     log_prob_equal = Array(log_prob_config) == result.log_prob_config
@@ -53,5 +66,3 @@ function sampling()::Nothing
     @assert configs_equal
     return nothing
 end
-
-sampling()

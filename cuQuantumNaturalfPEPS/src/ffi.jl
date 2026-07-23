@@ -4,6 +4,11 @@ import .._sym
 import ..QnpepsConfig
 import ..QnpepsSampleArgs
 import ..QnpepsCtxSampleArgs
+import ..QnpepsSampleHostArgs
+import ..QnpepsZipupPepsRowArgs
+import ..QnpepsZipupMpoMpsArgs
+import ..QnpepsZipupMpoMpsDesc
+import ..MAX_BATCH_SIZE
 
 capi_version()::Cstring = @ccall $(_sym(; name=:qnpeps_capi_version))()::Cstring
 
@@ -35,7 +40,23 @@ function ctx_build_dlenv(ctx, peps; cumulative_row_logs)::Cint
     )::Cint
 end
 
-function ctx_sample(ctx, samples_out; log_prob_config, log_gauge, n_samples, batch_base)::Cint
+function ctx_copy_dlenv_host(ctx, output; output_bytes)::Cint
+    return @ccall $(_sym(; name=:qnpeps_ctx_copy_dlenv_host))(
+        ctx::Ptr{Cvoid},
+        output::Ptr{Cvoid},
+        output_bytes::UInt64,
+    )::Cint
+end
+
+function ctx_sample(
+    ctx,
+    samples_out;
+    log_prob_config,
+    log_gauge,
+    n_samples,
+    batch_base,
+    dim_batch=max(1, min(n_samples, MAX_BATCH_SIZE)),
+)::Cint
     args = QnpepsCtxSampleArgs(
         UInt32(sizeof(QnpepsCtxSampleArgs)),
         UInt(samples_out),
@@ -43,8 +64,32 @@ function ctx_sample(ctx, samples_out; log_prob_config, log_gauge, n_samples, bat
         UInt(log_gauge),
         UInt64(n_samples),
         UInt64(batch_base),
+        UInt64(dim_batch),
     )
     return @ccall $(_sym(; name=:qnpeps_ctx_sample))(
+        ctx::Ptr{Cvoid}, args::Ref{QnpepsCtxSampleArgs}
+    )::Cint
+end
+
+function ctx_sample_host(
+    ctx,
+    samples_out;
+    log_prob_config,
+    log_gauge,
+    n_samples,
+    batch_base,
+    dim_batch=max(1, min(n_samples, MAX_BATCH_SIZE)),
+)::Cint
+    args = QnpepsCtxSampleArgs(
+        UInt32(sizeof(QnpepsCtxSampleArgs)),
+        UInt(samples_out),
+        UInt(log_prob_config),
+        UInt(log_gauge),
+        UInt64(n_samples),
+        UInt64(batch_base),
+        UInt64(dim_batch),
+    )
+    return @ccall $(_sym(; name=:qnpeps_ctx_sample_host))(
         ctx::Ptr{Cvoid}, args::Ref{QnpepsCtxSampleArgs}
     )::Cint
 end
@@ -95,32 +140,83 @@ function sample(
     )::Cint
 end
 
-function double_layer_row(
+function sample_host(
     config,
-    row;
-    maxdim,
-    device_peps_row,
-    device_env_below,
-    dlenv_row_out,
-    row_log_out,
+    peps,
+    dlenv;
+    gpus,
+    samples_out,
+    log_prob_config,
+    log_gauge,
+    n_samples,
+    batch_base,
+    dim_batch,
     stream,
 )::Cint
-    return @ccall $(_sym(; name=:qnpeps_double_layer_row))(
+    args = QnpepsSampleHostArgs(
+        UInt32(sizeof(QnpepsSampleHostArgs)),
+        Int32(gpus),
+        UInt(peps),
+        UInt(dlenv),
+        UInt(samples_out),
+        UInt(log_prob_config),
+        UInt(log_gauge),
+        UInt64(n_samples),
+        UInt64(batch_base),
+        UInt64(dim_batch),
+        UInt(stream),
+    )
+    return @ccall $(_sym(; name=:qnpeps_sample_host))(
         config::Ref{QnpepsConfig},
-        row::Cint,
-        maxdim::Cint,
-        device_peps_row::Ptr{Cvoid},
-        device_env_below::Ptr{Cvoid},
-        dlenv_row_out::Ptr{Cvoid},
-        row_log_out::Ptr{Float64},
-        stream::Ptr{Cvoid},
+        args::Ref{QnpepsSampleHostArgs},
     )::Cint
 end
 
-dlenv_row_bytes(config, maxdim)::Int64 =
-    @ccall $(_sym(; name=:qnpeps_dlenv_row_bytes))(
+zipup_peps_row_bytes(config, maxdim)::Int64 =
+    @ccall $(_sym(; name=:qnpeps_zipup_peps_row_bytes))(
         config::Ref{QnpepsConfig}, maxdim::Cint
     )::Int64
+
+function zipup_ctx_create(config, maxdim, out; stream)::Cint
+    return @ccall $(_sym(; name=:qnpeps_zipup_ctx_create))(
+        config::Ref{QnpepsConfig},
+        maxdim::Cint,
+        stream::Ptr{Cvoid},
+        out::Ptr{Ptr{Cvoid}},
+    )::Cint
+end
+
+zipup_ctx_destroy(context)::Nothing =
+    @ccall $(_sym(; name=:qnpeps_zipup_ctx_destroy))(context::Ptr{Cvoid})::Cvoid
+
+zipup_ctx_begin(context)::Cint =
+    @ccall $(_sym(; name=:qnpeps_zipup_ctx_begin))(context::Ptr{Cvoid})::Cint
+
+function zipup_ctx_enqueue_peps_row(context, args)::Cint
+    return @ccall $(_sym(; name=:qnpeps_zipup_ctx_enqueue_peps_row))(
+        context::Ptr{Cvoid}, args::Ref{QnpepsZipupPepsRowArgs}
+    )::Cint
+end
+
+function zipup_ctx_finish(context, scales, count)::Cint
+    return @ccall $(_sym(; name=:qnpeps_zipup_ctx_finish))(
+        context::Ptr{Cvoid},
+        scales::Ptr{Float64},
+        count::UInt64,
+    )::Cint
+end
+
+zipup_mpo_mps_bytes(descriptor)::Int64 =
+    @ccall $(_sym(; name=:qnpeps_zipup_mpo_mps_bytes))(
+        descriptor::Ref{QnpepsZipupMpoMpsDesc}
+    )::Int64
+
+function zipup_mpo_mps(descriptor, args)::Cint
+    return @ccall $(_sym(; name=:qnpeps_zipup_mpo_mps))(
+        descriptor::Ref{QnpepsZipupMpoMpsDesc},
+        args::Ref{QnpepsZipupMpoMpsArgs},
+    )::Cint
+end
 
 function batched_rangefinder(
     input;

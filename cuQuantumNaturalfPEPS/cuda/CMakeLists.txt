@@ -28,6 +28,7 @@ add_library(qnpeps SHARED
   error.cu
   tensor.cu
   permutation.cu
+  zipup_mpo_mps.cu
   dlenv/build.cu
   sampler/kernels.cu
   sampler/rangefinder.cu

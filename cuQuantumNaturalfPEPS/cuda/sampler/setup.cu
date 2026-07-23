@@ -21,7 +21,8 @@ namespace qnpeps
 [[nodiscard]] static auto pointer_slots(usize num_rows, usize num_cols) noexcept -> usize
 {
     const auto num_env_rows = num_rows - 1;
-    return fixed_pointer_slots(num_rows, num_cols) + 2 * num_env_rows * num_cols;
+    const auto layout_slots = dlenv::k_sampling_layout_count * num_env_rows * num_cols;
+    return fixed_pointer_slots(num_rows, num_cols) + layout_slots;
 }
 
 static auto upload_to_device(cuFloatComplex* device_ptr, const HostTensor& host_tensor) -> void
@@ -185,8 +186,9 @@ auto upload_to_device(ArenaCursor& arena, const HostTensor& host_tensor) -> cuFl
         for (auto col = 0_uz; col < num_cols; ++col)
         {
             const int bond_right{bond_dim(cfg.ly, static_cast<int>(col) + 1, cfg.dim_bond)};
-            const auto omega_rows =
-                static_cast<usize>(bond_above[col + 1]) * static_cast<usize>(bond_right);
+            const auto bond_above_right = static_cast<usize>(bond_above[col + 1]);
+            const auto bond_right_u = static_cast<usize>(bond_right);
+            const auto omega_rows = bond_above_right * bond_right_u;
             const auto omega_cols = static_cast<usize>(ket_bonds[col + 1]);
             if (seen.emplace(std::make_pair(omega_rows, omega_cols), 0).second)
             {
@@ -323,9 +325,10 @@ auto upload_to_device(ArenaCursor& arena, const HostTensor& host_tensor) -> cuFl
         }
     }
 
-    dlenv::ensure_dlenv_views(ctx);
+    dlenv::ensure_sampling_buffers(ctx);
     if (err_state() != QNPEPS_OK) return false;
-    dlenv::materialize_dlenv_views(ctx, dlenv_view.values, ctx.dlenv.views[ctx.dlenv.active]);
+    auto& active_lane = ctx.dlenv.lanes[ctx.dlenv.active_lane];
+    dlenv::materialize_sampling_buffer(ctx, dlenv_view.values, active_lane.sampling);
     return err_state() == QNPEPS_OK;
 }
 
@@ -509,13 +512,12 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
 
 auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
 {
-    for (auto& view : ctx.dlenv.views)
+    for (auto& lane : ctx.dlenv.lanes)
     {
-        if (not view) continue;
-        CUDA_NOCHECK(cudaFree(view));
-        view = nullptr;
+        if (not lane.sampling) continue;
+        CUDA_NOCHECK(cudaFree(lane.sampling));
+        lane.sampling = nullptr;
     }
-    ctx.dlenv.views_allocated = false;
     ctx.sampler.samp.permutation_cache().release();
     if (ctx.sampler.allocation.owned and ctx.sampler.allocation.base)
         CUDA_NOCHECK(cudaFree(ctx.sampler.allocation.base));

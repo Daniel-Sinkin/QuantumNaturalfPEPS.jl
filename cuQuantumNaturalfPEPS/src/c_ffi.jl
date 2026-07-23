@@ -8,6 +8,7 @@ using Libdl
 const _CUDA_LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 # Each function is at a byte offset into the _CUDA_LIB_HANDLE and needs to be queried via
 # the string name, this caches those offsets so every function has to only be found once
+# this is accessed in the _sym() function
 const _C_FFI_FUNCTION_PTR_CACHE = Dict{Symbol,Ptr{Cvoid}}()
 
 const _C_API_VERSION_FILE = normpath(joinpath(@__DIR__, "..", "c_api_version.txt"))
@@ -18,6 +19,7 @@ const EXPECTED_CAPI_VERSION = let
         error("invalid C API version in $_C_API_VERSION_FILE: $version")
     version
 end
+# Regex (Regular Expressions) patterns which allows us to structurally recover the version
 const _COMPILED_CAPI_VERSION_PATTERN =
     r"^cuQuantumNaturalfPEPS ([0-9]+\.[0-9]+\.[0-9]+)(?: \([0-9]{4}-[0-9]{2}-[0-9]{2}\))?$"
 
@@ -69,6 +71,7 @@ function _lib_handle()::Ptr{Cvoid}
     return _CUDA_LIB_HANDLE[]
 end
 
+# This is a cache for the function pointers which we look up by name
 function _sym(; name::Symbol)::Ptr{Cvoid}
     cached = get(_C_FFI_FUNCTION_PTR_CACHE, name, C_NULL)
     cached == C_NULL || return cached
@@ -166,34 +169,171 @@ function _ffi_build_dlenv(
     _check(; status, what="qnpeps_build_dlenv")
 end
 
-function _dlenv_row_bytes(; config::QnpepsConfig, maxdim::Integer)::Int64
-    return @ccall $(_sym(; name=:qnpeps_dlenv_row_bytes))(
+function _ffi_ctx_create(; config::QnpepsConfig, stream::Ptr{Cvoid})::Ptr{Cvoid}
+    context = Ref{Ptr{Cvoid}}(C_NULL)
+    fn = _sym(; name=:qnpeps_ctx_create)
+    status = @ccall $fn(
+        config::Ref{QnpepsConfig},
+        stream::Ptr{Cvoid},
+        context::Ref{Ptr{Cvoid}},
+    )::Cint
+    _check(; status, what="qnpeps_ctx_create")
+    context[] == C_NULL && error("qnpeps_ctx_create returned a null context")
+    return context[]
+end
+
+function _ffi_ctx_destroy(context::Ptr{Cvoid})::Nothing
+    @ccall $(_sym(; name=:qnpeps_ctx_destroy))(context::Ptr{Cvoid})::Cvoid
+    return nothing
+end
+
+function _ffi_ctx_build_dlenv(
+    context::Ptr{Cvoid},
+    peps::CuPtr,
+    cumulative_row_logs::CuPtr,
+)::Nothing
+    fn = _sym(; name=:qnpeps_ctx_build_dlenv)
+    status = GC.@preserve peps cumulative_row_logs @ccall $fn(
+        context::Ptr{Cvoid},
+        peps::CuPtr{Cvoid},
+        cumulative_row_logs::CuPtr{Float64},
+    )::Cint
+    _check(; status, what="qnpeps_ctx_build_dlenv")
+end
+
+function _ffi_ctx_copy_dlenv_host(
+    context::Ptr{Cvoid}, output::Ptr{UInt8}, output_bytes::Integer
+)::Nothing
+    fn = _sym(; name=:qnpeps_ctx_copy_dlenv_host)
+    status = GC.@preserve output @ccall $fn(
+        context::Ptr{Cvoid},
+        output::Ptr{Cvoid},
+        UInt64(output_bytes)::UInt64,
+    )::Cint
+    _check(; status, what="qnpeps_ctx_copy_dlenv_host")
+end
+
+function _ffi_ctx_sample(
+    context::Ptr{Cvoid};
+    samples::CuPtr,
+    log_prob_config::CuPtr,
+    log_gauge::CuPtr,
+    n_samples::Integer,
+    batch_base::Integer,
+    dim_batch::Integer,
+)::Nothing
+    args = QnpepsCtxSampleArgs(
+        UInt32(sizeof(QnpepsCtxSampleArgs)),
+        UInt(samples),
+        UInt(log_prob_config),
+        UInt(log_gauge),
+        UInt64(n_samples),
+        UInt64(batch_base),
+        UInt64(dim_batch),
+    )
+    fn = _sym(; name=:qnpeps_ctx_sample)
+    status = GC.@preserve samples log_prob_config log_gauge @ccall $fn(
+        context::Ptr{Cvoid},
+        args::Ref{QnpepsCtxSampleArgs},
+    )::Cint
+    _check(; status, what="qnpeps_ctx_sample")
+end
+
+function _ffi_ctx_sample_host(
+    context::Ptr{Cvoid};
+    samples::Ptr{UInt8},
+    log_prob_config::Ptr{Float64},
+    log_gauge::Ptr{Float64},
+    n_samples::Integer,
+    batch_base::Integer,
+    dim_batch::Integer,
+)::Nothing
+    args = QnpepsCtxSampleArgs(
+        UInt32(sizeof(QnpepsCtxSampleArgs)),
+        UInt(samples),
+        UInt(log_prob_config),
+        UInt(log_gauge),
+        UInt64(n_samples),
+        UInt64(batch_base),
+        UInt64(dim_batch),
+    )
+    fn = _sym(; name=:qnpeps_ctx_sample_host)
+    status = GC.@preserve samples log_prob_config log_gauge @ccall $fn(
+        context::Ptr{Cvoid},
+        args::Ref{QnpepsCtxSampleArgs},
+    )::Cint
+    _check(; status, what="qnpeps_ctx_sample_host")
+end
+
+function _zipup_peps_row_bytes(; config::QnpepsConfig, maxdim::Integer)::Int64
+    return @ccall $(_sym(; name=:qnpeps_zipup_peps_row_bytes))(
         config::Ref{QnpepsConfig}, maxdim::Cint
     )::Int64
 end
 
-function _ffi_double_layer_row(
-    ;
-    config::QnpepsConfig,
-    row::Integer,
-    maxdim::Integer,
-    peps_row::CuPtr,
-    env_below::CuPtr,
-    out::CuPtr,
-    row_log::Ref{Float64},
-)::Nothing
-    fn = _sym(; name=:qnpeps_double_layer_row)
-    status = GC.@preserve peps_row out row_log @ccall $fn(
+function _ffi_zipup_ctx_create(
+    ; config::QnpepsConfig, maxdim::Integer, stream::Ptr{Cvoid}
+)::Ptr{Cvoid}
+    context = Ref{Ptr{Cvoid}}(C_NULL)
+    fn = _sym(; name=:qnpeps_zipup_ctx_create)
+    status = @ccall $fn(
         config::Ref{QnpepsConfig},
-        Cint(row)::Cint,
-        Cint(maxdim)::Cint,
-        peps_row::CuPtr{Cvoid},
-        env_below::CuPtr{Cvoid},
-        out::CuPtr{Cvoid},
-        row_log::Ptr{Float64},
-        CUDA.stream().handle::Ptr{Cvoid},
+        maxdim::Cint,
+        stream::Ptr{Cvoid},
+        context::Ref{Ptr{Cvoid}},
     )::Cint
-    _check(; status, what="qnpeps_double_layer_row")
+    _check(; status, what="qnpeps_zipup_ctx_create")
+    context[] == C_NULL && error("qnpeps_zipup_ctx_create returned a null context")
+    return context[]
+end
+
+function _ffi_zipup_ctx_destroy(context::Ptr{Cvoid})::Nothing
+    @ccall $(_sym(; name=:qnpeps_zipup_ctx_destroy))(context::Ptr{Cvoid})::Cvoid
+    return nothing
+end
+
+function _ffi_zipup_ctx_begin(context::Ptr{Cvoid})::Nothing
+    status = @ccall $(_sym(; name=:qnpeps_zipup_ctx_begin))(
+        context::Ptr{Cvoid}
+    )::Cint
+    _check(; status, what="qnpeps_zipup_ctx_begin")
+end
+
+function _ffi_zipup_ctx_enqueue_peps_row(
+    context::Ptr{Cvoid}, args::QnpepsZipupPepsRowArgs
+)::Nothing
+    status = @ccall $(_sym(; name=:qnpeps_zipup_ctx_enqueue_peps_row))(
+        context::Ptr{Cvoid}, args::Ref{QnpepsZipupPepsRowArgs}
+    )::Cint
+    _check(; status, what="qnpeps_zipup_ctx_enqueue_peps_row")
+end
+
+function _ffi_zipup_ctx_finish(context::Ptr{Cvoid}, scales::Vector{Float64})::Nothing
+    fn = _sym(; name=:qnpeps_zipup_ctx_finish)
+    status = GC.@preserve scales @ccall $fn(
+        context::Ptr{Cvoid},
+        pointer(scales)::Ptr{Float64},
+        length(scales)::UInt64,
+    )::Cint
+    _check(; status, what="qnpeps_zipup_ctx_finish")
+end
+
+function _zipup_mpo_mps_bytes(; descriptor::QnpepsZipupMpoMpsDesc)::Int64
+    fn = _sym(; name=:qnpeps_zipup_mpo_mps_bytes)
+    return @ccall $fn(descriptor::Ref{QnpepsZipupMpoMpsDesc})::Int64
+end
+
+function _ffi_zipup_mpo_mps(
+    ;
+    descriptor::QnpepsZipupMpoMpsDesc,
+    args::QnpepsZipupMpoMpsArgs,
+)::Nothing
+    fn = _sym(; name=:qnpeps_zipup_mpo_mps)
+    status = @ccall $fn(
+        descriptor::Ref{QnpepsZipupMpoMpsDesc},
+        args::Ref{QnpepsZipupMpoMpsArgs},
+    )::Cint
+    _check(; status, what="qnpeps_zipup_mpo_mps")
 end
 
 function _ffi_sample(
@@ -232,6 +372,40 @@ function _ffi_sample(
         args::Ref{QnpepsSampleArgs},
     )::Cint
     _check(; status, what="qnpeps_sample")
+end
+
+function _ffi_sample_host(
+    ;
+    config::QnpepsConfig,
+    peps::CuPtr,
+    dlenv::CuPtr,
+    gpus::Integer,
+    samples::Ptr{UInt8},
+    log_prob_config::Ptr{Float64},
+    log_gauge::Ptr{Float64},
+    n_samples::Integer,
+    batch_base::Integer,
+    dim_batch::Integer,
+)::Nothing
+    args = QnpepsSampleHostArgs(
+        UInt32(sizeof(QnpepsSampleHostArgs)),
+        Int32(gpus),
+        UInt(peps),
+        UInt(dlenv),
+        UInt(samples),
+        UInt(log_prob_config),
+        UInt(log_gauge),
+        UInt64(n_samples),
+        UInt64(batch_base),
+        UInt64(dim_batch),
+        UInt(CUDA.stream().handle),
+    )
+    fn = _sym(; name=:qnpeps_sample_host)
+    status = GC.@preserve peps dlenv samples log_prob_config log_gauge @ccall $fn(
+        config::Ref{QnpepsConfig},
+        args::Ref{QnpepsSampleHostArgs},
+    )::Cint
+    _check(; status, what="qnpeps_sample_host")
 end
 
 function _ffi_pool_release()::Nothing

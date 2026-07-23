@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -692,7 +693,9 @@ auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout lay
     }
 }
 
-auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
+auto ctx_sample_run(
+    qnpeps_ctx& ctx, const std::vector<int>& batch_ids, HostSampleOutput* host_output
+) -> void
 {
     if (not ctx.sampler.ready())
     {
@@ -726,17 +729,28 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
 
     const auto lane_samples_u = static_cast<usize>(lane_samples);
     const auto dim_batch_u = static_cast<usize>(dim_batch);
-    all_samples.clear();
-    all_logpc.clear();
-    all_lognorm.clear();
-    all_samples.reserve(lane_samples_u * batch_ids.size());
-    all_logpc.reserve(dim_batch_u * batch_ids.size());
-    all_lognorm.reserve(dim_batch_u * batch_ids.size());
+    if (host_output)
+    {
+        if (not host_output->samples or host_output->n_samples == 0)
+        {
+            set_err(QNPEPS_ERR_NULL_ARG);
+            return;
+        }
+    }
+    else
+    {
+        all_samples.clear();
+        all_logpc.clear();
+        all_lognorm.clear();
+        all_samples.reserve(lane_samples_u * batch_ids.size());
+        all_logpc.reserve(dim_batch_u * batch_ids.size());
+        all_lognorm.reserve(dim_batch_u * batch_ids.size());
+    }
 
     {
         const auto num_env_rows = num_rows - 1;
         const auto lane_capacity = static_cast<usize>(ctx.sampler.allocation.dim_batch_capacity);
-        auto* device_sampling = ctx.dlenv.views[ctx.dlenv.active];
+        auto* device_sampling = ctx.dlenv.lanes[ctx.dlenv.active_lane].sampling;
         const auto layout_count = qnpeps::dlenv::k_sampling_layout_count;
         ctx.dlenv.ptr_host.assign(layout_count * num_env_rows * num_cols * lane_capacity, nullptr);
         usize pointer_slot{};
@@ -920,22 +934,62 @@ auto ctx_sample_run(qnpeps_ctx& ctx, const std::vector<int>& batch_ids) -> void
             set_err(QNPEPS_ERR_CUDA);
             break;
         }
-        all_samples.insert(
-            all_samples.end(),
-            ctx.sampler.staging.h_samples,
-            ctx.sampler.staging.h_samples + lane_samples
-        );
-        all_logpc.insert(
-            all_logpc.end(), ctx.sampler.staging.h_logpc, ctx.sampler.staging.h_logpc + dim_batch
-        );
-        all_lognorm.insert(
-            all_lognorm.end(),
-            ctx.sampler.staging.h_lognorm,
-            ctx.sampler.staging.h_lognorm + dim_batch
-        );
+        if (host_output)
+        {
+            const auto sample_offset =
+                static_cast<u64>(batch_id) * static_cast<u64>(dim_batch);
+            if (sample_offset >= host_output->n_samples)
+            {
+                set_err(QNPEPS_ERR_INTERNAL);
+                break;
+            }
+            const auto valid_samples = static_cast<usize>(
+                std::min<u64>(static_cast<u64>(dim_batch), host_output->n_samples - sample_offset)
+            );
+            const auto destination_sample = static_cast<usize>(sample_offset);
+            std::memcpy(
+                host_output->samples + destination_sample * static_cast<usize>(cfg.num_sites()),
+                ctx.sampler.staging.h_samples,
+                valid_samples * static_cast<usize>(cfg.num_sites()) * sizeof(u8)
+            );
+            if (host_output->logpc)
+            {
+                std::memcpy(
+                    host_output->logpc + destination_sample,
+                    ctx.sampler.staging.h_logpc,
+                    valid_samples * sizeof(f64)
+                );
+            }
+            if (host_output->lognorm)
+            {
+                std::memcpy(
+                    host_output->lognorm + destination_sample,
+                    ctx.sampler.staging.h_lognorm,
+                    valid_samples * sizeof(f64)
+                );
+            }
+        }
+        else
+        {
+            all_samples.insert(
+                all_samples.end(),
+                ctx.sampler.staging.h_samples,
+                ctx.sampler.staging.h_samples + lane_samples
+            );
+            all_logpc.insert(
+                all_logpc.end(),
+                ctx.sampler.staging.h_logpc,
+                ctx.sampler.staging.h_logpc + dim_batch
+            );
+            all_lognorm.insert(
+                all_lognorm.end(),
+                ctx.sampler.staging.h_lognorm,
+                ctx.sampler.staging.h_lognorm + dim_batch
+            );
+        }
     }
 
-    if (err_state() == QNPEPS_OK)
+    if (err_state() == QNPEPS_OK and not host_output)
     {
         const auto batch_count = batch_ids.size();
         assert(all_samples.size() == lane_samples_u * batch_count);

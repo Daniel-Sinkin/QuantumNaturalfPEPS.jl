@@ -1,8 +1,15 @@
 Manifest.toml
 /LocalPreferences.toml
+
+# CUDA compilation binaries
 cuQuantumNaturalfPEPS/cuda/build*/
-cuQuantumNaturalfPEPS/build/
+cuQuantumNaturalfPEPS/build/*
 *.so
+
 *.jld2
+
 examples/born_hist_*.csv
+
 .ipynb_checkpoints/
+
+private/
