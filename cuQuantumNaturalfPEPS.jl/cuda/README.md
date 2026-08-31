@@ -1,0 +1,1 @@
+This holds all of the CUDA code, Host (CPU) CUDA code is just C++ and Device (GPU) cuda code is written as kernels which are "launched" (enqueued into a stream, which acts as a type of task queue which the Nvidia CUDA runtime then efficiently distributes to the SM (Simultaneous Multiprocessor) units on the device.

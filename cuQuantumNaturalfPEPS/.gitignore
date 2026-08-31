@@ -1,4 +1,0 @@
-# build artifacts + scratch (paths are relative to this deliverable)
-cuda/build*/
-build/
-Manifest.toml
