@@ -77,7 +77,6 @@ add_library(qnpeps SHARED
   eo/env_build.cu
   e2e/capi.cu
   e2e/gram.cu
-  e2e/minsr_jureca.cu
   e2e/kernels.cu
   e2e/update.cu
   e2e/step.cu
@@ -114,7 +113,6 @@ set_source_files_properties(
   minsr/solve.cu
   minsr/composition.cu
   minsr/distributed.cu
-  e2e/minsr_jureca.cu
   e2e/update.cu
   e2e/step.cu
   e2e/node.cu
