@@ -358,7 +358,11 @@ class DeviceArena
     static std::map<int, std::shared_ptr<DeviceArena>> arenas{};
     const std::lock_guard<std::mutex> lock{registry_mutex};
     const auto existing = arenas.find(device);
-    if (existing != arenas.end()) return existing->second;
+    if (existing != arenas.end())
+    {
+        if (existing->second.use_count() == 1) existing->second->persistent_cursor().rewind();
+        return existing->second;
+    }
     auto arena = DeviceArena::create(device);
     if (arena) arenas.emplace(device, arena);
     return arena;
