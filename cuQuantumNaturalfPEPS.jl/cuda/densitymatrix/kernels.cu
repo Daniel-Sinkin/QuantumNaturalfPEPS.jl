@@ -122,21 +122,34 @@ __global__ auto cu_filter(FilterArgs args) -> void
         }
         args.sorted_indices[position] = selected;
     }
-    for (auto index = 0_i64; index < args.order; ++index)
-    {
-        const auto value = args.solver_values[args.sorted_indices[index]];
-        args.sorted_values[index] = value;
-        if (not cuda::std::isfinite(value)) flags |= 0x80000000_u32;
-    }
-    const auto sign_value = args.sorted_values[0] < 0.0 ? -1.0 : 1.0;
+    const auto sign_value = args.solver_values[args.sorted_indices[0]] < 0.0 ? -1.0 : 1.0;
     if (sign_value < 0.0) flags |= 1_u32;
-    for (auto index = 0_i64; index < args.order; ++index)
-        args.retained_values[index] = args.sorted_values[index] * sign_value;
-    for (auto index = args.order - 1_i64; index >= 0_i64; --index)
+    for (auto index = 1_i64; index < args.order; ++index)
     {
-        if (args.retained_values[index] >= 0.0) break;
-        args.retained_values[index] = 0.0;
-        flags |= 2_u32;
+        const auto selected = args.sorted_indices[index];
+        const auto selected_signed = args.solver_values[selected] * sign_value;
+        const auto selected_mass = selected_signed > 0.0 ? selected_signed : 0.0;
+        auto position = index;
+        while (position > 0_i64)
+        {
+            const auto previous = args.sorted_indices[position - 1_i64];
+            const auto previous_signed = args.solver_values[previous] * sign_value;
+            const auto previous_mass = previous_signed > 0.0 ? previous_signed : 0.0;
+            if (selected_mass <= previous_mass) break;
+            args.sorted_indices[position] = previous;
+            --position;
+        }
+        args.sorted_indices[position] = selected;
+    }
+    for (auto index = 0_i64; index < args.order; ++index)
+        args.sorted_values[index] = args.solver_values[args.sorted_indices[index]];
+    for (auto index = 0_i64; index < args.order; ++index)
+    {
+        const auto value = args.sorted_values[index];
+        const auto signed_value = value * sign_value;
+        args.retained_values[index] = signed_value < 0.0 ? 0.0 : signed_value;
+        if (signed_value < 0.0) flags |= 2_u32;
+        if (not cuda::std::isfinite(value)) flags |= 0x80000000_u32;
     }
     auto scale = 0.0;
     for (auto index = 0_i64; index < args.order; ++index)
@@ -196,9 +209,10 @@ __global__ auto cu_gather_basis(GatherBasisArgs args) -> void
     {
         const auto row = lane % args.order;
         const auto column = lane / args.order;
-        args.basis[lane] = column < rank
-                               ? args.solver_vectors[row + args.order * args.sorted_indices[column]]
-                               : make_cuDoubleComplex(0.0, 0.0);
+        args.basis[lane] =
+            column < rank
+                ? cuConj(args.solver_vectors[row + args.order * args.sorted_indices[column]])
+                : make_cuDoubleComplex(0.0, 0.0);
     }
 }
 
