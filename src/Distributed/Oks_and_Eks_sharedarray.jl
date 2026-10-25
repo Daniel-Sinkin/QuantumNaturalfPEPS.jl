@@ -84,7 +84,7 @@ function Oks_and_Eks_multiproc_sharedarrays(peps, ham_op, sample_nr; Oks=nothing
         Eks[i1:i2]           = out_dict[:Eks]
         logψs[i1:i2]         = out_dict[:logψs]
         samples[i1:i2]       = out_dict[:samples]
-        logpcs[i1:i2]        = out_dict[:weights]
+        logpcs[i1:i2]        = out_dict[:logpcs]
         contract_dims[i1:i2] = out_dict[:contract_dims]
         # No need to copy Oks – it is updated via the SharedArray.
     end
@@ -93,9 +93,9 @@ function Oks_and_Eks_multiproc_sharedarrays(peps, ham_op, sample_nr; Oks=nothing
     if importance_weights
         weights = compute_importance_weights(logψs, logpcs)
     else
-        weights = logpcs
+        weights = ones(length(logpcs))
     end
     @everywhere GC.gc() # Force garbage collection of the shared arrays on the remote workers.
     return Dict(:Oks => transpose(Oks), :Eks => Eks, :logψs => logψs,
-                :samples => samples, :weights => weights, :contract_dims => contract_dims)
+                :samples => samples, :logpcs => logpcs, :weights => weights, :contract_dims => contract_dims)
 end

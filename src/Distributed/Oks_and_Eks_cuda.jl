@@ -76,6 +76,7 @@ function Oks_and_Eks_cuda_multiproc(peps, ham_op, samples, logpcs)
         :Eks => reduce(vcat, (chunk.Eks for chunk in chunks)),
         :logψs => logψs,
         :samples => reduce(vcat, (chunk.samples for chunk in chunks)),
+        :logpcs => logpcs,
         :weights => compute_importance_weights(logψs, logpcs),
         :contract_dims => reduce(vcat, (chunk.contract_dims for chunk in chunks)),
     )
