@@ -20,14 +20,24 @@ sampler_version() = unsafe_string(FFI.capi_version())
 
 @inline function _check(status::Integer, what::AbstractString)
     status == 0 && return
-    error("[cuQuantumNaturalfPEPS] $what failed (status $status, $(e2e_strerror(status)))")
+    location = _last_error_location()
+    at = isempty(location) ? "" : " at $location"
+    message = _last_error_message()
+    backend = isempty(message) ? "" : "; $message"
+    error(
+        "[cuQuantumNaturalfPEPS] $what failed$at (status $status, $(e2e_strerror(status))$backend)",
+    )
 end
 
 @inline function _check_node(status::Integer, what::AbstractString, node::Ptr{Cvoid})
     status == 0 && return
     stage = unsafe_string(FFI.e2e_node_error_stage(node))
+    location = unsafe_string(FFI.e2e_node_error_location(node))
+    message = unsafe_string(FFI.e2e_node_error_message(node))
+    backend = isempty(message) ? "" : "; $message"
     error(
-        "[cuQuantumNaturalfPEPS] $what failed (stage $stage, status $status, $(e2e_strerror(status)))",
+        "[cuQuantumNaturalfPEPS] $what failed at $location " *
+        "(stage $stage, status $status, $(e2e_strerror(status))$backend)",
     )
 end
 

@@ -404,6 +404,20 @@ extern "C" __attribute__((visibility("default"))) const char* qnpeps_e2e_node_er
     return node ? node->state_.step_stage : "unknown";
 }
 
+extern "C" __attribute__((visibility("default"))) const char* qnpeps_e2e_node_error_location(
+    const qnpeps_e2e_node* node
+)
+{
+    return node ? node->state_.failure_location() : "unknown";
+}
+
+extern "C" __attribute__((visibility("default"))) const char* qnpeps_e2e_node_error_message(
+    const qnpeps_e2e_node* node
+)
+{
+    return node ? node->state_.failure_message() : "";
+}
+
 extern "C" qnpeps_e2e_status qnpeps_e2e_node_step_euler(
     qnpeps_e2e_node* node, const QnpepsE2eEulerStepArgs* args
 )

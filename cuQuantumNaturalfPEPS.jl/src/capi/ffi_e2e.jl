@@ -16,6 +16,10 @@ eloc_version()::Cstring = ccall((:qnpeps_eloc_version, _ffi_library()), Cstring,
 
 e2e_node_error_stage(node)::Cstring =
     ccall((:qnpeps_e2e_node_error_stage, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
+e2e_node_error_location(node)::Cstring =
+    ccall((:qnpeps_e2e_node_error_location, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
+e2e_node_error_message(node)::Cstring =
+    ccall((:qnpeps_e2e_node_error_message, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
 
 e2e_dense_count(config, out)::Cint = ccall(
     (:qnpeps_e2e_dense_count, _ffi_library()),
