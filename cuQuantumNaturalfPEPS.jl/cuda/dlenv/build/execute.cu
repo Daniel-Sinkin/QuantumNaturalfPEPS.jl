@@ -151,6 +151,10 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     if (err_state() != QNPEPS_OK) return err_state();
 
     CUDA_CHECK(cudaStreamSynchronize(la.stream()));
+    int fail_host{};
+    if (err_state() == QNPEPS_OK) download(&fail_host, ctx.dl.fail, 1);
+    if (err_state() == QNPEPS_OK) zipup::set_rangefinder_failure(fail_host);
+    if (err_state() != QNPEPS_OK) return err_state();
 
     const auto num_env_rows = num_rows - 1;
     std::vector<f64> scales_host{};
@@ -182,11 +186,6 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     {
         upload(cumulative_row_logs, row_logs.data(), row_logs.size());
     }
-
-    int fail_host{};
-    download(&fail_host, ctx.dl.fail, 1);
-    if (fail_host != 0) set_err(QNPEPS_ERR_CUDA);
-    if (err_state() != QNPEPS_OK) return err_state();
 
     if (ctx.sampler.allocation.allocated)
     {

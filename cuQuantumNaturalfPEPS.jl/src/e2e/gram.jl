@@ -7,11 +7,7 @@ mutable struct E2eGramContext
     stream::CuStream
 end
 
-function E2eGramContext(
-    config::QnpepsE2eConfig,
-    n_samples::Integer;
-    stream::CuStream=CUDA.stream(),
-)
+function E2eGramContext(config::QnpepsE2eConfig, n_samples::Integer; stream::CuStream=CUDA.stream())
     n_samples >= 2 || throw(ArgumentError("n_samples must be at least 2"))
     handle = _ffi_gram_create(config, n_samples, stream)
     context = E2eGramContext(

@@ -2,6 +2,7 @@
 #include "dans_qnpeps_eloc.h"
 #include "eloc_kernels.cuh"
 #include "env_build.cuh"
+#include "term_validation.cuh"
 
 #include <cmath>
 #include <cstdint>
@@ -39,6 +40,20 @@ auto check_cfg(const QnpepsElocConfig* c) -> qnpeps_eloc_status
         or not std::isfinite(c->density_cutoff) or c->density_cutoff < 0.0)
         return QNPEPS_ELOC_ERR_BAD_CONFIG;
     return QNPEPS_ELOC_OK;
+}
+auto check_terms(const QnpepsElocConfig& config, const QnpepsElocTermTable* terms)
+    -> qnpeps_eloc_status
+{
+    switch (qnpeps::eo::validate_terms(config.lx, config.ly, terms))
+    {
+        case qnpeps::eo::TermValidation::ok:
+            return QNPEPS_ELOC_OK;
+        case qnpeps::eo::TermValidation::null_argument:
+            return QNPEPS_ELOC_ERR_NULL_ARG;
+        case qnpeps::eo::TermValidation::bad_config:
+            return QNPEPS_ELOC_ERR_BAD_CONFIG;
+    }
+    return QNPEPS_ELOC_ERR_INTERNAL;
 }
 auto as_cf(const qnpeps_eloc_cbuf* p) -> const cf*
 {
@@ -233,7 +248,7 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_run(
     if (not device_peps or not device_samples or not terms or not logpsi_out or not e_loc_out)
         return QNPEPS_ELOC_ERR_NULL_ARG;
     if (terms->n_flip > 0 and not terms->flip) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (terms->n_diag > 0 and not terms->diag) return QNPEPS_ELOC_ERR_NULL_ARG;
+    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_ELOC_OK) return status;
     if ((o_rows_host or T_dev) and not o_rows_dev) return QNPEPS_ELOC_ERR_NULL_ARG;
     if (n_samples <= 0) return QNPEPS_ELOC_OK;
     qn::clear_err();
@@ -271,7 +286,7 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_ctx_create(
     if (not terms or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
     *out = nullptr;
     if (terms->n_flip > 0 and not terms->flip) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (terms->n_diag > 0 and not terms->diag) return QNPEPS_ELOC_ERR_NULL_ARG;
+    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_ELOC_OK) return status;
     if (n_samples <= 0) return QNPEPS_ELOC_ERR_BAD_CONFIG;
     const auto known = uint32_t{QNPEPS_ELOC_CTX_O_ROWS | QNPEPS_ELOC_CTX_GRAM};
     if ((flags & ~known) != 0
@@ -532,6 +547,7 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_run_scratch_bytes(
     const auto v = check_cfg(cfg);
     if (v != QNPEPS_ELOC_OK) return v;
     if (not out_bytes) return QNPEPS_ELOC_ERR_NULL_ARG;
+    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_ELOC_OK) return status;
     *out_bytes = qn_eloc_run_scratch(*cfg, n_samples, terms);
     return QNPEPS_ELOC_OK;
 }
@@ -576,4 +592,9 @@ extern "C" const char* qnpeps_eloc_strerror(qnpeps_eloc_status status)
 extern "C" const char* qnpeps_eloc_version(void)
 {
     return "cuQuantumNaturalfPEPS eo " QNPEPS_PACKAGE_VERSION;
+}
+
+extern "C" uint64_t qnpeps_eloc_capabilities(void)
+{
+    return QNPEPS_ELOC_CAP_ONE_SITE_Z;
 }

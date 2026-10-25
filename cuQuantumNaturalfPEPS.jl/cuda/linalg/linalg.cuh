@@ -353,10 +353,12 @@ class Linalg
         cudaStream_t stream,
         CublasHandle&& blas,
         CusolverDnHandle&& solver,
-        std::shared_ptr<DeviceArena> device_arena
+        std::shared_ptr<DeviceArena> device_arena,
+        std::unique_ptr<ArenaLease> arena_lease
     )
         : blas_(std::move(blas)), solver_(std::move(solver)), device_(device), stream_(stream),
-          device_arena_(std::move(device_arena))
+          device_arena_(std::move(device_arena)), arena_lease_(std::move(arena_lease)),
+          persistent_arena_(ArenaCursor::persistent(*arena_lease_))
     {
     }
 
@@ -371,6 +373,8 @@ class Linalg
     int device_{-1};
     cudaStream_t stream_{};
     std::shared_ptr<DeviceArena> device_arena_{};
+    std::unique_ptr<ArenaLease> arena_lease_{};
+    ArenaCursor persistent_arena_{};
     DeviceBuffer svd_workspace_{};
     gesvdjInfo_t gesvdj_parameters_{};
     std::map<std::tuple<int, int, int>, int> gesvda_workspace_counts_{};

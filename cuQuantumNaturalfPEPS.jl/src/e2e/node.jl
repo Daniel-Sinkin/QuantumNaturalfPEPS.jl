@@ -27,12 +27,7 @@ function VMCContext(
     diag = terms.diag
     flip = terms.flip
     handle = GC.@preserve diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            isempty(diag) ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-            Int32(length(flip)),
-            isempty(flip) ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-        )
+        table = _eloc_term_table(terms)
         table_ref = Ref(table)
         GC.@preserve table_ref _ffi_node_create(
             config,

@@ -35,8 +35,10 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
 {
     const qnpeps_e2e_status v{qn_e2e::mg::_config_check(cfg)};
     if (v != QNPEPS_E2E_OK) return v;
-    if (not terms or not node_out) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (not node_out) return QNPEPS_E2E_ERR_NULL_ARG;
     *node_out = nullptr;
+    if (const auto status = qn_e2e::mg::_term_check(*cfg, terms); status != QNPEPS_E2E_OK)
+        return status;
     if (ns_capacity < 2 or ns_ahead < 0 or ns_ahead > ns_capacity) return QNPEPS_E2E_ERR_BAD_CONFIG;
     if (dim_batch < 1 or dim_batch > qnpeps::k_max_batch_size or dim_batch > ns_capacity)
         return QNPEPS_E2E_ERR_BAD_CONFIG;

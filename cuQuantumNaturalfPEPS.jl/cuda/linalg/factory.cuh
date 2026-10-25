@@ -31,8 +31,15 @@ namespace qnpeps
     if (not solver) return nullptr;
     auto device_arena = shared_device_arena(device);
     if (not device_arena) return nullptr;
+    auto arena_lease = device_arena->acquire_lease(stream);
+    if (not arena_lease) return nullptr;
     auto linalg = std::unique_ptr<Linalg>{new (std::nothrow) Linalg{
-        device, stream, std::move(*blas), std::move(*solver), std::move(device_arena)
+        device,
+        stream,
+        std::move(*blas),
+        std::move(*solver),
+        std::move(device_arena),
+        std::move(arena_lease)
     }};
     if (not linalg)
     {

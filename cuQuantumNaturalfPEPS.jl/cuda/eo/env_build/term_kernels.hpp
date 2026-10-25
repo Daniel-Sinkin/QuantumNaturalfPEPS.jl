@@ -240,7 +240,10 @@ __global__ auto cu_diagonal(
     for (auto t = int{0}; t < n_diag; ++t)
     {
         const auto sa = int{1 - 2 * static_cast<int>(samples[base + site_a[t]])};
-        const auto sb = int{1 - 2 * static_cast<int>(samples[base + site_b[t]])};
+        const auto sb =
+            int{site_b[t] == QNPEPS_ELOC_DIAG_ONE_SITE_Z
+                    ? 1
+                    : 1 - 2 * static_cast<int>(samples[base + site_b[t]])};
         e += coeff[t] * sa * sb;
     }
     e_loc[2 * lane] += e;
@@ -268,6 +271,12 @@ __global__ auto cu_diagonal_j2_half(
     {
         const auto a = int{site_a[t]};
         const auto b = int{site_b[t]};
+        const auto sa = int{1 - 2 * static_cast<int>(samples[base + a])};
+        if (b == QNPEPS_ELOC_DIAG_ONE_SITE_Z)
+        {
+            e += coeff[t] * sa;
+            continue;
+        }
         const auto row_a = int{a / ly};
         const auto row_b = int{b / ly};
         const auto col_a = int{a % ly};
@@ -283,7 +292,6 @@ __global__ auto cu_diagonal_j2_half(
             if (j2_group >= 0 and (selector & 1) != j2_group) continue;
             if (j2_group >= 0) weight = 2.0;
         }
-        const auto sa = int{1 - 2 * static_cast<int>(samples[base + a])};
         const auto sb = int{1 - 2 * static_cast<int>(samples[base + b])};
         e += weight * coeff[t] * sa * sb;
     }

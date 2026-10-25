@@ -238,7 +238,7 @@ function convergence_native_step!(peps, state_f64, seed, options, terms)
     context = VMCContext(
         config,
         terms;
-        gpus=1,
+        gpus=options[:gpus],
         ns_capacity=1008,
         ns_ahead=0,
         dim_batch=63,

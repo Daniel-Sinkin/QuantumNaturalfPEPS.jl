@@ -7,6 +7,7 @@
 #include "dans_qnpeps_eloc.h"
 #include "dlenv/build.cuh"
 #include "eo/env_build.cuh"
+#include "eo/term_validation.cuh"
 #include "layout.cuh"
 #include "sampler/draw.cuh"
 
@@ -102,6 +103,16 @@ auto check_cfg(const QnpepsE2eConfig* c) -> qnpeps_e2e_status
         return QNPEPS_E2E_ERR_BAD_CONFIG;
     if (c->sample_batch < 0 or c->sample_batch > qnpeps::k_max_batch_size)
         return QNPEPS_E2E_ERR_BAD_CONFIG;
+    return QNPEPS_E2E_OK;
+}
+
+auto check_terms(const QnpepsE2eConfig& config, const void* terms) -> qnpeps_e2e_status
+{
+    const auto status = qnpeps::eo::validate_terms(
+        config.lx, config.ly, static_cast<const QnpepsElocTermTable*>(terms)
+    );
+    if (status == qnpeps::eo::TermValidation::null_argument) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (status == qnpeps::eo::TermValidation::bad_config) return QNPEPS_E2E_ERR_BAD_CONFIG;
     return QNPEPS_E2E_OK;
 }
 
@@ -266,9 +277,10 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_step(
 {
     const qnpeps_e2e_status v{check_cfg(cfg)};
     if (v != QNPEPS_E2E_OK) return v;
-    const auto missing_output = not device_peps or not terms or not theta_dot_out or not e_mean_out
-                                or not e_var_out or not ess_out;
+    const auto missing_output =
+        not device_peps or not theta_dot_out or not e_mean_out or not e_var_out or not ess_out;
     if (missing_output) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_E2E_OK) return status;
     if (n_samples < 2) return QNPEPS_E2E_ERR_BAD_CONFIG;
 
     qn_e2e::clear_err();
@@ -308,8 +320,8 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_step_scratch_bytes(
     const qnpeps_e2e_status v{check_cfg(cfg)};
     if (v != QNPEPS_E2E_OK) return v;
     if (not out_bytes) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_E2E_OK) return status;
     (void) n_samples;
-    (void) terms;
     (void) host_tile_bytes;
     const auto reservation = qnpeps::arena_reservation_bytes();
     if (err_state() != QNPEPS_E2E_OK) return err_state();

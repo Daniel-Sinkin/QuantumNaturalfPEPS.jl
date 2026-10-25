@@ -42,9 +42,8 @@ auto create_zipup_context(const QnpepsConfig& config, int maxdim, cudaStream_t s
     -> qnpeps_zipup_ctx*;
 auto destroy_zipup_context(qnpeps_zipup_ctx* context) -> void;
 auto begin_zipup_context(qnpeps_zipup_ctx& context) -> qnpeps_status;
-auto enqueue_peps_row(
-    qnpeps_zipup_ctx& context, const QnpepsZipupPepsRowArgs& args
-) -> qnpeps_status;
+auto enqueue_peps_row(qnpeps_zipup_ctx& context, const QnpepsZipupPepsRowArgs& args)
+    -> qnpeps_status;
 auto finish_zipup_context(qnpeps_zipup_ctx& context, f64* scales, usize count) -> qnpeps_status;
 }
 

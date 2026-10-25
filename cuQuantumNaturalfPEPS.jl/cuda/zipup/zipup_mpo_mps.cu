@@ -4,6 +4,7 @@
 #include "core/session.cuh"
 #include "linalg/transfer.cuh"
 #include "sampler/trunc_svd.cuh"
+#include "zipup/power_scaling.cuh"
 #include "zipup/zipup_mpo_mps.cuh"
 #include "zipup/kernels.cuh"
 
@@ -359,6 +360,43 @@ class FusedPepsPanelProvider
     DeviceTensor unit_environment_{};
 };
 
+auto analyze_power_input(CuMatrixCF32 input, int* exponent, int* fail_flag, cudaStream_t stream)
+    -> void
+{
+    cu_input_exponent<<<1, k_tree_reduce_threads, 0, stream>>>(
+        {input.data(), static_cast<i64>(input.rows()) * input.cols(), exponent, fail_flag}
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+auto scale_power_intermediate(
+    CuMatrixCF32 matrix,
+    const int* input_exponent,
+    int next_inner_dimension,
+    int* fail_flag,
+    cudaStream_t stream
+) -> void
+{
+    cu_scale_power_intermediate<<<1, k_tree_reduce_threads, 0, stream>>>(
+        {matrix.data(),
+         static_cast<i64>(matrix.rows()) * matrix.cols(),
+         input_exponent,
+         next_inner_dimension,
+         fail_flag}
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+}
+
+auto set_rangefinder_failure(int failure) -> qnpeps_status
+{
+    if ((failure & k_power_nonfinite_flag) != 0)
+        return set_err_at(
+            QNPEPS_ERR_INTERNAL, __FILE__, __LINE__, "nonfinite zipup power intermediate"
+        );
+    if (failure != 0) return set_err(QNPEPS_ERR_CUDA);
+    return QNPEPS_OK;
 }
 
 auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const RangefinderArgs& args)
@@ -376,6 +414,11 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
     auto sketch = alloc(arenas.scratch, {args.rows, rank});
     auto projection = alloc(arenas.scratch, {args.cols, rank});
     if (err_state() != QNPEPS_OK) return;
+    if (not state.power_input_exponent)
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return;
+    }
 
     const std::pair key{args.cols, rank};
     auto omega_it = state.omegas->find(key);
@@ -399,11 +442,26 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
     const CuMatrixCF32 omega_matrix{omega_it->second, args.cols, rank};
     const CuMatrixCF32 sketch_matrix{sketch.d, args.rows, rank};
     const CuMatrixCF32 projection_matrix{projection.d, args.cols, rank};
+    analyze_power_input(input_matrix, state.power_input_exponent, state.fail_flag, la.stream());
     la.matmul(input_matrix, omega_matrix, sketch_matrix);
+    scale_power_intermediate(
+        sketch_matrix, state.power_input_exponent, args.rows, state.fail_flag, la.stream()
+    );
     for (auto iteration = 0; iteration < 2; ++iteration)
     {
         la.matmul_left_adj(input_matrix, sketch_matrix, projection_matrix);
+        scale_power_intermediate(
+            projection_matrix, state.power_input_exponent, args.cols, state.fail_flag, la.stream()
+        );
         la.matmul(input_matrix, projection_matrix, sketch_matrix);
+        const auto next_inner_dimension = iteration == 0 ? args.rows : 0;
+        scale_power_intermediate(
+            sketch_matrix,
+            state.power_input_exponent,
+            next_inner_dimension,
+            state.fail_flag,
+            la.stream()
+        );
     }
 
     if (route == trunc_svd::Route::svd)
@@ -515,7 +573,7 @@ auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArg
     const auto stream = linalg.stream();
     auto transient_arena = linalg.transient_arena();
     auto& carved = transient_arena.cursor();
-    auto* fail_flag = carved.take<int>(1);
+    auto* fail_flag = carved.take<int>(2);
     auto* device_scales = carved.take<f64>(layout.sites.size());
     auto* initial_factor = carved.take<cuFloatComplex>(1);
     const auto region = carved.remaining() / 3;
@@ -529,6 +587,7 @@ auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArg
         .initial_factor = initial_factor,
         .device_scales = device_scales,
         .fail_flag = fail_flag,
+        .power_input_exponent = fail_flag + 1,
         .omegas = &omegas,
         .rangefinder_rng = &rangefinder_rng,
     };
@@ -585,7 +644,7 @@ auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArg
     CUDA_CHECK(cudaStreamSynchronize(stream));
     int fail_host{};
     if (err_state() == QNPEPS_OK) download(&fail_host, fail_flag, 1);
-    if (fail_host != 0) set_err(QNPEPS_ERR_CUDA);
+    if (err_state() == QNPEPS_OK) set_rangefinder_failure(fail_host);
     if (err_state() == QNPEPS_OK) accumulate_log_scales(state, layout.sites.size(), log_scale);
     if (err_state() == QNPEPS_OK) *args->log_gauge = log_scale;
     return err_state();

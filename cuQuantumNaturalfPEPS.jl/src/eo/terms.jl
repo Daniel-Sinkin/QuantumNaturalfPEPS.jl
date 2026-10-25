@@ -1,3 +1,5 @@
+using Libdl
+
 struct QnpepsElocConfig
     struct_size::UInt32
     lx::Int32
@@ -41,6 +43,9 @@ struct QnpepsElocDiagBond
     coeff::Float64
 end
 
+const ELOC_DIAG_ONE_SITE_Z = Int32(-1)
+const ELOC_CAP_ONE_SITE_Z = UInt64(1)
+
 struct QnpepsElocFlipTerm
     n_flips::Int32
     flip_site::NTuple{4,Int32}
@@ -61,6 +66,40 @@ end
 struct HeisenbergTerms
     diag::Vector{QnpepsElocDiagBond}
     flip::Vector{QnpepsElocFlipTerm}
+end
+
+function _eloc_capabilities()::UInt64
+    handle = Libdl.dlopen(_ffi_library())
+    try
+        symbol = Libdl.dlsym_e(handle, :qnpeps_eloc_capabilities)
+        (isnothing(symbol) || symbol == C_NULL) && return UInt64(0)
+        return ccall(symbol, UInt64, ())
+    finally
+        Libdl.dlclose(handle)
+    end
+end
+
+function _require_eloc_term_capabilities(terms::HeisenbergTerms)::Nothing
+    requires_one_site = any(term -> term.site_b == ELOC_DIAG_ONE_SITE_Z, terms.diag)
+    requires_one_site || return nothing
+    (_eloc_capabilities() & ELOC_CAP_ONE_SITE_Z) != 0 || throw(
+        ArgumentError("the loaded CUDA library does not support one-site Pauli-Z diagonal terms"),
+    )
+    return nothing
+end
+
+function _eloc_term_table(terms::HeisenbergTerms)::QnpepsElocTermTable
+    _require_eloc_term_capabilities(terms)
+    diag = terms.diag
+    flip = terms.flip
+    length(diag) <= typemax(Int32) || throw(ArgumentError("too many diagonal terms"))
+    length(flip) <= typemax(Int32) || throw(ArgumentError("too many flip terms"))
+    return QnpepsElocTermTable(
+        Int32(length(diag)),
+        isempty(diag) ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
+        Int32(length(flip)),
+        isempty(flip) ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
+    )
 end
 
 _site0(i::Integer, j::Integer, ly::Integer) = Int32((i - 1) * ly + (j - 1))
@@ -112,11 +151,10 @@ function truncated_rydberg_terms(
     ly >= 2 || throw(ArgumentError("ly must be at least two"))
     all(isfinite, (Omega, delta, V_nn, V_diag)) ||
         throw(ArgumentError("Rydberg coefficients must be finite"))
-    diag = QnpepsElocDiagBond[]
+    interactions = Tuple{Int32,Int32,Float64}[]
     flip = QnpepsElocFlipTerm[]
     for i in 1:lx, j in 1:ly
         site = _site0(i, j, ly)
-        push!(diag, QnpepsElocDiagBond(site, site, -Float64(delta)))
         push!(
             flip,
             QnpepsElocFlipTerm(
@@ -131,14 +169,31 @@ function truncated_rydberg_terms(
         )
     end
     for i in 1:lx, j in 1:(ly-1)
-        push!(diag, QnpepsElocDiagBond(_site0(i, j, ly), _site0(i, j + 1, ly), Float64(V_nn)))
+        push!(interactions, (_site0(i, j, ly), _site0(i, j + 1, ly), Float64(V_nn)))
     end
     for i in 1:(lx-1), j in 1:ly
-        push!(diag, QnpepsElocDiagBond(_site0(i, j, ly), _site0(i + 1, j, ly), Float64(V_nn)))
+        push!(interactions, (_site0(i, j, ly), _site0(i + 1, j, ly), Float64(V_nn)))
     end
     for i in 1:(lx-1), j in 1:(ly-1)
-        push!(diag, QnpepsElocDiagBond(_site0(i, j, ly), _site0(i + 1, j + 1, ly), Float64(V_diag)))
-        push!(diag, QnpepsElocDiagBond(_site0(i + 1, j, ly), _site0(i, j + 1, ly), Float64(V_diag)))
+        push!(interactions, (_site0(i, j, ly), _site0(i + 1, j + 1, ly), Float64(V_diag)))
+        push!(interactions, (_site0(i + 1, j, ly), _site0(i, j + 1, ly), Float64(V_diag)))
+    end
+    fields = fill(0.5 * Float64(delta), lx * ly)
+    constant = -0.5 * lx * ly * Float64(delta)
+    diag = QnpepsElocDiagBond[]
+    for (site_a, site_b, interaction) in interactions
+        quarter = 0.25 * interaction
+        constant += quarter
+        fields[Int(site_a)+1] -= quarter
+        fields[Int(site_b)+1] -= quarter
+    end
+    constant == 0.0 || push!(diag, QnpepsElocDiagBond(Int32(0), Int32(0), constant))
+    for (index, field) in pairs(fields)
+        field == 0.0 ||
+            push!(diag, QnpepsElocDiagBond(Int32(index - 1), ELOC_DIAG_ONE_SITE_Z, field))
+    end
+    for (site_a, site_b, interaction) in interactions
+        interaction == 0.0 || push!(diag, QnpepsElocDiagBond(site_a, site_b, 0.25 * interaction))
     end
     return HeisenbergTerms(diag, flip)
 end

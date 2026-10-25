@@ -9,6 +9,8 @@ auto Linalg::destroy() -> void
     const auto have_caller = cudaGetDevice(&caller_device) == cudaSuccess;
     const auto switched = have_caller and device_ >= 0 and caller_device != device_
                           and cudaSetDevice(device_) == cudaSuccess;
+    svd_workspace_ = DeviceBuffer{};
+    if (arena_lease_) arena_lease_->release();
     if (gesvdj_parameters_) CUDA_NOCHECK(cusolverDnDestroyGesvdjInfo(gesvdj_parameters_));
     gesvdj_parameters_ = nullptr;
     blas_.reset();

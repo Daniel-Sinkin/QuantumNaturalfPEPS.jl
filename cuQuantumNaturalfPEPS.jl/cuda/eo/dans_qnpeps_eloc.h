@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+#define QNPEPS_ELOC_DIAG_ONE_SITE_Z (-1)
+#define QNPEPS_ELOC_CAP_ONE_SITE_Z UINT64_C(1)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -249,6 +252,7 @@ extern "C"
 
     const char* qnpeps_eloc_strerror(qnpeps_eloc_status status);
     const char* qnpeps_eloc_version(void);
+    uint64_t qnpeps_eloc_capabilities(void);
 
 #ifdef __cplusplus
 #    pragma GCC visibility pop

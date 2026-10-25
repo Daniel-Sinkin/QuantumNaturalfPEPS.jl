@@ -73,12 +73,7 @@ function step_scratch_bytes(
     diag = terms.diag
     flip = terms.flip
     st = GC.@preserve diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            length(diag) == 0 ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-            Int32(length(flip)),
-            length(flip) == 0 ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-        )
+        table = _eloc_term_table(terms)
         table_ref = Ref(table)
         GC.@preserve table_ref FFI.e2e_step_scratch_bytes(
             config,
@@ -103,12 +98,7 @@ function step_multigpu_scratch_bytes(
     diag = terms.diag
     flip = terms.flip
     st = GC.@preserve diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            length(diag) == 0 ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-            Int32(length(flip)),
-            length(flip) == 0 ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-        )
+        table = _eloc_term_table(terms)
         table_ref = Ref(table)
         GC.@preserve table_ref FFI.e2e_step_multigpu_scratch_bytes(
             config,
@@ -216,12 +206,7 @@ function node_footprint_bytes(
     flip = terms.flip
     out = Ref{UInt64}(0)
     status = GC.@preserve diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            isempty(diag) ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-            Int32(length(flip)),
-            isempty(flip) ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-        )
+        table = _eloc_term_table(terms)
         table_ref = Ref(table)
         GC.@preserve table_ref FFI.e2e_node_footprint_bytes(
             config,
@@ -239,12 +224,7 @@ end
 
 function _ffi_gram_create(config::QnpepsE2eConfig, n_samples::Integer, stream::CuStream)
     out = Ref{Ptr{Cvoid}}(C_NULL)
-    status = FFI.e2e_gram_ctx_create(
-        config,
-        Int64(n_samples),
-        Ptr{Cvoid}(stream.handle),
-        out,
-    )
+    status = FFI.e2e_gram_ctx_create(config, Int64(n_samples), Ptr{Cvoid}(stream.handle), out)
     _check(status, "qnpeps_e2e_gram_ctx_create")
     out[] == C_NULL && error("[cuQuantumNaturalfPEPS] Gram create returned a null handle")
     return out[]

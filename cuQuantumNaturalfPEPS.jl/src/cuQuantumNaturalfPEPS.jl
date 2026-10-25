@@ -17,6 +17,7 @@ export QnpepsConfig
 export TRUNCATION_DEFAULT, TRUNCATION_DENSITY
 export QnpepsElocConfig
 export QnpepsElocDiagBond, QnpepsElocFlipTerm, QnpepsElocTermTable, HeisenbergTerms
+export ELOC_DIAG_ONE_SITE_Z, ELOC_CAP_ONE_SITE_Z
 export QnpepsZipupPepsRowArgs, QnpepsZipupMpoMpsDesc, QnpepsZipupMpoMpsArgs
 export QnpepsDensitySettings, QnpepsDensityRankRecord, QnpepsDensityFilterArgs
 export QnpepsDensityWorkspaceSizes

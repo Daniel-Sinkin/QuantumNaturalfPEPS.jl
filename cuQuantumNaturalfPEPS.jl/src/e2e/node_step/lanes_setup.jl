@@ -30,12 +30,7 @@ function _node_step_create_eo_lane(arguments::_NodeStepEoLaneArguments)
         flip = terms.flip
         output = Ref{Ptr{Cvoid}}(C_NULL)
         status = GC.@preserve diag flip begin
-            table = QnpepsElocTermTable(
-                Int32(length(diag)),
-                isempty(diag) ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-                Int32(length(flip)),
-                isempty(flip) ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-            )
+            table = _eloc_term_table(terms)
             table_ref = Ref(table)
             GC.@preserve table_ref FFI.eloc_ctx_create(
                 config,

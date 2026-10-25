@@ -30,6 +30,7 @@ struct State
     cuFloatComplex* initial_factor{};
     f64* device_scales{};
     int* fail_flag{};
+    int* power_input_exponent{};
     std::map<std::pair<int, int>, cuFloatComplex*>* omegas{};
     RangefinderRng* rangefinder_rng{};
 };
@@ -65,6 +66,7 @@ auto normalize_factor(Linalg& la, ArenaCursor& scratch, DeviceTensor factor, f64
     -> void;
 auto accumulate_log_scales(const State& state, usize count, f64& log_scale) -> void;
 auto release_omegas(State& state) -> void;
+auto set_rangefinder_failure(int failure) -> qnpeps_status;
 auto fused_peps_row(State& state, Linalg& la, const Arenas& arenas, const FusedPepsRowArgs& args)
     -> std::vector<DeviceTensor>;
 
