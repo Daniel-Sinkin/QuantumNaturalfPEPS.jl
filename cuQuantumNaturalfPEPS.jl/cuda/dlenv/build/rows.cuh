@@ -34,6 +34,7 @@ class EnvironmentRowBuilder
             .device_scales =
                 build_state_.scales_all + static_cast<usize>(args.build_step) * num_cols,
             .fail_flag = args.fail_flag,
+            .power_input_exponent = args.fail_flag + 1,
             .omegas = &build_state_.omegas,
             .rangefinder_rng = &build_state_.rangefinder_rng,
         };

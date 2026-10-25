@@ -67,12 +67,59 @@ __global__ auto cu_normalize_log(CuNormalizeLogArgs args) -> void
         __syncthreads();
     }
 
-    const auto scale = shared_max[0] > 0.0f ? shared_max[0] : 1.0f;
-    const auto inverse_scale = 1.0f / scale;
-    for (auto index = threadIdx.x; index < args.n; index += blockDim.x)
+    const auto initial_scale = shared_max[0] > 0.0f ? shared_max[0] : 1.0f;
+    const auto initial_inverse_scale = 1.0f / initial_scale;
+    auto scale = initial_scale;
+    if (cuda::std::isfinite(initial_scale) and cuda::std::isfinite(initial_inverse_scale))
     {
-        values[index].x *= inverse_scale;
-        values[index].y *= inverse_scale;
+        for (auto index = threadIdx.x; index < args.n; index += blockDim.x)
+        {
+            values[index].x *= initial_inverse_scale;
+            values[index].y *= initial_inverse_scale;
+        }
+    }
+    else
+    {
+        __syncthreads();
+        f32 local_component_max{};
+        for (auto index = threadIdx.x; index < args.n; index += blockDim.x)
+        {
+            const auto real_abs = cuda::std::abs(values[index].x);
+            const auto imag_abs = cuda::std::abs(values[index].y);
+            const auto component_max = real_abs > imag_abs ? real_abs : imag_abs;
+            if (component_max > local_component_max) local_component_max = component_max;
+        }
+        shared_max[threadIdx.x] = local_component_max;
+        __syncthreads();
+        for (auto offset = blockDim.x / 2; offset > 0; offset >>= 1)
+        {
+            if (threadIdx.x < offset and shared_max[threadIdx.x + offset] > shared_max[threadIdx.x])
+            {
+                shared_max[threadIdx.x] = shared_max[threadIdx.x + offset];
+            }
+            __syncthreads();
+        }
+        const auto component_scale = shared_max[0];
+        if (component_scale > 0.0f and cuda::std::isfinite(component_scale))
+        {
+            scale = component_scale;
+            const auto scale_double = static_cast<f64>(component_scale);
+            for (auto index = threadIdx.x; index < args.n; index += blockDim.x)
+            {
+                values[index].x =
+                    static_cast<f32>(static_cast<f64>(values[index].x) / scale_double);
+                values[index].y =
+                    static_cast<f32>(static_cast<f64>(values[index].y) / scale_double);
+            }
+        }
+        else
+        {
+            for (auto index = threadIdx.x; index < args.n; index += blockDim.x)
+            {
+                values[index].x *= initial_inverse_scale;
+                values[index].y *= initial_inverse_scale;
+            }
+        }
     }
     if (threadIdx.x == 0)
     {
@@ -114,12 +161,17 @@ __global__ auto cu_draw(CuDrawArgs args) -> void
     const f32 uniform_draw{random_uniform(rng_state)};
 
     f32 cumulative{};
-    int chosen{dim_phys - 1};
+    int chosen{};
     for (auto phys = 0; phys < dim_phys; ++phys)
     {
         const f32 weight{is_uniform ? 1.0f : magnitude(rho_lane[diag_index(phys, dim_phys)])};
-        cumulative += weight / total_weight;
-        if (uniform_draw < cumulative)
+        const f32 probability{weight / total_weight};
+        cumulative += probability;
+        if (probability > 0.0f)
+        {
+            chosen = phys;
+        }
+        if (probability > 0.0f and uniform_draw < cumulative)
         {
             chosen = phys;
             break;
@@ -128,8 +180,8 @@ __global__ auto cu_draw(CuDrawArgs args) -> void
     chosen_spins[lane] = chosen;
 
     const f32 chosen_weight{is_uniform ? 1.0f : magnitude(rho_lane[diag_index(chosen, dim_phys)])};
-    const auto chosen_prob = static_cast<f64>(chosen_weight / total_weight);
-    logpc[lane] += cuda::std::log(chosen_prob);
+    const f32 chosen_probability{chosen_weight / total_weight};
+    logpc[lane] += cuda::std::log(static_cast<f64>(chosen_probability));
     samples_site[lane * sample_stride] = static_cast<u8>(chosen);
 }
 

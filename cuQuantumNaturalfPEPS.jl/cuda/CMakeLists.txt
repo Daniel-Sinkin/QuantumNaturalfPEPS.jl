@@ -204,6 +204,16 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_peps_init_gate PRIVATE qnpeps CUDA::cudart)
   add_test(NAME qnpeps_peps_init_gate COMMAND qnpeps_peps_init_gate)
 
+  add_executable(qnpeps_zipup_power_gate test/zipup_power_gate.cu)
+  target_include_directories(qnpeps_zipup_power_gate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(qnpeps_zipup_power_gate PRIVATE qnpeps CUDA::cudart)
+  add_test(NAME qnpeps_zipup_power_gate COMMAND qnpeps_zipup_power_gate)
+
+  add_executable(qnpeps_zipup_power_graph_gate test/zipup_power_graph_gate.cu)
+  target_include_directories(qnpeps_zipup_power_graph_gate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(qnpeps_zipup_power_graph_gate PRIVATE qnpeps CUDA::cudart)
+  add_test(NAME qnpeps_zipup_power_graph_gate COMMAND qnpeps_zipup_power_graph_gate)
+
   add_executable(qnpeps_gram_gate test/gram_gate.cu)
   target_include_directories(qnpeps_gram_gate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(qnpeps_gram_gate PRIVATE qnpeps CUDA::cudart)

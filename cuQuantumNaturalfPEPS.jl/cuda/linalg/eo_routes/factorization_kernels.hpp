@@ -38,12 +38,58 @@ __global__ auto cu_normalize_log(
             smax[threadIdx.x] = fmaxf(smax[threadIdx.x], smax[threadIdx.x + step]);
         __syncthreads();
     }
-    const auto scale = f32{smax[0] > 0.0f ? smax[0] : 1.0f};
-    const auto inv_scale = f32{1.0f / scale};
-    for (auto elem = static_cast<int>(threadIdx.x); elem < n; elem += blockDim.x)
+    const auto initial_scale = f32{smax[0] > 0.0f ? smax[0] : 1.0f};
+    const auto initial_inverse_scale = f32{1.0f / initial_scale};
+    auto scale = initial_scale;
+    if (cuda::std::isfinite(initial_scale) and cuda::std::isfinite(initial_inverse_scale))
     {
-        row_ptr[elem].re *= inv_scale;
-        row_ptr[elem].im *= inv_scale;
+        for (auto elem = static_cast<int>(threadIdx.x); elem < n; elem += blockDim.x)
+        {
+            row_ptr[elem].re *= initial_inverse_scale;
+            row_ptr[elem].im *= initial_inverse_scale;
+        }
+    }
+    else
+    {
+        __syncthreads();
+        f32 local_component_max{};
+        for (auto elem = static_cast<int>(threadIdx.x); elem < n; elem += blockDim.x)
+        {
+            const auto real_abs = cuda::std::abs(row_ptr[elem].re);
+            const auto imag_abs = cuda::std::abs(row_ptr[elem].im);
+            const auto component_max = real_abs > imag_abs ? real_abs : imag_abs;
+            local_component_max =
+                component_max > local_component_max ? component_max : local_component_max;
+        }
+        smax[threadIdx.x] = local_component_max;
+        __syncthreads();
+        for (auto step = static_cast<int>(blockDim.x / 2); step > 0; step >>= 1)
+        {
+            if (threadIdx.x < step)
+                smax[threadIdx.x] = fmaxf(smax[threadIdx.x], smax[threadIdx.x + step]);
+            __syncthreads();
+        }
+        const auto component_scale = f32{smax[0]};
+        if (component_scale > 0.0f and cuda::std::isfinite(component_scale))
+        {
+            scale = component_scale;
+            const auto scale_double = static_cast<f64>(component_scale);
+            for (auto elem = static_cast<int>(threadIdx.x); elem < n; elem += blockDim.x)
+            {
+                row_ptr[elem].re =
+                    static_cast<f32>(static_cast<f64>(row_ptr[elem].re) / scale_double);
+                row_ptr[elem].im =
+                    static_cast<f32>(static_cast<f64>(row_ptr[elem].im) / scale_double);
+            }
+        }
+        else
+        {
+            for (auto elem = static_cast<int>(threadIdx.x); elem < n; elem += blockDim.x)
+            {
+                row_ptr[elem].re *= initial_inverse_scale;
+                row_ptr[elem].im *= initial_inverse_scale;
+            }
+        }
     }
     if (threadIdx.x == 0)
     {

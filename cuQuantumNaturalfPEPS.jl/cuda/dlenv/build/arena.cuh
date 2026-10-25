@@ -43,7 +43,7 @@ class BuildAllocation
             out += device_align(sizeof(f32));
             out += device_align(sizeof(f64) * num_cols);
             out += 3 * out_slot;
-            out += device_align(sizeof(int));
+            out += device_align(2 * sizeof(int));
             return out;
         }();
         const auto known = retained_rows * (num_cols * out_slot + per_row);
@@ -60,7 +60,7 @@ class BuildAllocation
 
         scratch += k_arena_tail_pad;
 
-        dl_.fail = arena.take<int>(1);
+        dl_.fail = arena.take<int>(2);
         dl_.scales_all = arena.take<f64>(scales_count);
         dl_.unit_environment = arena.take<cuFloatComplex>(1);
         dl_.initial_factor = arena.take<cuFloatComplex>(1);

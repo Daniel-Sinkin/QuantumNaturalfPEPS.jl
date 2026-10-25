@@ -5,6 +5,7 @@
 #include "common.cuh"
 #include "dans_qnpeps_e2e.h"
 #include "dans_qnpeps_eloc.h"
+#include "eo/term_validation.cuh"
 
 #include <algorithm>
 #include <cctype>
@@ -25,6 +26,17 @@ inline constexpr int k_peer_cache_size{k_max_gpu_count + 1};
 inline constexpr int k_probe_fill{0xAB};
 inline constexpr int k_probe_iterations{8};
 inline constexpr usize k_probe_bytes{static_cast<usize>(1) << 20};
+
+[[nodiscard]] inline auto _term_check(const QnpepsE2eConfig& config, const void* terms) noexcept
+    -> qnpeps_e2e_status
+{
+    const auto status = qnpeps::eo::validate_terms(
+        config.lx, config.ly, static_cast<const QnpepsElocTermTable*>(terms)
+    );
+    if (status == qnpeps::eo::TermValidation::null_argument) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (status == qnpeps::eo::TermValidation::bad_config) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    return QNPEPS_E2E_OK;
+}
 
 [[nodiscard]] inline auto sampler_config(const QnpepsE2eConfig& config) noexcept -> QnpepsConfig
 {

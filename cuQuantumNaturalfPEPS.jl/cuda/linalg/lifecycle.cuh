@@ -39,7 +39,7 @@ inline Linalg::~Linalg()
 
 [[nodiscard]] inline auto Linalg::persistent_arena() noexcept -> ArenaCursor&
 {
-    return device_arena_->persistent_cursor();
+    return persistent_arena_;
 }
 
 [[nodiscard]] inline auto Linalg::transient_arena() -> TransientArenaCursor

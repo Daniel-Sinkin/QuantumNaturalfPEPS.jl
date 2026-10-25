@@ -293,6 +293,7 @@ auto enqueue_peps_row(qnpeps_zipup_ctx& opaque_context, const QnpepsZipupPepsRow
         .initial_factor = context.dl.initial_factor,
         .device_scales = context.dl.scales_all + context.scale_count,
         .fail_flag = context.dl.fail,
+        .power_input_exponent = context.dl.fail + 1,
         .omegas = &context.dl.omegas,
         .rangefinder_rng = &context.dl.rangefinder_rng,
     };
@@ -360,7 +361,8 @@ auto finish_zipup_context(qnpeps_zipup_ctx& opaque_context, f64* scales, usize c
     CUDA_CHECK(cudaStreamSynchronize(context.session->stream()));
     context.active = false;
     if (err_state() != QNPEPS_OK) return err_state();
-    if (fail_host != 0) return set_err(QNPEPS_ERR_CUDA);
+    const auto failure_status = zipup::set_rangefinder_failure(fail_host);
+    if (failure_status != QNPEPS_OK) return failure_status;
     for (auto index = 0_uz; index < count; ++index)
         if (not std::isfinite(scales[index])) return set_err(QNPEPS_ERR_INTERNAL);
     return QNPEPS_OK;

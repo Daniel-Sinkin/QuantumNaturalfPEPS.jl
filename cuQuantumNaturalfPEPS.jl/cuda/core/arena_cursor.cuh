@@ -1,6 +1,7 @@
 #ifndef QNPEPS_ARENA_CURSOR_CUH
 #define QNPEPS_ARENA_CURSOR_CUH
 
+#include "core/arena_intervals.hpp"
 #include "core/cuda_utils.cuh"
 
 #include <algorithm>
@@ -16,6 +17,42 @@
 namespace qnpeps
 {
 class DeviceArena;
+
+class ArenaLease
+{
+  public:
+    ~ArenaLease();
+
+    ArenaLease(const ArenaLease&) = delete;
+    ArenaLease(ArenaLease&&) = delete;
+    auto operator=(const ArenaLease&) -> ArenaLease& = delete;
+    auto operator=(ArenaLease&&) -> ArenaLease& = delete;
+
+    [[nodiscard]] auto take(usize bytes) -> void*;
+    [[nodiscard]] auto total() const noexcept -> usize;
+    [[nodiscard]] auto remaining() const noexcept -> usize;
+    [[nodiscard]] auto high_water() const noexcept -> usize;
+    [[nodiscard]] auto reservation_count() const noexcept -> usize;
+    auto release() noexcept -> void;
+
+  private:
+    friend class DeviceArena;
+
+    ArenaLease(
+        std::shared_ptr<DeviceArena> arena,
+        ArenaIntervals::Owner owner,
+        int device,
+        cudaStream_t stream
+    ) noexcept
+        : arena_(std::move(arena)), owner_(owner), device_(device), stream_(stream)
+    {
+    }
+
+    std::shared_ptr<DeviceArena> arena_{};
+    ArenaIntervals::Owner owner_{};
+    int device_{-1};
+    cudaStream_t stream_{};
+};
 
 class ArenaCursor
 {
@@ -33,18 +70,28 @@ class ArenaCursor
         return ArenaCursor{Mode::carve, static_cast<char*>(base), capacity};
     }
 
+    [[nodiscard]] static auto persistent(ArenaLease& lease) noexcept -> ArenaCursor
+    {
+        return ArenaCursor{lease};
+    }
+
     template <typename T>
     auto take(usize count) -> T*
     {
-        std::unique_lock<std::mutex> allocation_lock{};
-        if (allocation_mutex_) allocation_lock = std::unique_lock<std::mutex>{*allocation_mutex_};
-        if (not wait_for_transient_unlocked()) return nullptr;
         if (mode_ == Mode::unbound)
         {
             assert(false);
             set_err(QNPEPS_ERR_INTERNAL);
             return nullptr;
         }
+
+        if (count > std::numeric_limits<usize>::max() / sizeof(T))
+        {
+            set_err(QNPEPS_ERR_OOM);
+            return nullptr;
+        }
+        const auto bytes = count * sizeof(T);
+        if (mode_ == Mode::persistent) return reinterpret_cast<T*>(lease_->take(bytes));
 
         constexpr auto alignment_padding = k_device_malloc_align - 1;
         constexpr auto max_safe_end = std::numeric_limits<usize>::max() - alignment_padding;
@@ -66,7 +113,19 @@ class ArenaCursor
     {
         usize count{1};
         for (const auto factor : factors)
+        {
+            if (factor == 0)
+            {
+                count = 0;
+                break;
+            }
+            if (factor > std::numeric_limits<usize>::max() / count)
+            {
+                set_err(QNPEPS_ERR_OOM);
+                return nullptr;
+            }
             count *= static_cast<usize>(factor);
+        }
         return take<T>(count);
     }
 
@@ -79,26 +138,31 @@ class ArenaCursor
 
     [[nodiscard]] auto total() const noexcept -> usize
     {
-        std::unique_lock<std::mutex> allocation_lock{};
-        if (allocation_mutex_) allocation_lock = std::unique_lock<std::mutex>{*allocation_mutex_};
+        if (mode_ == Mode::persistent) return lease_->total();
         return total_unlocked();
     }
 
     [[nodiscard]] auto remaining() const noexcept -> usize
     {
-        std::unique_lock<std::mutex> allocation_lock{};
-        if (allocation_mutex_) allocation_lock = std::unique_lock<std::mutex>{*allocation_mutex_};
         if (mode_ == Mode::unbound) return 0;
+        if (mode_ == Mode::persistent) return lease_->remaining();
         const auto begin = device_align(offset_);
         return begin < capacity_ ? capacity_ - begin : 0;
     }
 
+    [[nodiscard]] auto high_water() const noexcept -> usize
+    {
+        return mode_ == Mode::persistent ? lease_->high_water() : total_unlocked();
+    }
+
+    [[nodiscard]] auto reservation_count() const noexcept -> usize
+    {
+        return mode_ == Mode::persistent ? lease_->reservation_count() : 0;
+    }
+
     auto rewind() -> void
     {
-        std::unique_lock<std::mutex> allocation_lock{};
-        if (allocation_mutex_) allocation_lock = std::unique_lock<std::mutex>{*allocation_mutex_};
-        if (not wait_for_transient_unlocked()) return;
-        if (mode_ == Mode::unbound)
+        if (mode_ != Mode::carve)
         {
             assert(false);
             set_err(QNPEPS_ERR_INTERNAL);
@@ -113,30 +177,16 @@ class ArenaCursor
     enum class Mode : u8
     {
         unbound,
-        carve
+        carve,
+        persistent
     };
 
-    ArenaCursor(
-        Mode mode,
-        char* base,
-        usize capacity,
-        std::mutex* allocation_mutex = nullptr,
-        cudaEvent_t* transient_completion = nullptr,
-        bool* transient_pending = nullptr
-    ) noexcept
-        : mode_(mode), base_(base), capacity_(capacity), allocation_mutex_(allocation_mutex),
-          transient_completion_(transient_completion), transient_pending_(transient_pending)
+    ArenaCursor(Mode mode, char* base, usize capacity) noexcept
+        : mode_(mode), base_(base), capacity_(capacity)
     {
     }
 
-    [[nodiscard]] auto wait_for_transient_unlocked() -> bool
-    {
-        if (not transient_pending_ or not *transient_pending_) return true;
-        CUDA_CHECK(cudaEventSynchronize(*transient_completion_));
-        if (err_state() != QNPEPS_OK) return false;
-        *transient_pending_ = false;
-        return true;
-    }
+    explicit ArenaCursor(ArenaLease& lease) noexcept : mode_(Mode::persistent), lease_(&lease) {}
 
     [[nodiscard]] auto total_unlocked() const noexcept -> usize
     {
@@ -148,9 +198,7 @@ class ArenaCursor
     char* base_{};
     usize capacity_{};
     usize offset_{};
-    std::mutex* allocation_mutex_{};
-    cudaEvent_t* transient_completion_{};
-    bool* transient_pending_{};
+    ArenaLease* lease_{};
 };
 
 class TransientArenaCursor
@@ -259,7 +307,7 @@ inline auto release_device_arena(char*& base, usize& capacity) -> void
     capacity = 0;
 }
 
-class DeviceArena
+class DeviceArena : public std::enable_shared_from_this<DeviceArena>
 {
   public:
     [[nodiscard]] static auto create(int device) -> std::shared_ptr<DeviceArena>
@@ -287,14 +335,11 @@ class DeviceArena
                 set_cuda_err(restore_status);
         }
         if (err_state() != QNPEPS_OK) return nullptr;
-        arena->persistent_cursor_ = ArenaCursor{
-            ArenaCursor::Mode::carve,
-            arena->base_,
-            arena->capacity_,
-            &arena->allocation_mutex_,
-            &arena->transient_completion_,
-            &arena->transient_pending_,
-        };
+        if (not arena->intervals_.reset(arena->capacity_, k_device_malloc_align))
+        {
+            set_err(QNPEPS_ERR_INTERNAL);
+            return nullptr;
+        }
         return arena;
     }
 
@@ -314,12 +359,28 @@ class DeviceArena
     auto operator=(const DeviceArena&) -> DeviceArena& = delete;
     auto operator=(DeviceArena&&) -> DeviceArena& = delete;
 
-    [[nodiscard]] auto persistent_cursor() noexcept -> ArenaCursor& { return persistent_cursor_; }
+    [[nodiscard]] auto acquire_lease(cudaStream_t stream) -> std::unique_ptr<ArenaLease>
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        if (next_owner_ == std::numeric_limits<ArenaIntervals::Owner>::max())
+        {
+            set_err(QNPEPS_ERR_OOM);
+            return nullptr;
+        }
+        const auto owner = next_owner_++;
+        auto* lease = new (std::nothrow) ArenaLease{shared_from_this(), owner, device_, stream};
+        if (not lease)
+        {
+            set_err(QNPEPS_ERR_OOM);
+            return nullptr;
+        }
+        return std::unique_ptr<ArenaLease>{lease};
+    }
 
     [[nodiscard]] auto transient_cursor(cudaStream_t stream) -> TransientArenaCursor
     {
         std::unique_lock<std::mutex> allocation_lock{allocation_mutex_};
-        const auto persistent_bytes = persistent_cursor_.total_unlocked();
+        const auto persistent_bytes = intervals_.high_water();
         if (transient_pending_)
         {
             CUDA_CHECK(cudaStreamWaitEvent(stream, transient_completion_, 0));
@@ -341,16 +402,164 @@ class DeviceArena
     [[nodiscard]] auto capacity() const noexcept -> usize { return capacity_; }
 
   private:
+    friend class ArenaLease;
+
     explicit DeviceArena(int device) : device_(device) {}
+
+    [[nodiscard]] auto wait_for_transient_unlocked() -> bool
+    {
+        if (not transient_pending_) return true;
+        const auto status = cudaEventSynchronize(transient_completion_);
+        if (status != cudaSuccess)
+        {
+            set_cuda_err(status);
+            return false;
+        }
+        transient_pending_ = false;
+        return true;
+    }
+
+    [[nodiscard]] auto lease_take(ArenaIntervals::Owner owner, usize bytes) -> void*
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        if (not wait_for_transient_unlocked()) return nullptr;
+        const auto interval = intervals_.acquire(owner, bytes);
+        if (not interval)
+        {
+            set_err(QNPEPS_ERR_OOM);
+            return nullptr;
+        }
+        return base_ + interval->begin;
+    }
+
+    [[nodiscard]] auto lease_total(ArenaIntervals::Owner owner) const noexcept -> usize
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        return intervals_.total(owner);
+    }
+
+    [[nodiscard]] auto lease_remaining() const noexcept -> usize
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        return intervals_.largest_free();
+    }
+
+    [[nodiscard]] auto lease_has_reservations(ArenaIntervals::Owner owner) const noexcept -> bool
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        return intervals_.reservation_count(owner) != 0;
+    }
+
+    [[nodiscard]] auto high_water() const noexcept -> usize
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        return intervals_.high_water();
+    }
+
+    [[nodiscard]] auto reservation_count() const noexcept -> usize
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        return intervals_.reservation_count();
+    }
+
+    auto finish_lease(ArenaIntervals::Owner owner, bool reusable) noexcept -> void
+    {
+        std::lock_guard<std::mutex> lock{allocation_mutex_};
+        if (reusable)
+            intervals_.release(owner);
+        else
+            intervals_.quarantine(owner);
+    }
 
     int device_{-1};
     char* base_{};
     usize capacity_{};
-    std::mutex allocation_mutex_{};
+    mutable std::mutex allocation_mutex_{};
     cudaEvent_t transient_completion_{};
     bool transient_pending_{};
-    ArenaCursor persistent_cursor_{};
+    ArenaIntervals intervals_{};
+    ArenaIntervals::Owner next_owner_{1};
 };
+
+inline ArenaLease::~ArenaLease()
+{
+    release();
+}
+
+[[nodiscard]] inline auto ArenaLease::take(usize bytes) -> void*
+{
+    if (not arena_ or owner_ == 0)
+    {
+        set_err(QNPEPS_ERR_INTERNAL);
+        return nullptr;
+    }
+    return arena_->lease_take(owner_, bytes);
+}
+
+[[nodiscard]] inline auto ArenaLease::total() const noexcept -> usize
+{
+    return arena_ and owner_ != 0 ? arena_->lease_total(owner_) : 0;
+}
+
+[[nodiscard]] inline auto ArenaLease::remaining() const noexcept -> usize
+{
+    return arena_ and owner_ != 0 ? arena_->lease_remaining() : 0;
+}
+
+[[nodiscard]] inline auto ArenaLease::high_water() const noexcept -> usize
+{
+    return arena_ and owner_ != 0 ? arena_->high_water() : 0;
+}
+
+[[nodiscard]] inline auto ArenaLease::reservation_count() const noexcept -> usize
+{
+    return arena_ and owner_ != 0 ? arena_->reservation_count() : 0;
+}
+
+inline auto ArenaLease::release() noexcept -> void
+{
+    if (not arena_ or owner_ == 0) return;
+    auto reusable = not arena_->lease_has_reservations(owner_);
+    auto caller_device = int{};
+    auto switched = false;
+    if (not reusable)
+    {
+        const auto device_status = cudaGetDevice(&caller_device);
+        reusable = device_status == cudaSuccess;
+        if (device_status != cudaSuccess and err_state() == QNPEPS_OK) set_cuda_err(device_status);
+        if (reusable and caller_device != device_)
+        {
+            const auto switch_status = cudaSetDevice(device_);
+            reusable = switch_status == cudaSuccess;
+            switched = reusable;
+            if (switch_status != cudaSuccess and err_state() == QNPEPS_OK)
+                set_cuda_err(switch_status);
+        }
+        if (reusable and not stream_)
+        {
+            reusable = false;
+            if (err_state() == QNPEPS_OK) set_err(QNPEPS_ERR_INTERNAL);
+        }
+        if (reusable)
+        {
+            const auto completion_status = cudaStreamSynchronize(stream_);
+            reusable = completion_status == cudaSuccess;
+            if (completion_status != cudaSuccess and err_state() == QNPEPS_OK)
+                set_cuda_err(completion_status);
+        }
+    }
+    arena_->finish_lease(owner_, reusable);
+    if (switched)
+    {
+        const auto restore_status = cudaSetDevice(caller_device);
+        if (restore_status != cudaSuccess and err_state() == QNPEPS_OK)
+            set_cuda_err(restore_status);
+    }
+    owner_ = 0;
+    stream_ = nullptr;
+    device_ = -1;
+    arena_.reset();
+}
 
 [[nodiscard]] inline auto shared_device_arena(int device) -> std::shared_ptr<DeviceArena>
 {
@@ -358,11 +567,7 @@ class DeviceArena
     static std::map<int, std::shared_ptr<DeviceArena>> arenas{};
     const std::lock_guard<std::mutex> lock{registry_mutex};
     const auto existing = arenas.find(device);
-    if (existing != arenas.end())
-    {
-        if (existing->second.use_count() == 1) existing->second->persistent_cursor().rewind();
-        return existing->second;
-    }
+    if (existing != arenas.end()) return existing->second;
     auto arena = DeviceArena::create(device);
     if (arena) arenas.emplace(device, arena);
     return arena;

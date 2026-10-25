@@ -134,12 +134,7 @@ function _vmc_step_device!(
     diag = terms.diag
     flip = terms.flip
     GC.@preserve data theta emean evar ess samples logq loggauge logpsi eloc orows diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            length(diag) == 0 ? Ptr{QnpepsElocDiagBond}(0) : pointer(diag),
-            Int32(length(flip)),
-            length(flip) == 0 ? Ptr{QnpepsElocFlipTerm}(0) : pointer(flip),
-        )
+        table = _eloc_term_table(terms)
         table_ref = Ref(table)
         orows_ptr = orows === nothing ? Ptr{Cvoid}(0) : Ptr{Cvoid}(pointer(orows))
         GC.@preserve table_ref begin

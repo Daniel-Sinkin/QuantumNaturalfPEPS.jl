@@ -17,6 +17,7 @@ export QnpepsConfig
 export TRUNCATION_DEFAULT, TRUNCATION_DENSITY
 export QnpepsElocConfig
 export QnpepsElocDiagBond, QnpepsElocFlipTerm, QnpepsElocTermTable, HeisenbergTerms
+export ELOC_DIAG_ONE_SITE_Z, ELOC_CAP_ONE_SITE_Z
 export QnpepsZipupPepsRowArgs, QnpepsZipupMpoMpsDesc, QnpepsZipupMpoMpsArgs
 export QnpepsDensitySettings, QnpepsDensityRankRecord, QnpepsDensityFilterArgs
 export QnpepsDensityWorkspaceSizes
@@ -49,7 +50,7 @@ export sample_peps, sample_peps!, sample_peps_host, batched_rangefinder, sampler
 export plan_sampler_host, refresh_sampler!, sample_multigpu!
 export sampler_sweep, sweep_capture_mode, sweep_capture_reason
 export FFI
-export heisenberg_terms, truncated_rydberg_terms
+export heisenberg_terms, truncated_rydberg_terms, local_energies
 export EoHost, EoHostArguments, EoHostStats, EoHostBindingState, EoHostLifecycleState
 export EoFlipClassification, EoTermClassification, EoTermTable
 export EoSelector, EoSelectorDecision, EoSelectorAccounting

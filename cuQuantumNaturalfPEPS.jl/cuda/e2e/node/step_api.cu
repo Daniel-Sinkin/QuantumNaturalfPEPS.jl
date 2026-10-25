@@ -524,7 +524,9 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_footprint_bytes(
 {
     const qnpeps_e2e_status v{qn_e2e::mg::_config_check(cfg)};
     if (v != QNPEPS_E2E_OK) return v;
-    if (not terms or not out_bytes) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (not out_bytes) return QNPEPS_E2E_ERR_NULL_ARG;
+    if (const auto status = qn_e2e::mg::_term_check(*cfg, terms); status != QNPEPS_E2E_OK)
+        return status;
     if (gpus < 1 or ns_capacity < 2 or dim_batch < 1) return QNPEPS_E2E_ERR_BAD_CONFIG;
     (void) ns_ahead;
     const auto reservation = qnpeps::arena_reservation_bytes();

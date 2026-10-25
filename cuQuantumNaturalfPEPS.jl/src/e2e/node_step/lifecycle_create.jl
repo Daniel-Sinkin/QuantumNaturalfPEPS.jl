@@ -35,6 +35,12 @@ function NodeStepHost(
     n_samples::Integer,
     dim_batch::Integer=config.sample_batch == 0 ? n_samples : config.sample_batch,
     host_tile_bytes::Integer=0,
+    route=:default,
+    dlenv_route=route,
+    sampler_route=route,
+    dlenv_density_cutoff::Real=1.0e-13,
+    sampler_density_cutoff::Real=1.0e-3,
+    projected_density_cutoff::Real=1.0e-4,
     capture::Symbol=:auto,
     eo_backend::Symbol=:c_abi,
     eo_selector::EoSelector=_EO_SELECTOR_DEFAULT,
@@ -48,22 +54,52 @@ function NodeStepHost(
     dense = Int64(dense_count(config))
     wrapped =
         QNP.CuPeps(peps, Int(config.lx), Int(config.ly), Int(config.dim_phys), Int(config.dim_bond))
-    source_peps_pointer = CUDA.CuPtr{Cvoid}(pointer(peps))
-    source_peps_bytes = UInt64(length(peps) * sizeof(ComplexF32))
-    dlenv =
-        QNP.DlenvHost(wrapped; chi_s=Int(config.chi_s), chi_dl=Int(config.chi_dl), capture=capture)
-    initial_dlenv = QNP.build_dlenv!(dlenv, wrapped, 0)
-    sampler = QNP.SamplerHost(
-        wrapped,
-        initial_dlenv;
+    QNP.QnpepsConfig(;
+        lx=Int(config.lx),
+        ly=Int(config.ly),
+        dim_phys=Int(config.dim_phys),
+        dim_bond=Int(config.dim_bond),
         chi_s=Int(config.chi_s),
         chi_dl=Int(config.chi_dl),
         seed=config.seed,
-        sampling_mode=config.sampling_mode == 0 ? :fast : :full,
+        sampling_mode=config.sampling_mode,
         chi_c=Int(config.contract_dim),
-        dim_batch=dim_batch,
-        generation=0,
+        dlenv_truncation_route=dlenv_route,
+        sampler_truncation_route=sampler_route,
+        dlenv_density_cutoff,
+        sampler_density_cutoff,
+        projected_density_cutoff,
     )
+    source_peps_pointer = CUDA.CuPtr{Cvoid}(pointer(peps))
+    source_peps_bytes = UInt64(length(peps) * sizeof(ComplexF32))
+    dlenv = QNP.DlenvHost(
+        wrapped;
+        chi_s=Int(config.chi_s),
+        chi_dl=Int(config.chi_dl),
+        route=dlenv_route,
+        density_cutoff=dlenv_density_cutoff,
+        capture,
+    )
+    sampler = try
+        initial_dlenv = QNP.build_dlenv!(dlenv, wrapped, 0)
+        QNP.SamplerHost(
+            wrapped,
+            initial_dlenv;
+            chi_s=Int(config.chi_s),
+            chi_dl=Int(config.chi_dl),
+            seed=config.seed,
+            sampling_mode=config.sampling_mode == 0 ? :fast : :full,
+            chi_c=Int(config.contract_dim),
+            route=sampler_route,
+            sampler_density_cutoff,
+            projected_density_cutoff,
+            dim_batch=dim_batch,
+            generation=0,
+        )
+    catch
+        close(dlenv)
+        rethrow()
+    end
     samples_host = Vector{UInt8}(undef, n_samples * sites)
     logq_host = Vector{Float64}(undef, n_samples)
     log_gauge_host = Vector{Float64}(undef, n_samples)

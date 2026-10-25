@@ -132,6 +132,9 @@ function SamplerHost(
     seed::Integer=0,
     sampling_mode=:fast,
     chi_c::Integer=3 * device_peps.dim_bond,
+    route=:default,
+    sampler_density_cutoff::Real=1.0e-3,
+    projected_density_cutoff::Real=1.0e-4,
     dim_batch::Integer=MAX_BATCH_SIZE,
     generation::Integer=0,
     sweep=:compiled,
@@ -149,6 +152,9 @@ function SamplerHost(
         seed=seed,
         sampling_mode=sampling_mode,
         chi_c=chi_c,
+        sampler_truncation_route=route,
+        sampler_density_cutoff,
+        projected_density_cutoff,
     )
     dlenv.lx == device_peps.lx &&
     dlenv.ly == device_peps.ly &&

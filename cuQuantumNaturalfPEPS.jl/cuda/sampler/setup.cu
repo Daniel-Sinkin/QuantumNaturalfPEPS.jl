@@ -74,25 +74,26 @@ static auto carve_sampler_arena(
     const auto chi_s = static_cast<i64>(cfg.chi_s);
     const auto chi_dl = static_cast<i64>(cfg.chi_dl);
     const auto chi_c = static_cast<i64>(cfg.chi_c);
+    const auto ket_bond_max = std::max(chi_s, dim_bond);
     const auto chi_env_max = [&]
     {
-        auto out = std::max(chi_s, dim_bond);
+        auto out = ket_bond_max;
         if (not cfg.fast_mode) return std::max(out, chi_c);
         return out;
     }();
     const auto chi_aux_bond = chi_env_max * dim_bond;
     const auto max_reduced_n = std::max(chi_aux_bond, chi_dl * dim_bond * dim_bond);
     const auto max_reduced_m = std::max(chi_s * dim_phys * dim_bond, chi_aux_bond);
-    const auto max_tmp_env = chi_s * chi_dl * chi_s * dim_phys * dim_bond;
+    const auto max_tmp_env = ket_bond_max * chi_dl * ket_bond_max * dim_phys * dim_bond;
 
     samp.max_env_above_site() = chi_aux_bond * chi_env_max;
     samp.max_ket_site() = chi_s * dim_phys * dim_bond * chi_s;
-    samp.max_env_unsampled() = chi_s * chi_dl * chi_s;
+    samp.max_env_unsampled() = ket_bond_max * chi_dl * ket_bond_max;
     samp.max_reduce_input() = max_reduced_m * max_reduced_n;
     samp.max_rfactor() = chi_env_max * max_reduced_n;
     samp.max_sketch() = max_reduced_m * chi_env_max;
     samp.max_tmp() = std::max(max_tmp_env, samp.max_reduce_input());
-    samp.max_sigma() = chi_s * chi_dl * chi_s;
+    samp.max_sigma() = ket_bond_max * chi_dl * ket_bond_max;
     samp.max_sigma_full() = dim_phys * dim_phys * samp.max_sigma();
     samp.max_rho() = dim_phys * dim_phys;
 

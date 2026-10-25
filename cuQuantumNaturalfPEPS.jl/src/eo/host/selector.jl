@@ -274,11 +274,16 @@ function eo_term_table(
     sites = config.lx * config.ly
     source_diag = terms.diag
     source_flip = terms.flip
+    _require_eloc_term_capabilities(terms)
     row_diag = UInt64[0, 0]
     column_diag = UInt64[0, 0]
     for term in source_diag
         0 <= term.site_a < sites || throw(ArgumentError("E/O diagonal site is outside the lattice"))
-        0 <= term.site_b < sites || throw(ArgumentError("E/O diagonal site is outside the lattice"))
+        term.site_b == ELOC_DIAG_ONE_SITE_Z ||
+            0 <= term.site_b < sites ||
+            throw(ArgumentError("E/O diagonal site is outside the lattice"))
+        isfinite(term.coeff) || throw(ArgumentError("E/O diagonal coefficient must be finite"))
+        term.site_b == ELOC_DIAG_ONE_SITE_Z && continue
         row_a = term.site_a ÷ config.ly
         row_b = term.site_b ÷ config.ly
         column_a = term.site_a % config.ly

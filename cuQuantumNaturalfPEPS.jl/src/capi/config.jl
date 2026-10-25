@@ -305,14 +305,7 @@ function _gram_consumer_value(consumer)::Int32
     throw(ArgumentError("consumer must be :slab, :custom, or :dense"))
 end
 
-function QnpepsGramDesc(;
-    lx,
-    ly,
-    dim_bond,
-    n_samples,
-    dim_phys=2,
-    consumer=:slab,
-)::QnpepsGramDesc
+function QnpepsGramDesc(; lx, ly, dim_bond, n_samples, dim_phys=2, consumer=:slab)::QnpepsGramDesc
     return QnpepsGramDesc(
         UInt32(sizeof(QnpepsGramDesc)),
         Int32(lx),
