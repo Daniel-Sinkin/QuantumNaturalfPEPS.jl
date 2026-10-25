@@ -50,7 +50,7 @@ export sample_peps, sample_peps!, sample_peps_host, batched_rangefinder, sampler
 export plan_sampler_host, refresh_sampler!, sample_multigpu!
 export sampler_sweep, sweep_capture_mode, sweep_capture_reason
 export FFI
-export heisenberg_terms, truncated_rydberg_terms
+export heisenberg_terms, truncated_rydberg_terms, local_energies
 export EoHost, EoHostArguments, EoHostStats, EoHostBindingState, EoHostLifecycleState
 export EoFlipClassification, EoTermClassification, EoTermTable
 export EoSelector, EoSelectorDecision, EoSelectorAccounting
