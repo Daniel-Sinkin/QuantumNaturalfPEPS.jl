@@ -32,8 +32,6 @@
 namespace qn_eloc::env
 {
 
-#line 281 "cuda/eo/env_build.cu"
-
 struct Shape
 {
     int lx{};

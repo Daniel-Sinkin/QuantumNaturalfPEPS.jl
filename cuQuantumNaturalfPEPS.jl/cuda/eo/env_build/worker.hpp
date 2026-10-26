@@ -33,8 +33,6 @@
 namespace qn_eloc::env
 {
 
-#line 458 "cuda/eo/env_build.cu"
-
 struct Worker
 {
     explicit Worker(Linalg& linalg) : la(linalg) {}

@@ -15,53 +15,6 @@
 namespace qnpeps
 {
 
-#line 1478 "cuda/linalg/eo_routes.cu"
-
-auto rangefinder_run_production_gate(
-    Linalg& la,
-    MatrixBatch panel,
-    int rank,
-    const cf* omega,
-    MatrixBatch q_out,
-    MatrixBatch r_out,
-    int dim_batch,
-    EoDeviceBuffer sketch,
-    EoDeviceBuffer proj,
-    EoDeviceBuffer gram,
-    cf** gram_ptrs,
-    cf** sketch_ptrs,
-    int* info,
-    int* fail_flag,
-    int* failure_log,
-    const int* fallback_info,
-    void* robust_scratch,
-    usize robust_scratch_bytes
-) -> bool
-{
-    batched_rangefinder(
-        la,
-        panel,
-        rank,
-        false,
-        omega,
-        q_out,
-        r_out,
-        dim_batch,
-        sketch,
-        proj,
-        gram,
-        gram_ptrs,
-        sketch_ptrs,
-        info,
-        fail_flag,
-        failure_log,
-        fallback_info,
-        robust_scratch,
-        robust_scratch_bytes
-    );
-    return qn::err_state() == QNPEPS_ELOC_OK;
-}
-
 auto rangefinder_experimental_carve(
     Linalg& la,
     ArenaCursor& arena,

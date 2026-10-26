@@ -36,8 +36,6 @@
 namespace qn_eloc::env
 {
 
-#line 2301 "cuda/eo/env_build.cu"
-
 enum class Bucket
 {
     horizontal,

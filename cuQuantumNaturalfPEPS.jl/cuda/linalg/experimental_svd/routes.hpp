@@ -11,8 +11,6 @@
 namespace qn_eloc::e0191
 {
 
-#line 317 "cuda/linalg/experimental_svd.cuh"
-
 struct GesvdaQueryArgs
 {
     Linalg& linalg;

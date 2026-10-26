@@ -25,7 +25,7 @@ export QnpepsGramDesc, QnpepsGramArgs, QnpepsGramFootprint
 export QnpepsMinsrDesc, QnpepsMinsrArgs
 export Peps, CuPeps, CuDlenv, CuDlenvBuilt, ZipupWorkspace, DlenvArenaPlan, DlenvHost
 export SamplerContext
-export SamplerArenaPlan, SamplerHost, SweepPlan, SweepHost
+export SamplerArenaPlan, SamplerHost
 export GramContext, MinsrContext
 export MAX_BATCH_SIZE
 export GRAM_CONSUMER_SLAB, GRAM_CONSUMER_CUSTOM, GRAM_CONSUMER_DENSE
@@ -48,7 +48,6 @@ export minsr_direction, minsr_direction!
 export minsr_dense_count, minsr_compact_count, minsr_scratch_bytes
 export sample_peps, sample_peps!, sample_peps_host, batched_rangefinder, sampler_pool_release
 export plan_sampler_host, refresh_sampler!, sample_multigpu!
-export sampler_sweep, sweep_capture_mode, sweep_capture_reason
 export FFI
 export heisenberg_terms, truncated_rydberg_terms, local_energies
 export EoHost, EoHostArguments, EoHostStats, EoHostBindingState, EoHostLifecycleState

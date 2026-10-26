@@ -31,8 +31,6 @@
 namespace
 {
 
-#line 193 "cuda/eo/env_build.cu"
-
 __global__ auto cu_project_slab(
     const cf* site,
     const u8* samples,

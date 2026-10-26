@@ -40,8 +40,6 @@
 namespace qn_eloc::env
 {
 
-#line 3984 "cuda/eo/env_build.cu"
-
 auto classify_route(
     const QnpepsElocConfig& cfg, const QnpepsElocFlipTerm& ft, FlipInst& out, int& pass
 ) -> bool

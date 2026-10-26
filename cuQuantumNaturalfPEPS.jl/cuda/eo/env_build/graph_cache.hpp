@@ -41,8 +41,6 @@
 namespace qn_eloc::env
 {
 
-#line 4149 "cuda/eo/env_build.cu"
-
 struct GraphSlot
 {
     cudaGraphExec_t exec{};

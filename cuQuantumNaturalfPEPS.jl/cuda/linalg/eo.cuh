@@ -88,19 +88,6 @@ struct EoDeviceBuffer
     i64 stride{};
 };
 
-inline auto reupload_ht(cf* dst, const HostTensor& tensor) -> void
-{
-    const auto count = i64{tensor.n()};
-    if (count < 1 or static_cast<u64>(count) > std::numeric_limits<usize>::max() / sizeof(cf))
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        return;
-    }
-    const auto element_count = usize{static_cast<usize>(count)};
-    const auto byte_count = usize{sizeof(cf) * element_count};
-    CUDA_CHECK(cudaMemcpy(dst, tensor.v.data(), byte_count, cudaMemcpyHostToDevice));
-}
-
 inline auto _permutation_index_map_check(
     const std::vector<int>& dims_in, const std::vector<int>& perm
 ) -> bool
@@ -167,30 +154,6 @@ inline auto permutation_index_map(const std::vector<int>& dims_in, const std::ve
         }
     }
     return index_map;
-}
-
-inline auto hpermute(const HostTensor& tensor, const std::vector<int>& perm, bool conj = false)
-    -> HostTensor
-{
-    const auto index_map = permutation_index_map(tensor.dim, perm);
-    HostTensor out{};
-    out.dim.resize(tensor.dim.size());
-    for (auto k = usize{0}; k < perm.size(); ++k)
-    {
-        const auto perm_idx = static_cast<usize>(perm[k]);
-        out.dim[k] = tensor.dim[perm_idx];
-    }
-    out.alloc();
-    for (auto i = usize{0}; i < index_map.size(); ++i)
-    {
-        const auto in_idx = static_cast<usize>(index_map[i]);
-        const auto source_value = tensor.v[in_idx];
-        if (conj)
-            out.v[i] = std::conj(source_value);
-        else
-            out.v[i] = source_value;
-    }
-    return out;
 }
 
 class DeviceMatrix
@@ -327,7 +290,7 @@ inline auto rangefinder_gesvda_cutoff_from_env() -> f64
     return parsed;
 }
 
-__attribute__((visibility("default"))) auto rangefinder_experimental_carve(
+auto rangefinder_experimental_carve(
     Linalg& la,
     ArenaCursor& arena,
     int max_dim,
@@ -336,27 +299,6 @@ __attribute__((visibility("default"))) auto rangefinder_experimental_carve(
     char*& scratch,
     usize& scratch_bytes
 ) -> void;
-
-__attribute__((visibility("default"))) auto rangefinder_run_production_gate(
-    Linalg& la,
-    MatrixBatch panel,
-    int rank,
-    const cf* omega,
-    MatrixBatch q_out,
-    MatrixBatch r_out,
-    int dim_batch,
-    EoDeviceBuffer sketch,
-    EoDeviceBuffer proj,
-    EoDeviceBuffer gram,
-    cf** gram_ptrs,
-    cf** sketch_ptrs,
-    int* info,
-    int* fail_flag,
-    int* failure_log,
-    const int* fallback_info,
-    void* robust_scratch,
-    usize robust_scratch_bytes
-) -> bool;
 
 auto batched_rangefinder(
     Linalg& la,

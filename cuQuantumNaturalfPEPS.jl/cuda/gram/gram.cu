@@ -46,156 +46,9 @@ auto restore_blas_state(qnpeps::Linalg& linalg, const qnpeps::BlasState& state) 
     CUBLAS_CHECK(linalg.set_blas_state(state));
 }
 
-auto julia_linalg(void* handle, cudaStream_t stream) -> qnpeps::Linalg*
-{
-    if (not handle) return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG), nullptr;
-    auto& linalg = static_cast<qnpeps::Session*>(handle)->linalg();
-    if (stream and stream != linalg.stream())
-        return qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG), nullptr;
-    return &linalg;
-}
-
-auto establish_julia_blas_state(qnpeps::Linalg& linalg) -> qnpeps_status
+auto establish_gram_blas_state(qnpeps::Linalg& linalg) -> qnpeps_status
 {
     return qnpeps::cublas_status(linalg.set_gram_state());
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status
-qnpeps_julia_blas_create(void* stream, void** out)
-{
-    qnpeps::reset_err();
-    if (not out) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
-    *out = nullptr;
-    auto session = qnpeps::make_session(static_cast<cudaStream_t>(stream));
-    if (not session) return qnpeps::err_state();
-    const auto status = session->linalg().set_gram_state();
-    if (status != CUBLAS_STATUS_SUCCESS) return qnpeps::cublas_status(status);
-    *out = session.release();
-    return QNPEPS_OK;
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status
-qnpeps_julia_blas_destroy(void* handle)
-{
-    qnpeps::reset_err();
-    if (not handle) return QNPEPS_OK;
-    delete static_cast<qnpeps::Session*>(handle);
-    return QNPEPS_OK;
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status qnpeps_julia_gram_expand(
-    void* dense,
-    const void* rows,
-    const void* samples,
-    int64_t row_count,
-    int64_t compact,
-    int64_t sample_base,
-    int sites,
-    int first_site,
-    int compact_begin,
-    int compact_count,
-    int dense_width,
-    const int* slot,
-    const int* offsets,
-    const int* slices,
-    void* stream
-)
-{
-    qnpeps::reset_err();
-    return qnpeps::cuda_status(
-        qnpeps::gram_cublas::expand(
-            static_cast<cuFloatComplex*>(dense),
-            static_cast<const cuFloatComplex*>(rows),
-            static_cast<const std::uint8_t*>(samples),
-            row_count,
-            compact,
-            sample_base,
-            sites,
-            first_site,
-            compact_begin,
-            compact_count,
-            dense_width,
-            slot,
-            offsets,
-            slices,
-            static_cast<cudaStream_t>(stream)
-        )
-    );
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status qnpeps_julia_gram_herk(
-    void* handle,
-    int rows,
-    int dense_width,
-    const void* dense,
-    void* output,
-    int output_ld,
-    void* stream
-)
-{
-    qnpeps::reset_err();
-    auto* linalg = julia_linalg(handle, static_cast<cudaStream_t>(stream));
-    if (not linalg) return qnpeps::err_state();
-    const auto state_status = establish_julia_blas_state(*linalg);
-    if (state_status != QNPEPS_OK) return state_status;
-    return qnpeps::cublas_status(
-        qnpeps::gram_cublas::accumulate_diagonal_block(
-            *linalg,
-            rows,
-            dense_width,
-            static_cast<const cuFloatComplex*>(dense),
-            static_cast<cuFloatComplex*>(output),
-            output_ld
-        )
-    );
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status qnpeps_julia_gram_gemm(
-    void* handle,
-    int rows_a,
-    int rows_b,
-    int dense_width,
-    const void* dense_a,
-    const void* dense_b,
-    void* output,
-    int output_ld,
-    void* stream
-)
-{
-    qnpeps::reset_err();
-    auto* linalg = julia_linalg(handle, static_cast<cudaStream_t>(stream));
-    if (not linalg) return qnpeps::err_state();
-    const auto state_status = establish_julia_blas_state(*linalg);
-    if (state_status != QNPEPS_OK) return state_status;
-    return qnpeps::cublas_status(
-        qnpeps::gram_cublas::accumulate_offdiagonal_block(
-            *linalg,
-            rows_a,
-            rows_b,
-            dense_width,
-            static_cast<const cuFloatComplex*>(dense_a),
-            static_cast<const cuFloatComplex*>(dense_b),
-            static_cast<cuFloatComplex*>(output),
-            output_ld
-        )
-    );
-}
-
-extern "C" __attribute__((visibility("default"))) qnpeps_status qnpeps_julia_gram_finalize(
-    void* output, int output_ld, int row_count, int local_base, int samples, void* stream
-)
-{
-    qnpeps::reset_err();
-    return qnpeps::cuda_status(
-        qnpeps::gram_cublas::finalize(
-            static_cast<cuFloatComplex*>(output),
-            output_ld,
-            row_count,
-            local_base,
-            samples,
-            static_cast<cudaStream_t>(stream)
-        )
-    );
 }
 
 [[nodiscard]] auto check_descriptor(const QnpepsGramDesc* descriptor) -> qnpeps_status
@@ -491,7 +344,7 @@ auto ctx_create_impl(
     if (status == QNPEPS_OK) status = upload_geometry(*context);
     if (status == QNPEPS_OK)
     {
-        status = establish_julia_blas_state(context->linalg());
+        status = establish_gram_blas_state(context->linalg());
     }
     if (status == QNPEPS_OK) status = build_footprint(*context, context_arena_bytes);
     if (status == QNPEPS_OK) status = validate_schedule(*context);
@@ -544,7 +397,7 @@ auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> qnpeps_sta
     status = save_blas_state(context->linalg(), blas_state);
     if (status != QNPEPS_OK) return status;
     DEFER([&] { restore_blas_state(context->linalg(), blas_state); });
-    status = establish_julia_blas_state(context->linalg());
+    status = establish_gram_blas_state(context->linalg());
     if (status != QNPEPS_OK) return status;
 
     const auto samples = static_cast<i64>(context->desc.n_samples);

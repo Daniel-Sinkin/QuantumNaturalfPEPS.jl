@@ -45,11 +45,9 @@ extern "C"
     typedef struct qnpeps_e2e_cbuf qnpeps_e2e_cbuf;
     typedef struct qnpeps_e2e_gram_ctx qnpeps_e2e_gram_ctx;
     typedef struct qnpeps_e2e_minsr_ctx qnpeps_e2e_minsr_ctx;
-    typedef struct qnpeps_e2e_minsr_jureca_ctx qnpeps_e2e_minsr_jureca_ctx;
     typedef struct qnpeps_e2e_update_ctx qnpeps_e2e_update_ctx;
 
 #define QNPEPS_E2E_GRAM_VIRTUAL_SHARDS 4
-#define QNPEPS_E2E_MINSR_JURECA_LANES 4
 
     typedef struct QnpepsE2eGramTimings
     {
@@ -93,61 +91,6 @@ extern "C"
 
     void qnpeps_e2e_gram_ctx_destroy(qnpeps_e2e_gram_ctx* ctx);
 
-    typedef struct QnpepsE2eMinsrJurecaDesc
-    {
-        uint32_t struct_size;
-        int32_t lx;
-        int32_t ly;
-        int32_t dim_phys;
-        int32_t dim_bond;
-        int32_t diagnostics;
-        int32_t reserved;
-        int64_t n_samples;
-    } QnpepsE2eMinsrJurecaDesc;
-
-    typedef struct QnpepsE2eMinsrJurecaArgs
-    {
-        uint32_t struct_size;
-        uint32_t reserved;
-        const uint8_t* device_samples;
-        uint64_t samples_bytes;
-        const double* logpsi_device;
-        uint64_t logpsi_bytes;
-        const double* e_loc_device;
-        uint64_t e_loc_bytes;
-        const double* logq_device;
-        uint64_t logq_bytes;
-        const qnpeps_e2e_cbuf* o_row_shards_device[QNPEPS_E2E_MINSR_JURECA_LANES];
-        uint64_t o_row_shard_bytes[QNPEPS_E2E_MINSR_JURECA_LANES];
-        double relative_cut;
-        double absolute_cut;
-        qnpeps_e2e_cbuf* theta_dot_device;
-        uint64_t theta_dot_bytes;
-        double* energy_mean_output;
-        double* energy_variance_output;
-        double* ess_output;
-    } QnpepsE2eMinsrJurecaArgs;
-
-    typedef struct QnpepsE2eMinsrJurecaStats
-    {
-        uint32_t struct_size;
-        int32_t lanes;
-        int32_t peer_pairs_enabled;
-        int32_t failed_lane;
-        uint64_t peer_tile_bytes;
-        int64_t row_counts[QNPEPS_E2E_MINSR_JURECA_LANES];
-        int32_t logical_devices[QNPEPS_E2E_MINSR_JURECA_LANES];
-        int32_t numa_nodes[QNPEPS_E2E_MINSR_JURECA_LANES];
-        int32_t affinity_applied[QNPEPS_E2E_MINSR_JURECA_LANES];
-        int32_t lane_status[QNPEPS_E2E_MINSR_JURECA_LANES];
-        uint64_t arena_bytes[QNPEPS_E2E_MINSR_JURECA_LANES];
-        double input_copy_s[QNPEPS_E2E_MINSR_JURECA_LANES];
-        double gram_s[QNPEPS_E2E_MINSR_JURECA_LANES];
-        double minsr_s[QNPEPS_E2E_MINSR_JURECA_LANES];
-        double complete_s[QNPEPS_E2E_MINSR_JURECA_LANES];
-        char failure[96];
-    } QnpepsE2eMinsrJurecaStats;
-
     qnpeps_e2e_status qnpeps_e2e_minsr_ctx_create(
         const QnpepsE2eConfig* cfg,
         int64_t n_samples,
@@ -174,18 +117,6 @@ extern "C"
     );
 
     void qnpeps_e2e_minsr_ctx_destroy(qnpeps_e2e_minsr_ctx* ctx);
-
-    qnpeps_e2e_status qnpeps_e2e_minsr_jureca_ctx_create(
-        const QnpepsE2eMinsrJurecaDesc* descriptor, qnpeps_e2e_minsr_jureca_ctx** out
-    );
-
-    qnpeps_e2e_status qnpeps_e2e_minsr_jureca_ctx_run(
-        qnpeps_e2e_minsr_jureca_ctx* context,
-        const QnpepsE2eMinsrJurecaArgs* args,
-        QnpepsE2eMinsrJurecaStats* stats
-    );
-
-    void qnpeps_e2e_minsr_jureca_ctx_destroy(qnpeps_e2e_minsr_jureca_ctx* context);
 
     qnpeps_e2e_status qnpeps_e2e_minsr(
         const QnpepsE2eConfig* cfg,

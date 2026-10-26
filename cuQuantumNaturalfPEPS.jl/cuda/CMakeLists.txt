@@ -96,7 +96,6 @@ add_library(qnpeps SHARED
   sampler/setup.cu
   sampler/sweep/refresh.cu
   sampler/sweep/run.cu
-  sampler/sweep_bridge.cu
   sampler/entry.cu
 )
 set_source_files_properties(
@@ -141,7 +140,7 @@ set_target_properties(qnpeps PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 target_link_libraries(qnpeps PRIVATE
-  CUDA::cudart CUDA::cublas CUDA::cusolver CUDA::curand Threads::Threads
+  CUDA::cudart CUDA::cublas CUDA::cusolver Threads::Threads
 )
 target_compile_options(qnpeps PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wshadow,-Wconversion,-Wsign-conversion,-Wfloat-conversion,-Wcast-qual,-Wcast-align,-Wformat=2,-Wundef,-Wnull-dereference,-Wnon-virtual-dtor,-Woverloaded-virtual,-Wdouble-promotion,-Wimplicit-fallthrough,-Wreturn-type,-Werror>
