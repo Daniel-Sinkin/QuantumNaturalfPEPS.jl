@@ -62,7 +62,6 @@ export eo_host_row_pointers, eo_host_lifecycle_state
 export QnpepsE2eConfig
 export vmc_step!
 export VMCContext, submit_peps!, vmc_direction!, vmc_euler_step!
-export E2eGramContext, e2e_raw_gram!, e2e_raw_gram, e2e_gram_footprint
 export NodeStepHost, NodeStepTelemetry, node_step!, bind_node_peps!
 export reset_node_step_schedule!
 export MinsrHost, MinsrHostInputs, MinsrHostStats, MinsrHostError

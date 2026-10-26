@@ -1,7 +1,5 @@
 import ..QnpepsE2eConfig
 import ..QnpepsE2eEulerStepArgs
-import ..QnpepsE2eGramFootprint
-import ..QnpepsE2eGramTimings
 import ..QnpepsE2eUpdateArgs
 import ..QnpepsElocConfig
 
@@ -338,41 +336,3 @@ function e2e_node_footprint_bytes(config, gpus, ns_capacity, ns_ahead, dim_batch
         out,
     )
 end
-
-e2e_gram_ctx_create(config, n_samples, stream, out)::Cint = ccall(
-    (:qnpeps_e2e_gram_ctx_create, _ffi_library()),
-    Cint,
-    (Ref{QnpepsE2eConfig}, Int64, Ptr{Cvoid}, Ref{Ptr{Cvoid}}),
-    config,
-    n_samples,
-    stream,
-    out,
-)
-
-e2e_gram_ctx_run(context, samples, rows, gram, timings)::Cint = ccall(
-    (:qnpeps_e2e_gram_ctx_run, _ffi_library()),
-    Cint,
-    (
-        Ptr{Cvoid},
-        CUDA.CuPtr{UInt8},
-        CUDA.CuPtr{Cvoid},
-        CUDA.CuPtr{Cvoid},
-        Ptr{QnpepsE2eGramTimings},
-    ),
-    context,
-    samples,
-    rows,
-    gram,
-    timings,
-)
-
-e2e_gram_ctx_footprint(context, out)::Cint = ccall(
-    (:qnpeps_e2e_gram_ctx_footprint, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ref{QnpepsE2eGramFootprint}),
-    context,
-    out,
-)
-
-e2e_gram_ctx_destroy(context)::Nothing =
-    ccall((:qnpeps_e2e_gram_ctx_destroy, _ffi_library()), Cvoid, (Ptr{Cvoid},), context)

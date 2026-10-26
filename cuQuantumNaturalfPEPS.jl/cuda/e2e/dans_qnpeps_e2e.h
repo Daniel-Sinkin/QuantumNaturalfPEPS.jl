@@ -43,53 +43,8 @@ extern "C"
     } QnpepsE2eConfig;
 
     typedef struct qnpeps_e2e_cbuf qnpeps_e2e_cbuf;
-    typedef struct qnpeps_e2e_gram_ctx qnpeps_e2e_gram_ctx;
     typedef struct qnpeps_e2e_minsr_ctx qnpeps_e2e_minsr_ctx;
     typedef struct qnpeps_e2e_update_ctx qnpeps_e2e_update_ctx;
-
-#define QNPEPS_E2E_GRAM_VIRTUAL_SHARDS 4
-
-    typedef struct QnpepsE2eGramTimings
-    {
-        uint32_t struct_size;
-        int32_t slabs;
-        int32_t virtual_shards;
-        int32_t block_calls;
-        uint64_t slab_width;
-        double compute_s;
-        double complete_s;
-    } QnpepsE2eGramTimings;
-
-    typedef struct QnpepsE2eGramFootprint
-    {
-        uint32_t struct_size;
-        uint32_t reserved;
-        uint64_t context_device_bytes;
-        uint64_t geometry_device_bytes;
-        uint64_t dense_a_device_bytes;
-        uint64_t dense_b_device_bytes;
-        uint64_t caller_samples_bytes;
-        uint64_t caller_rows_bytes;
-        uint64_t caller_gram_bytes;
-    } QnpepsE2eGramFootprint;
-
-    qnpeps_e2e_status qnpeps_e2e_gram_ctx_create(
-        const QnpepsE2eConfig* cfg, int64_t n_samples, void* stream, qnpeps_e2e_gram_ctx** out
-    );
-
-    qnpeps_e2e_status qnpeps_e2e_gram_ctx_run(
-        qnpeps_e2e_gram_ctx* ctx,
-        const uint8_t* device_samples,
-        const qnpeps_e2e_cbuf* o_rows_device,
-        qnpeps_e2e_cbuf* raw_gram_device,
-        QnpepsE2eGramTimings* timings_out
-    );
-
-    qnpeps_e2e_status qnpeps_e2e_gram_ctx_footprint(
-        const qnpeps_e2e_gram_ctx* ctx, QnpepsE2eGramFootprint* out
-    );
-
-    void qnpeps_e2e_gram_ctx_destroy(qnpeps_e2e_gram_ctx* ctx);
 
     qnpeps_e2e_status qnpeps_e2e_minsr_ctx_create(
         const QnpepsE2eConfig* cfg,

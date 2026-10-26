@@ -44,28 +44,6 @@ Base.@kwdef struct QnpepsE2eEulerStepArgs
     epoch_out::Ptr{Int64}
 end
 
-struct QnpepsE2eGramTimings
-    struct_size::UInt32
-    slabs::Int32
-    virtual_shards::Int32
-    block_calls::Int32
-    slab_width::UInt64
-    compute_s::Float64
-    complete_s::Float64
-end
-
-Base.@kwdef struct QnpepsE2eGramFootprint
-    struct_size::UInt32
-    reserved::UInt32
-    context_device_bytes::UInt64
-    geometry_device_bytes::UInt64
-    dense_a_device_bytes::UInt64
-    dense_b_device_bytes::UInt64
-    caller_samples_bytes::UInt64
-    caller_rows_bytes::UInt64
-    caller_gram_bytes::UInt64
-end
-
 function QnpepsE2eConfig(;
     lx,
     ly,

@@ -76,7 +76,6 @@ add_library(qnpeps SHARED
   eo/dtensor.cu
   eo/env_build.cu
   e2e/capi.cu
-  e2e/gram.cu
   e2e/kernels.cu
   e2e/update.cu
   e2e/step.cu
@@ -108,7 +107,6 @@ set_source_files_properties(
   eo/dtensor.cu
   eo/env_build.cu
   e2e/capi.cu
-  e2e/gram.cu
   minsr/solve.cu
   minsr/composition.cu
   minsr/distributed.cu
@@ -262,7 +260,7 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_eo_l16_gate PRIVATE qnpeps CUDA::cudart)
   add_test(NAME qnpeps_eo_l16_gate COMMAND qnpeps_eo_l16_gate)
 
-  foreach(gate_name gram minsr node step step_mg update)
+  foreach(gate_name minsr node step step_mg update)
     add_executable(qnpeps_e2e_${gate_name}_gate test/e2e/gate_${gate_name}.cu)
     target_include_directories(qnpeps_e2e_${gate_name}_gate PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
