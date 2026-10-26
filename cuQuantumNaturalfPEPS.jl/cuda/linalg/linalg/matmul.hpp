@@ -5,8 +5,6 @@
 namespace qnpeps
 {
 
-#line 960 "cuda/linalg/linalg.cuh"
-
 inline auto Linalg::gemv(
     CuMatrixCF64Const a, const cuDoubleComplex* x, cuDoubleComplex* y, const GemvConfig& cfg
 ) -> void

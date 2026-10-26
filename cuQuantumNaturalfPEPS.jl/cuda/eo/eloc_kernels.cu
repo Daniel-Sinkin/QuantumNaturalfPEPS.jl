@@ -175,18 +175,19 @@ __global__ void cu_gram_tiled(
         }
         __syncthreads();
 
+        const auto offset = site_offset;
+        const auto slice = site_slice;
         const auto matching = static_cast<bool>(active and spin_a[ty] == spin_b[tx]);
-        for (auto base = 0; base < site_slice; base += ktile)
+        for (auto base = 0; base < slice; base += ktile)
         {
             for (auto item = tid; item < tile_y * ktile; item += threads)
             {
                 const auto row = item / ktile;
                 const auto q = item % ktile;
                 const auto sa = static_cast<int>(blockIdx.y) * tile_y + row;
-                if (q < site_slice - base and sa < s_len)
+                if (q < slice - base and sa < s_len)
                 {
-                    a[row][q] =
-                        rows_a[static_cast<i64>(s0 + sa) * compact_np + site_offset + base + q];
+                    a[row][q] = rows_a[static_cast<i64>(s0 + sa) * compact_np + offset + base + q];
                 }
             }
             for (auto item = tid; item < tile_x * ktile; item += threads)
@@ -194,21 +195,21 @@ __global__ void cu_gram_tiled(
                 const auto row = item / ktile;
                 const auto q = item % ktile;
                 const auto ub = static_cast<int>(blockIdx.x) * tile_x + row;
-                if (q < site_slice - base and ub < u_len)
+                if (q < slice - base and ub < u_len)
                 {
-                    b[q][row] =
-                        rows_b[static_cast<i64>(u0 + ub) * compact_np + site_offset + base + q];
+                    b[q][row] = rows_b[static_cast<i64>(u0 + ub) * compact_np + offset + base + q];
                 }
             }
             __syncthreads();
             if (matching)
             {
-                const auto count = static_cast<int>(min(ktile, site_slice - base));
+                const auto count = static_cast<int>(min(ktile, slice - base));
                 for (auto q = 0; q < count; ++q)
                     cf_acc_conj(acc, a[ty][q], b[q][tx]);
             }
             __syncthreads();
         }
+        __syncthreads();
     }
     if (active) t[static_cast<i64>(s) * out_ld + u] = acc;
 }

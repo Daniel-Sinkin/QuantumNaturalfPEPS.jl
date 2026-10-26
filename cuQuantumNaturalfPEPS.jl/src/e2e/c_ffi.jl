@@ -20,14 +20,24 @@ sampler_version() = unsafe_string(FFI.capi_version())
 
 @inline function _check(status::Integer, what::AbstractString)
     status == 0 && return
-    error("[cuQuantumNaturalfPEPS] $what failed (status $status, $(e2e_strerror(status)))")
+    location = _last_error_location()
+    at = isempty(location) ? "" : " at $location"
+    message = _last_error_message()
+    backend = isempty(message) ? "" : "; $message"
+    error(
+        "[cuQuantumNaturalfPEPS] $what failed$at (status $status, $(e2e_strerror(status))$backend)",
+    )
 end
 
 @inline function _check_node(status::Integer, what::AbstractString, node::Ptr{Cvoid})
     status == 0 && return
     stage = unsafe_string(FFI.e2e_node_error_stage(node))
+    location = unsafe_string(FFI.e2e_node_error_location(node))
+    message = unsafe_string(FFI.e2e_node_error_message(node))
+    backend = isempty(message) ? "" : "; $message"
     error(
-        "[cuQuantumNaturalfPEPS] $what failed (stage $stage, status $status, $(e2e_strerror(status)))",
+        "[cuQuantumNaturalfPEPS] $what failed at $location " *
+        "(stage $stage, status $status, $(e2e_strerror(status))$backend)",
     )
 end
 
@@ -220,54 +230,4 @@ function node_footprint_bytes(
     end
     _check(status, "qnpeps_e2e_node_footprint_bytes")
     return out[]
-end
-
-function _ffi_gram_create(config::QnpepsE2eConfig, n_samples::Integer, stream::CuStream)
-    out = Ref{Ptr{Cvoid}}(C_NULL)
-    status = FFI.e2e_gram_ctx_create(config, Int64(n_samples), Ptr{Cvoid}(stream.handle), out)
-    _check(status, "qnpeps_e2e_gram_ctx_create")
-    out[] == C_NULL && error("[cuQuantumNaturalfPEPS] Gram create returned a null handle")
-    return out[]
-end
-
-function _ffi_gram_run(
-    context::Ptr{Cvoid},
-    samples::CuPtr,
-    rows::CuPtr,
-    gram::CuPtr,
-    timings::Ptr{QnpepsE2eGramTimings},
-)
-    status = FFI.e2e_gram_ctx_run(
-        context,
-        CUDA.CuPtr{UInt8}(samples),
-        CUDA.CuPtr{Cvoid}(rows),
-        CUDA.CuPtr{Cvoid}(gram),
-        timings,
-    )
-    _check(status, "qnpeps_e2e_gram_ctx_run")
-    return nothing
-end
-
-function _ffi_gram_footprint(context::Ptr{Cvoid})
-    output = Ref(
-        QnpepsE2eGramFootprint(;
-            struct_size=UInt32(sizeof(QnpepsE2eGramFootprint)),
-            reserved=UInt32(0),
-            context_device_bytes=UInt64(0),
-            geometry_device_bytes=UInt64(0),
-            dense_a_device_bytes=UInt64(0),
-            dense_b_device_bytes=UInt64(0),
-            caller_samples_bytes=UInt64(0),
-            caller_rows_bytes=UInt64(0),
-            caller_gram_bytes=UInt64(0),
-        ),
-    )
-    status = FFI.e2e_gram_ctx_footprint(context, output)
-    _check(status, "qnpeps_e2e_gram_ctx_footprint")
-    return output[]
-end
-
-function _ffi_gram_destroy(context::Ptr{Cvoid})
-    FFI.e2e_gram_ctx_destroy(context)
-    return nothing
 end

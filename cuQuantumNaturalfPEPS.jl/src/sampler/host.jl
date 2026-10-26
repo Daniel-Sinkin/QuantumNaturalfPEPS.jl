@@ -21,9 +21,6 @@ Base.@kwdef mutable struct SamplerHost{B,P,D,S}
     staging_lognorm::Vector{Float64}
     batch_args::Vector{QnpepsSamplerHostBatchArgs}
     refresh_args::Vector{QnpepsSamplerHostRefreshArgs}
-    sweep_selector::Symbol
-    sweep_capture::Symbol
-    sweep_host::Union{Nothing,SweepHost{S}}
     device::D
     stream::S
     dim_batch::Int
@@ -137,11 +134,7 @@ function SamplerHost(
     projected_density_cutoff::Real=1.0e-4,
     dim_batch::Integer=MAX_BATCH_SIZE,
     generation::Integer=0,
-    sweep=:compiled,
-    sweep_capture=:auto,
 )
-    sweep_selector = _validate_sweep_selector(sweep)
-    capture_policy = _validate_sweep_capture(sweep_capture)
     config = QnpepsConfig(;
         lx=device_peps.lx,
         ly=device_peps.ly,
@@ -187,9 +180,6 @@ function SamplerHost(
         staging_lognorm,
         batch_args=Vector{QnpepsSamplerHostBatchArgs}(undef, 1),
         refresh_args=Vector{QnpepsSamplerHostRefreshArgs}(undef, 1),
-        sweep_selector,
-        sweep_capture=capture_policy,
-        sweep_host=nothing,
         device,
         stream,
         dim_batch=Int(dim_batch),
@@ -200,10 +190,6 @@ function SamplerHost(
     )
     _prepare_sampler_pointers!(host)
     _prepare_sampler_static_args!(host)
-    if sweep_selector === :julia
-        _run_compiled_sampler_batch!(host, UInt64(0), UInt64(0))
-        host.sweep_host = SweepHost(host; capture=capture_policy)
-    end
     finalizer(close, host)
     return host
 end
@@ -212,11 +198,6 @@ Base.isopen(host::SamplerHost)::Bool = host.open
 
 function Base.close(host::SamplerHost)::Nothing
     host.open || return nothing
-    sweep_host = host.sweep_host
-    if sweep_host !== nothing
-        close(sweep_host)
-        host.sweep_host = nothing
-    end
     handle = host.handle
     host.handle = C_NULL
     _ffi_ctx_destroy(handle)
@@ -226,22 +207,6 @@ function Base.close(host::SamplerHost)::Nothing
 end
 
 Base.copy(::SamplerHost) = throw(ArgumentError("SamplerHost cannot be copied"))
-
-sampler_sweep(host::SamplerHost)::Symbol = host.sweep_selector
-
-function sweep_capture_mode(host::SamplerHost)::Symbol
-    host.sweep_selector === :compiled && return :compiled
-    driver = host.sweep_host
-    driver === nothing && return :cold
-    return sweep_capture_mode(driver)
-end
-
-function sweep_capture_reason(host::SamplerHost)::Symbol
-    host.sweep_selector === :compiled && return :compiled_sweep
-    driver = host.sweep_host
-    driver === nothing && return :not_initialized
-    return sweep_capture_reason(driver)
-end
 
 function _validate_sampler_host(host::SamplerHost)::Nothing
     host.open || throw(ArgumentError("SamplerHost is closed"))
@@ -325,15 +290,8 @@ function _run_compiled_sampler_batch!(
     return nothing
 end
 
-function _run_sampler_batch!(host::SamplerHost, batch_base::UInt64, batch_id::UInt64)::Nothing
-    if host.sweep_selector === :compiled
-        return _run_compiled_sampler_batch!(host, batch_base, batch_id)
-    end
-    driver = host.sweep_host
-    driver === nothing && throw(ArgumentError("Julia sweep host is not initialized"))
-    _run_sweep!(driver, batch_base, batch_id)
-    return nothing
-end
+_run_sampler_batch!(host::SamplerHost, batch_base::UInt64, batch_id::UInt64) =
+    _run_compiled_sampler_batch!(host, batch_base, batch_id)
 
 function _copy_sampler_batch!(
     host::SamplerHost,
@@ -461,16 +419,8 @@ function sample_multigpu!(
     isempty(hosts) && throw(ArgumentError("at least one SamplerHost is required"))
     num_sites = hosts[1].num_sites
     dim_batch = hosts[1].dim_batch
-    sweep_selector = hosts[1].sweep_selector
-    sweep_capture = hosts[1].sweep_capture
-    all(
-        host ->
-            host.num_sites == num_sites &&
-            host.dim_batch == dim_batch &&
-            host.sweep_selector === sweep_selector &&
-            host.sweep_capture === sweep_capture,
-        hosts,
-    ) || throw(DimensionMismatch("multi-GPU sampler hosts differ"))
+    all(host -> host.num_sites == num_sites && host.dim_batch == dim_batch, hosts) ||
+        throw(DimensionMismatch("multi-GPU sampler hosts differ"))
     length(samples) % num_sites == 0 ||
         throw(DimensionMismatch("sample buffer length is not divisible by the site count"))
     sample_count = length(samples) ÷ num_sites

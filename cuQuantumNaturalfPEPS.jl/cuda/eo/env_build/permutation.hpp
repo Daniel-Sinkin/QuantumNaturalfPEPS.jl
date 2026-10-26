@@ -26,7 +26,6 @@
 #include <utility>
 #include <vector>
 
-#line 25 "cuda/eo/env_build.cu"
 using namespace qnpeps;
 
 namespace

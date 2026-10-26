@@ -40,8 +40,6 @@
 #include "graph_cache.hpp"
 #include "execute.hpp"
 
-#line 5497 "cuda/eo/env_build.cu"
-
 struct qnpeps_eloc_ctx
 {
     explicit qnpeps_eloc_ctx(std::unique_ptr<qnpeps::Session> incoming)

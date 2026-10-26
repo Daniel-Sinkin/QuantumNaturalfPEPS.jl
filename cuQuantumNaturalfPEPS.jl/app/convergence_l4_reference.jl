@@ -12,12 +12,7 @@ include(joinpath(@__DIR__, "convergence_l4_reference", "io.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "state.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "ranks.jl"))
 
-const CONVERGENCE_EO_ROUTES = (
-    "cholqr",
-    "householder",
-    "qb_svd",
-    "gesvda_cutoff",
-)
+const CONVERGENCE_EO_ROUTES = ("cholqr", "householder", "qb_svd", "gesvda_cutoff")
 const CONVERGENCE_TRAJECTORY_HEADER = join(
     (
         "step",
@@ -82,9 +77,9 @@ function configure_convergence_route!(route::AbstractString)
         ENV["QNPEPS_DLENV_TRUNC"] = "rf"
         ENV["QNPEPS_E0191_RF_ROUTE"] = "cholqr"
     elseif route == "density"
-        ENV["QNPEPS_SAMPLER_TRUNC"] = "density"
-        ENV["QNPEPS_DLENV_TRUNC"] = "density"
-        ENV["QNPEPS_E0191_RF_ROUTE"] = "density"
+        ENV["QNPEPS_SAMPLER_TRUNC"] = "rf"
+        ENV["QNPEPS_DLENV_TRUNC"] = "rf"
+        ENV["QNPEPS_E0191_RF_ROUTE"] = "cholqr"
     elseif route in CONVERGENCE_EO_ROUTES
         ENV["QNPEPS_SAMPLER_TRUNC"] = "rf"
         ENV["QNPEPS_DLENV_TRUNC"] = "rf"
@@ -99,14 +94,13 @@ end
 function convergence_output_directory(options)
     options[:output] !== nothing && return abspath(options[:output])
     root = normpath(joinpath(@__DIR__, "..", ".."))
-    name =
-        "$(options[:route])-$(options[:precision])-chi$(options[:chi])-steps$(options[:steps])"
+    name = "$(options[:route])-$(options[:precision])-chi$(options[:chi])-steps$(options[:steps])"
     return joinpath(root, "private", "convergence_l4_reference", name)
 end
 
 function stationary_statistics(energies, errors, variances, exact)
     count = min(50, length(energies))
-    selected = (length(energies) - count + 1):length(energies)
+    selected = (length(energies)-count+1):length(energies)
     mean_energy = mean(@view energies[selected])
     pooled_error = sqrt(sum(abs2, @view errors[selected])) / count
     gap = mean_energy - exact
@@ -124,14 +118,7 @@ function stationary_statistics(energies, errors, variances, exact)
     )
 end
 
-function write_convergence_summary(
-    path,
-    options,
-    statistics,
-    reference_statistics,
-    overlap,
-    exact,
-)
+function write_convergence_summary(path, options, statistics, reference_statistics, overlap, exact)
     open(path, "w") do io
         println(
             io,
@@ -197,6 +184,7 @@ function convergence_config(options, seed)
         sampling_mode=:full,
         contract_dim=options[:chi],
         sample_batch=63,
+        truncation_route=options[:route] == "density" ? :density : :default,
     )
 end
 
@@ -235,14 +223,8 @@ end
 
 function convergence_native_step!(peps, state_f64, seed, options, terms)
     config = convergence_config(options, seed)
-    context = VMCContext(
-        config,
-        terms;
-        gpus=options[:gpus],
-        ns_capacity=1008,
-        ns_ahead=0,
-        dim_batch=63,
-    )
+    context =
+        VMCContext(config, terms; gpus=options[:gpus], ns_capacity=1008, ns_ahead=0, dim_batch=63)
     try
         submit_peps!(context, peps)
         result = vmc_euler_step!(
@@ -258,13 +240,7 @@ function convergence_native_step!(peps, state_f64, seed, options, terms)
         )
         theta_dot = Array(result.theta_dot)
         packed = Array(result.peps)
-        return (
-            theta_dot,
-            packed,
-            e_mean=result.e_mean,
-            e_var=result.e_var,
-            ess=result.ess,
-        )
+        return (theta_dot, packed, e_mean=result.e_mean, e_var=result.e_var, ess=result.ess)
     finally
         close(context)
     end
@@ -286,8 +262,7 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
     options[:help] && return convergence_help()
     convergence_dry_run(options) && return nothing
     if options[:figure_only]
-        options[:output] === nothing &&
-            throw(ArgumentError("--figure-only requires --output DIR"))
+        options[:output] === nothing && throw(ArgumentError("--figure-only requires --output DIR"))
         render_convergence_figure(abspath(options[:output]))
         return nothing
     end
@@ -338,8 +313,7 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
             theta_norm = norm(ComplexF64.(result.theta_dot))
             update_norm = 0.05 * theta_norm
             packed = result.packed
-            state_norm = state_f64 === nothing ?
-                         norm(ComplexF64.(packed)) : norm(Array(state_f64))
+            state_norm = state_f64 === nothing ? norm(ComplexF64.(packed)) : norm(Array(state_f64))
             ref = reference[step]
             ref_energy = parse(Float64, ref["energy_re"])
             push!(energies, real(energy))

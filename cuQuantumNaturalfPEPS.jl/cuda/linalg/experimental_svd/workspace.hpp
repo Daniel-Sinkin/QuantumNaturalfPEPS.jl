@@ -5,8 +5,6 @@
 #include <algorithm>
 #include <cstdint>
 
-#line 16 "cuda/linalg/experimental_svd.cuh"
-
 namespace qn_eloc::e0191
 {
 using namespace qnpeps;

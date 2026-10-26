@@ -24,9 +24,7 @@ auto Linalg::diagonalize_workspace_count(int order) -> int
     cusolverDeterministicMode_t deterministic{};
     CUSOLVER_CHECK(cusolverDnGetDeterministicMode(solver_->get(), &deterministic));
     if (err_state() != QNPEPS_OK) return 0;
-    CUSOLVER_CHECK(
-        cusolverDnSetDeterministicMode(solver_->get(), CUSOLVER_ALLOW_NON_DETERMINISTIC_RESULTS)
-    );
+    CUSOLVER_CHECK(cusolverDnSetDeterministicMode(solver_->get(), CUSOLVER_DETERMINISTIC_RESULTS));
     int workspace_count{};
     if (err_state() == QNPEPS_OK)
     {
@@ -58,9 +56,7 @@ auto Linalg::diagonalize_workspace_count(CuMatrixCF64 matrix, f64* eigenvalues) 
     cusolverDeterministicMode_t deterministic{};
     CUSOLVER_CHECK(cusolverDnGetDeterministicMode(solver_->get(), &deterministic));
     if (err_state() != QNPEPS_OK) return 0;
-    CUSOLVER_CHECK(
-        cusolverDnSetDeterministicMode(solver_->get(), CUSOLVER_ALLOW_NON_DETERMINISTIC_RESULTS)
-    );
+    CUSOLVER_CHECK(cusolverDnSetDeterministicMode(solver_->get(), CUSOLVER_DETERMINISTIC_RESULTS));
     int workspace_count{};
     if (err_state() == QNPEPS_OK)
     {

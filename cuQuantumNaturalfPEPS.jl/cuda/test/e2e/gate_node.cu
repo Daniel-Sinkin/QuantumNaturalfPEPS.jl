@@ -1339,7 +1339,7 @@ auto case_e(const Fix& f, int gpus, int ns, std::int64_t dim_batch, double rel, 
         const qnpeps_e2e_status s1{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o1)};
         StepOut o2{};
         const qnpeps_e2e_status s2{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o2)};
-        const bool dead_ok{s1 == QNPEPS_E2E_ERR_OOM and s2 == QNPEPS_E2E_ERR_INTERNAL};
+        const bool dead_ok{s1 == QNPEPS_E2E_ERR_OOM and s2 == QNPEPS_E2E_ERR_OOM};
         std::snprintf(
             note,
             sizeof(note),

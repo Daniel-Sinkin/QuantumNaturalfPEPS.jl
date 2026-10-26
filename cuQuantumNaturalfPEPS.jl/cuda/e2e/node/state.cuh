@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cuda_runtime.h>
 #include <memory>
+#include <string>
 #include <mutex>
 #include <vector>
 
@@ -72,6 +73,8 @@ class NodeState
     [[nodiscard]] auto linalg0() -> qnpeps::Linalg& { return ctx[0].linalg(); }
     [[nodiscard]] auto status() const -> qnpeps_e2e_status;
     auto fail(qnpeps_e2e_status value) -> void;
+    [[nodiscard]] auto failure_location() const -> const char*;
+    [[nodiscard]] auto failure_message() const -> const char*;
 
     QnpepsE2eConfig cfg{};
     QnpepsConfig scfg{};
@@ -99,6 +102,8 @@ class NodeState
     QnpepsElocTermTable terms{};
 
     qnpeps_e2e_status status_value{QNPEPS_E2E_OK};
+    std::string failure_location_value{};
+    std::string failure_message_value{};
     mutable std::mutex status_m;
     std::mutex sampler_m;
 

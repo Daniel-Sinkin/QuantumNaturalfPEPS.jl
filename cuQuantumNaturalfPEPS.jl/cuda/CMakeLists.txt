@@ -76,7 +76,6 @@ add_library(qnpeps SHARED
   eo/dtensor.cu
   eo/env_build.cu
   e2e/capi.cu
-  e2e/gram.cu
   e2e/kernels.cu
   e2e/update.cu
   e2e/step.cu
@@ -96,7 +95,6 @@ add_library(qnpeps SHARED
   sampler/setup.cu
   sampler/sweep/refresh.cu
   sampler/sweep/run.cu
-  sampler/sweep_bridge.cu
   sampler/entry.cu
 )
 set_source_files_properties(
@@ -109,7 +107,6 @@ set_source_files_properties(
   eo/dtensor.cu
   eo/env_build.cu
   e2e/capi.cu
-  e2e/gram.cu
   minsr/solve.cu
   minsr/composition.cu
   minsr/distributed.cu
@@ -141,7 +138,7 @@ set_target_properties(qnpeps PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 target_link_libraries(qnpeps PRIVATE
-  CUDA::cudart CUDA::cublas CUDA::cusolver CUDA::curand Threads::Threads
+  CUDA::cudart CUDA::cublas CUDA::cusolver Threads::Threads
 )
 target_compile_options(qnpeps PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wshadow,-Wconversion,-Wsign-conversion,-Wfloat-conversion,-Wcast-qual,-Wcast-align,-Wformat=2,-Wundef,-Wnull-dereference,-Wnon-virtual-dtor,-Woverloaded-virtual,-Wdouble-promotion,-Wimplicit-fallthrough,-Wreturn-type,-Werror>
@@ -263,7 +260,7 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_eo_l16_gate PRIVATE qnpeps CUDA::cudart)
   add_test(NAME qnpeps_eo_l16_gate COMMAND qnpeps_eo_l16_gate)
 
-  foreach(gate_name gram minsr node step step_mg update)
+  foreach(gate_name minsr node step step_mg update)
     add_executable(qnpeps_e2e_${gate_name}_gate test/e2e/gate_${gate_name}.cu)
     target_include_directories(qnpeps_e2e_${gate_name}_gate PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}

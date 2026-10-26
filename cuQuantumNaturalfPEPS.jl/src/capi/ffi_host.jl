@@ -5,7 +5,6 @@ import ..QnpepsElocConfig
 import ..QnpepsElocTermTable
 import ..QnpepsSamplerHostBatchArgs
 import ..QnpepsSamplerHostRefreshArgs
-import ..SweepSiteArgs
 
 include("ffi_host/arguments.jl")
 
@@ -49,61 +48,6 @@ sampler_host_refresh(context, args)::Cint = ccall(
     (Ptr{Cvoid}, Ptr{QnpepsSamplerHostRefreshArgs}),
     context,
     args,
-)
-
-sweep_begin(context, seed)::Cint =
-    ccall((:qnpeps_sweep_begin, _ffi_library()), Cint, (Ptr{Cvoid}, Ptr{UInt64}), context, seed)
-
-sweep_build_ket_site(context, args)::Cint = ccall(
-    (:qnpeps_sweep_build_ket_site, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ptr{SweepSiteArgs}),
-    context,
-    args,
-)
-
-sweep_build_env_unsampled_site(context, args)::Cint = ccall(
-    (:qnpeps_sweep_build_env_unsampled_site, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ptr{SweepSiteArgs}),
-    context,
-    args,
-)
-
-sweep_draw_sigma_site(context, args)::Cint = ccall(
-    (:qnpeps_sweep_draw_sigma_site, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ptr{SweepSiteArgs}),
-    context,
-    args,
-)
-
-sweep_build_env_above_site(context, args)::Cint = ccall(
-    (:qnpeps_sweep_build_env_above_site, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ptr{SweepSiteArgs}),
-    context,
-    args,
-)
-
-sweep_finish(context, samples, logpc, lognorm)::Cint = ccall(
-    (:qnpeps_sweep_finish, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ptr{UInt8}, Ptr{Float64}, Ptr{Float64}),
-    context,
-    samples,
-    logpc,
-    lognorm,
-)
-
-sweep_graph_policy(context, policy, use_graph, reason)::Cint = ccall(
-    (:qnpeps_sweep_graph_policy, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Int32, Ptr{Int32}, Ptr{Int32}),
-    context,
-    policy,
-    use_graph,
-    reason,
 )
 
 function eloc_ctx_create(config, rows, terms, selector_mode, stream, out)::Cint

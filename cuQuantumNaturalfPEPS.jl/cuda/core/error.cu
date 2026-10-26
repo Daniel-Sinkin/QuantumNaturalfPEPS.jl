@@ -174,8 +174,10 @@ auto set_cuda_err(
         static_cast<int>(backend_status),
         cudaGetErrorString(backend_status)
     );
+    const auto is_allocation_failure =
+        backend_status == cudaErrorMemoryAllocation and status == QNPEPS_ERR_CUDA;
     return set_backend_err_at(
-        status,
+        is_allocation_failure ? QNPEPS_ERR_OOM : status,
         "cuda",
         static_cast<i32>(backend_status),
         where.file_name(),

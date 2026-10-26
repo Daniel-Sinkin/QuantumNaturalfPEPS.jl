@@ -10,8 +10,6 @@
 namespace qn_eloc::e0191
 {
 
-#line 90 "cuda/linalg/experimental_svd.cuh"
-
 struct CuRecordGesvdaInfoArgs
 {
     const int* info;
