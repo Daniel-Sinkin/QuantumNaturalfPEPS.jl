@@ -35,6 +35,7 @@ auto sampler_cfg(const QnpepsE2eConfig& c) -> QnpepsConfig
     s.seed = c.seed;
     s.sampling_mode = c.sampling_mode;
     s.chi_c = c.contract_dim;
+    qn_e2e::apply_truncation(c, s);
     return s;
 }
 
@@ -53,6 +54,7 @@ auto eloc_cfg(const QnpepsE2eConfig& c) -> QnpepsElocConfig
     e.dim_bond = c.dim_bond;
     e.chi_eo = c.chi_eo;
     e.meo = c.meo;
+    qn_e2e::apply_truncation(c, e);
     return e;
 }
 
@@ -103,6 +105,7 @@ auto check_cfg(const QnpepsE2eConfig* c) -> qnpeps_e2e_status
         return QNPEPS_E2E_ERR_BAD_CONFIG;
     if (c->sample_batch < 0 or c->sample_batch > qnpeps::k_max_batch_size)
         return QNPEPS_E2E_ERR_BAD_CONFIG;
+    if (not qn_e2e::has_valid_truncation(*c)) return QNPEPS_E2E_ERR_BAD_CONFIG;
     return QNPEPS_E2E_OK;
 }
 

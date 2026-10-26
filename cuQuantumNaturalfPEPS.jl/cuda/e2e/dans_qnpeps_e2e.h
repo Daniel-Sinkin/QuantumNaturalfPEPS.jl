@@ -35,6 +35,11 @@ extern "C"
         int32_t sampling_mode;
         int32_t contract_dim;
         int32_t sample_batch;
+        int32_t truncation_route;
+        double dlenv_density_cutoff;
+        double sampler_density_cutoff;
+        double projected_density_cutoff;
+        double local_energy_density_cutoff;
     } QnpepsE2eConfig;
 
     typedef struct qnpeps_e2e_cbuf qnpeps_e2e_cbuf;

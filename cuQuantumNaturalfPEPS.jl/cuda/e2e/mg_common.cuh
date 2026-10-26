@@ -51,6 +51,7 @@ inline constexpr usize k_probe_bytes{static_cast<usize>(1) << 20};
     output.seed = config.seed;
     output.sampling_mode = config.sampling_mode;
     output.chi_c = config.contract_dim;
+    apply_truncation(config, output);
     return output;
 }
 
@@ -65,6 +66,7 @@ inline constexpr usize k_probe_bytes{static_cast<usize>(1) << 20};
     output.dim_bond = config.dim_bond;
     output.chi_eo = config.chi_eo;
     output.meo = config.meo;
+    apply_truncation(config, output);
     return output;
 }
 
@@ -128,6 +130,7 @@ template <class T>
     const auto valid_sample_batch =
         config->sample_batch >= 0 and config->sample_batch <= qnpeps::k_max_batch_size;
     if (not valid_sample_batch) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    if (not has_valid_truncation(*config)) return QNPEPS_E2E_ERR_BAD_CONFIG;
     return QNPEPS_E2E_OK;
 }
 

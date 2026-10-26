@@ -4,7 +4,9 @@
 #include "core/error.cuh"
 #include "core/types.cuh"
 #include "dans_qnpeps_e2e.h"
+#include "eo/dans_qnpeps_eloc.h"
 
+#include <cmath>
 #include <cuComplex.h>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -50,6 +52,37 @@ inline void clear_err()
 inline void set_err(qnpeps_e2e_status s)
 {
     qnpeps::set_err(root_status(s));
+}
+
+[[nodiscard]] inline auto is_valid_density_cutoff(f64 cutoff) noexcept -> bool
+{
+    return std::isfinite(cutoff) and cutoff >= 0.0;
+}
+
+[[nodiscard]] inline auto has_valid_truncation(const QnpepsE2eConfig& config) noexcept -> bool
+{
+    const auto is_known_route = config.truncation_route == QNPEPS_TRUNCATION_DEFAULT
+                                or config.truncation_route == QNPEPS_TRUNCATION_DENSITY;
+    return is_known_route and is_valid_density_cutoff(config.dlenv_density_cutoff)
+           and is_valid_density_cutoff(config.sampler_density_cutoff)
+           and is_valid_density_cutoff(config.projected_density_cutoff)
+           and is_valid_density_cutoff(config.local_energy_density_cutoff);
+}
+
+inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsConfig& sampler) noexcept -> void
+{
+    sampler.dlenv_truncation_route = config.truncation_route;
+    sampler.sampler_truncation_route = config.truncation_route;
+    sampler.dlenv_density_cutoff = config.dlenv_density_cutoff;
+    sampler.sampler_density_cutoff = config.sampler_density_cutoff;
+    sampler.projected_density_cutoff = config.projected_density_cutoff;
+}
+
+inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsElocConfig& local_energy) noexcept
+    -> void
+{
+    local_energy.truncation_route = config.truncation_route;
+    local_energy.density_cutoff = config.local_energy_density_cutoff;
 }
 
 }

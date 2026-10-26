@@ -12,6 +12,11 @@ struct QnpepsE2eConfig
     sampling_mode::Int32
     contract_dim::Int32
     sample_batch::Int32
+    truncation_route::Int32
+    dlenv_density_cutoff::Float64
+    sampler_density_cutoff::Float64
+    projected_density_cutoff::Float64
+    local_energy_density_cutoff::Float64
 end
 
 Base.@kwdef struct QnpepsE2eEulerStepArgs
@@ -74,6 +79,11 @@ function QnpepsE2eConfig(;
     sampling_mode=:fast,
     contract_dim::Integer=3 * dim_bond,
     sample_batch::Integer=0,
+    truncation_route=:default,
+    dlenv_density_cutoff::Real=1.0e-13,
+    sampler_density_cutoff::Real=1.0e-3,
+    projected_density_cutoff::Real=1.0e-4,
+    local_energy_density_cutoff::Real=1.0e-13,
 )
     mode =
         sampling_mode === :fast ? Int32(0) :
@@ -83,6 +93,15 @@ function QnpepsE2eConfig(;
         contract_dim < 1 &&
         throw(ArgumentError("contract_dim must be positive in full sampling mode"))
     0 <= sample_batch <= 2048 || throw(ArgumentError("sample_batch must be between 0 and 2048"))
+    route = _truncation_route_value(truncation_route)
+    cutoffs = (
+        dlenv_density_cutoff,
+        sampler_density_cutoff,
+        projected_density_cutoff,
+        local_energy_density_cutoff,
+    )
+    all(cutoff -> isfinite(cutoff) && cutoff >= 0, cutoffs) ||
+        throw(ArgumentError("density cutoffs must be finite and nonnegative"))
     return QnpepsE2eConfig(
         UInt32(sizeof(QnpepsE2eConfig)),
         Int32(lx),
@@ -97,5 +116,10 @@ function QnpepsE2eConfig(;
         mode,
         Int32(contract_dim),
         Int32(sample_batch),
+        route,
+        Float64(dlenv_density_cutoff),
+        Float64(sampler_density_cutoff),
+        Float64(projected_density_cutoff),
+        Float64(local_energy_density_cutoff),
     )
 end
