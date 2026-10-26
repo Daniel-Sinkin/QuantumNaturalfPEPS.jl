@@ -690,8 +690,19 @@ extern "C" int64_t qnpeps_batched_rangefinder_scratch_bytes(int rows, int cols, 
 {
     if (rows < 1 or cols < 1 or rank < 1 or batch < 1) return -1;
     if (rank > rows or rank > cols) return -1;
-    const auto bytes = arena_reservation_bytes();
-    return err_state() == QNPEPS_OK ? static_cast<int64_t>(bytes) : -1;
+    const auto rows_size = static_cast<usize>(rows);
+    const auto cols_size = static_cast<usize>(cols);
+    const auto rank_size = static_cast<usize>(rank);
+    const auto batch_size = static_cast<usize>(batch);
+    const auto complex_bytes = sizeof(cuFloatComplex);
+    const auto bytes = device_align(complex_bytes * rows_size * rank_size * batch_size)
+                       + device_align(complex_bytes * cols_size * rank_size * batch_size)
+                       + device_align(complex_bytes * rank_size * rank_size * batch_size)
+                       + device_align(complex_bytes * cols_size * rank_size)
+                       + 2 * device_align(sizeof(cuFloatComplex*) * batch_size)
+                       + device_align(sizeof(int) * batch_size) + device_align(sizeof(int))
+                       + k_device_malloc_align;
+    return static_cast<int64_t>(bytes);
 }
 
 extern "C" qnpeps_status qnpeps_batched_rangefinder(
