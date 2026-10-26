@@ -19,7 +19,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_submit_theta(
 )
 {
     if (not node or not device_peps) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (node->state_.status() != QNPEPS_E2E_OK) return QNPEPS_E2E_ERR_INTERNAL;
+    if (node->state_.status() != QNPEPS_E2E_OK) return node->state_.status();
 
     int caller_device{0};
     cudaGetDevice(&caller_device);
@@ -39,7 +39,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_submit_theta(
     if (err_state() != QNPEPS_E2E_OK)
     {
         node->state_.fail(err_state());
-        return QNPEPS_E2E_ERR_INTERNAL;
+        return node->state_.status();
     }
 
     node->state_.epoch_current = next_epoch;
@@ -67,7 +67,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_step(
 {
     if (not node or not theta_dot_out or not e_mean_out or not e_var_out or not ess_out)
         return QNPEPS_E2E_ERR_NULL_ARG;
-    if (node->state_.status() != QNPEPS_E2E_OK) return QNPEPS_E2E_ERR_INTERNAL;
+    if (node->state_.status() != QNPEPS_E2E_OK) return node->state_.status();
     if (node->state_.epoch_current < 0) return QNPEPS_E2E_ERR_BAD_CONFIG;
     if (sample_count < 0 or sample_count == 1 or sample_count > node->state_.ns_capacity)
         return QNPEPS_E2E_ERR_BAD_CONFIG;
@@ -96,7 +96,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_step(
         if (err_state() != QNPEPS_E2E_OK)
         {
             node->state_.fail(err_state());
-            return QNPEPS_E2E_ERR_INTERNAL;
+            return node->state_.status();
         }
         return QNPEPS_E2E_OK;
     }
@@ -427,7 +427,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_step_euler(
     const auto missing_output = not args->peps_f32_io or not args->energy_mean_output
                                 or not args->energy_variance_output or not args->ess_output;
     if (missing_output) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (node->state_.status() != QNPEPS_E2E_OK) return QNPEPS_E2E_ERR_INTERNAL;
+    if (node->state_.status() != QNPEPS_E2E_OK) return node->state_.status();
     if (not std::isfinite(args->learning_rate)) return QNPEPS_E2E_ERR_BAD_CONFIG;
 
     const u64 peps_bytes{static_cast<u64>(node->state_.peps_bytes)};
