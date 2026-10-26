@@ -237,8 +237,28 @@ enum class RangefinderRoute
     gesvda
 };
 
+inline thread_local bool householder_route_forced{};
+
+class HouseholderRouteScope
+{
+  public:
+    HouseholderRouteScope() noexcept : previous_(householder_route_forced)
+    {
+        householder_route_forced = true;
+    }
+    ~HouseholderRouteScope() { householder_route_forced = previous_; }
+    HouseholderRouteScope(const HouseholderRouteScope&) = delete;
+    auto operator=(const HouseholderRouteScope&) -> HouseholderRouteScope& = delete;
+    HouseholderRouteScope(HouseholderRouteScope&&) = delete;
+    auto operator=(HouseholderRouteScope&&) -> HouseholderRouteScope& = delete;
+
+  private:
+    bool previous_{};
+};
+
 inline auto rangefinder_route_from_env() -> RangefinderRoute
 {
+    if (householder_route_forced) return RangefinderRoute::householder;
     auto value{std::getenv("QNPEPS_E0191_RF_ROUTE")};
     if (not value or value[0] == '\0' or std::strcmp(value, "cholqr") == 0)
         return RangefinderRoute::cholqr;
@@ -261,7 +281,7 @@ inline auto rangefinder_force_nonexact_from_env() -> bool
 inline auto rangefinder_route_uses_householder_scratch() -> bool
 {
     const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    return route == RangefinderRoute::householder;
+    return route == RangefinderRoute::householder or route == RangefinderRoute::cholqr;
 }
 
 inline auto rangefinder_route_uses_experimental_scratch() -> bool

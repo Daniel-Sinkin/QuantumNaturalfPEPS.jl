@@ -71,6 +71,7 @@ auto qn_eloc_envs_logpsi(
     const auto sites = i64{sites_int};
     (void) sample_sites;
     auto done = i64{0};
+    auto use_householder = false;
     while (done < n_samples)
     {
         const auto density = bool{cfg.truncation_route == 6};
@@ -91,10 +92,24 @@ auto qn_eloc_envs_logpsi(
         };
         worker_ensure(w, sh, false, false, peps, wave_samples, stream, context_arena);
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        worker_begin_rangefinders(w, nullptr);
-        compute_logpsi(w, logpsi_out + output_offset, false);
-        auto fail = int{worker_rangefinder_failed(w)};
-        if (fail > 0)
+        const auto run_logpsi_householder = [&]() -> int
+        {
+            const qnpeps::HouseholderRouteScope householder{};
+            worker_begin_rangefinders(w, nullptr);
+            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
+            compute_logpsi(w, logpsi_out + output_offset, false);
+            return worker_rangefinder_failed(w);
+        };
+        auto fail = int{};
+        if (use_householder)
+            fail = run_logpsi_householder();
+        else
+        {
+            worker_begin_rangefinders(w, nullptr);
+            compute_logpsi(w, logpsi_out + output_offset, false);
+            fail = worker_rangefinder_failed(w);
+        }
+        if (fail > 0 and not use_householder)
         {
             if ((fail & 2) != 0)
             {
@@ -113,7 +128,13 @@ auto qn_eloc_envs_logpsi(
                 if (fail <= 0 or (fail & 2) != 0) break;
                 if (not expand_rangefinder_fallback(w, fallback)) break;
             }
+            if (fail != 0)
+            {
+                use_householder = true;
+                fail = run_logpsi_householder();
+            }
         }
+        if (fail < 0) return;
         if (fail != 0)
         {
             qn::set_backend_err(
@@ -237,6 +258,7 @@ auto run_cache_execute(
     auto& w{state.w};
     auto& wt{state.wt};
     auto done = i64{0};
+    auto use_householder = false;
     usize wave_index{};
     while (done < n_samples)
     {
@@ -390,8 +412,20 @@ auto run_cache_execute(
             }
             return worker_rangefinder_failed(w);
         };
+        const auto run_householder = [&](auto&& run, auto&& destroy_graphs) -> int
+        {
+            const auto graphs_were_enabled = state.graph_enabled;
+            state.graph_enabled = false;
+            if (wave_graphs) destroy_graphs(*wave_graphs);
+            const qnpeps::HouseholderRouteScope householder{};
+            const auto fail = int{run(nullptr)};
+            state.graph_enabled = graphs_were_enabled;
+            return fail;
+        };
+        const auto destroy_orig = [](auto& graphs) { destroy_orig_graphs(graphs); };
         const auto run_orig_recovered = [&]() -> int
         {
+            if (use_householder) return run_householder(run_orig, destroy_orig);
             std::vector<int> transient_fallback{};
             auto& fallback{wave_graphs ? wave_graphs->orig_fallback : transient_fallback};
             const auto active_fallback = [&]() -> const std::vector<int>*
@@ -410,16 +444,20 @@ auto run_cache_execute(
             }
             else
                 changed = expand_rangefinder_fallback(w, fallback);
-            if (not changed) return orig_fail;
-            if (wave_graphs) destroy_orig_graphs(*wave_graphs);
-            for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
+            if (changed)
             {
-                orig_fail = run_orig(&fallback);
-                if (orig_fail <= 0 or (orig_fail & 2) != 0) break;
-                if (not expand_rangefinder_fallback(w, fallback)) break;
                 if (wave_graphs) destroy_orig_graphs(*wave_graphs);
+                for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
+                {
+                    orig_fail = run_orig(&fallback);
+                    if (orig_fail <= 0 or (orig_fail & 2) != 0) break;
+                    if (not expand_rangefinder_fallback(w, fallback)) break;
+                    if (wave_graphs) destroy_orig_graphs(*wave_graphs);
+                }
             }
-            return orig_fail;
+            if (orig_fail == 0) return orig_fail;
+            use_householder = true;
+            return run_householder(run_orig, destroy_orig);
         };
         auto fail = int{run_orig_recovered()};
         if (fail != 0)
@@ -494,10 +532,13 @@ auto run_cache_execute(
                 }
                 return worker_rangefinder_failed(wt);
             };
+            const auto destroy_transposed = [](auto& graphs) { destroy_transposed_graphs(graphs); };
             std::vector<int> transient_fallback{};
             auto& fallback{wave_graphs ? wave_graphs->tr_fallback : transient_fallback};
-            auto fail = int{run_transposed(fallback.empty() ? nullptr : &fallback)};
-            if (fail > 0)
+            auto fail =
+                int{use_householder ? run_householder(run_transposed, destroy_transposed)
+                                    : run_transposed(fallback.empty() ? nullptr : &fallback)};
+            if (fail > 0 and not use_householder)
             {
                 if ((fail & 2) != 0)
                 {
@@ -514,22 +555,24 @@ auto run_cache_execute(
                 }
                 else
                     changed = expand_rangefinder_fallback(wt, fallback);
-                if (not changed)
+                if (changed)
                 {
-                    qn::set_backend_err(
-                        QNPEPS_ELOC_ERR_CUDA, "rangefinder_recovery", fail, __FILE__, __LINE__
-                    );
-                    return;
-                }
-                if (wave_graphs) destroy_transposed_graphs(*wave_graphs);
-                for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
-                {
-                    fail = run_orig_recovered();
-                    if (fail != 0) break;
-                    fail = run_transposed(&fallback);
-                    if (fail <= 0 or (fail & 2) != 0) break;
-                    if (not expand_rangefinder_fallback(wt, fallback)) break;
                     if (wave_graphs) destroy_transposed_graphs(*wave_graphs);
+                    for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
+                    {
+                        fail = run_orig_recovered();
+                        if (fail != 0) break;
+                        fail = run_transposed(&fallback);
+                        if (fail <= 0 or (fail & 2) != 0) break;
+                        if (not expand_rangefinder_fallback(wt, fallback)) break;
+                        if (wave_graphs) destroy_transposed_graphs(*wave_graphs);
+                    }
+                }
+                if (fail != 0)
+                {
+                    use_householder = true;
+                    fail = run_orig_recovered();
+                    if (fail == 0) fail = run_householder(run_transposed, destroy_transposed);
                 }
             }
             if (fail != 0)
