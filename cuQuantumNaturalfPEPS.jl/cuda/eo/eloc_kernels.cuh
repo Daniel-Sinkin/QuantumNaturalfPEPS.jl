@@ -11,39 +11,6 @@ namespace qn_eloc
 using i64 = std::int64_t;
 using cf = fx::cf;
 
-void launch_eloc_chains(
-    i64 n_chains,
-    int chi,
-    const cf* ma,
-    const cf* mb,
-    const cf* vin,
-    const cf* vend,
-    cf* out,
-    cudaStream_t stream
-);
-
-void launch_build_o(
-    i64 n,
-    int slice_dim,
-    const cf* env,
-    const cf* slice_in,
-    const cf* gscale,
-    cf* out,
-    cudaStream_t stream
-);
-
-void launch_gram(
-    int ns,
-    int compact_np,
-    int n_blocks,
-    const cf* compact_rows,
-    const int* spins,
-    const int* block_offset,
-    const int* block_slice,
-    cf* out,
-    cudaStream_t stream
-);
-
 void launch_gram_tile(
     cf* out,
     int out_ld,

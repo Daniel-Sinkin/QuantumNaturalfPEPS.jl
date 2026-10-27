@@ -39,7 +39,6 @@ extern "C"
 
     typedef struct qnpeps_eloc_cbuf qnpeps_eloc_cbuf;
     typedef struct qnpeps_eloc_ctx qnpeps_eloc_ctx;
-    typedef struct qnpeps_eloc_gram_ctx qnpeps_eloc_gram_ctx;
 
     typedef enum qnpeps_eloc_ctx_flags
     {
@@ -86,41 +85,6 @@ extern "C"
         int32_t n_flip;
         const QnpepsElocFlipTerm* flip;
     } QnpepsElocTermTable;
-
-    qnpeps_eloc_status qnpeps_eloc_chains(
-        const QnpepsElocConfig* cfg,
-        int64_t n_chains,
-        const qnpeps_eloc_cbuf* ma,
-        const qnpeps_eloc_cbuf* mb,
-        const qnpeps_eloc_cbuf* vin,
-        const qnpeps_eloc_cbuf* vend,
-        qnpeps_eloc_cbuf* out,
-        void* stream
-    );
-
-    qnpeps_eloc_status qnpeps_eloc_build_o(
-        const QnpepsElocConfig* cfg,
-        int64_t n,
-        int32_t slice_dim,
-        const qnpeps_eloc_cbuf* env,
-        const qnpeps_eloc_cbuf* slice_in,
-        const qnpeps_eloc_cbuf* gscale,
-        qnpeps_eloc_cbuf* out,
-        void* stream
-    );
-
-    qnpeps_eloc_status qnpeps_eloc_gram(
-        const QnpepsElocConfig* cfg,
-        int32_t ns,
-        int32_t compact_np,
-        int32_t n_blocks,
-        const qnpeps_eloc_cbuf* compact_rows,
-        const int32_t* spins,
-        const int32_t* block_offset,
-        const int32_t* block_slice,
-        qnpeps_eloc_cbuf* out,
-        void* stream
-    );
 
     qnpeps_eloc_status qnpeps_eloc_logpsi(
         const QnpepsElocConfig* cfg,
@@ -171,34 +135,6 @@ extern "C"
         int64_t ns_b,
         qnpeps_eloc_cbuf* tile_out,
         void* stream
-    );
-
-    qnpeps_eloc_status qnpeps_eloc_gram_ctx_create(
-        const QnpepsElocConfig* cfg,
-        const uint8_t* device_samples,
-        int64_t n_samples,
-        void* stream,
-        qnpeps_eloc_gram_ctx** out
-    );
-    void qnpeps_eloc_gram_ctx_destroy(qnpeps_eloc_gram_ctx* ctx);
-    qnpeps_eloc_status qnpeps_eloc_gram_ctx_launch(
-        qnpeps_eloc_gram_ctx* ctx,
-        const qnpeps_eloc_cbuf* rows_a,
-        int64_t sample_base_a,
-        int64_t ns_a,
-        const qnpeps_eloc_cbuf* rows_b,
-        int64_t sample_base_b,
-        int64_t ns_b,
-        qnpeps_eloc_cbuf* out,
-        int64_t out_ld,
-        void* stream
-    );
-
-    qnpeps_eloc_status qnpeps_eloc_run_scratch_bytes(
-        const QnpepsElocConfig* cfg,
-        int64_t n_samples,
-        const QnpepsElocTermTable* terms,
-        uint64_t* out_bytes
     );
 
     const char* qnpeps_eloc_strerror(qnpeps_eloc_status status);

@@ -1019,6 +1019,4 @@ auto qn_eloc_gram_tile_impl(
     cudaStream_t stream
 ) -> void;
 
-auto qn_eloc_run_scratch(const QnpepsElocConfig&, i64, const QnpepsElocTermTable*) -> u64;
-
 auto qn_eloc_compact_count(const QnpepsElocConfig& cfg) -> i64;

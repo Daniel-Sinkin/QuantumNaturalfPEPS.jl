@@ -232,11 +232,6 @@ auto qn_eloc_gram_tile_impl(
     CUDA_CHECK(cudaGetLastError());
 }
 
-auto qn_eloc_run_scratch(const QnpepsElocConfig&, i64, const QnpepsElocTermTable*) -> u64
-{
-    return static_cast<u64>(qnpeps::arena_reservation_bytes());
-}
-
 auto qn_eloc_compact_count(const QnpepsElocConfig& cfg) -> i64
 {
     const auto sh = qn_eloc::env::Shape{cfg.lx, cfg.ly, cfg.dim_phys, cfg.dim_bond, cfg.chi_eo, 1};

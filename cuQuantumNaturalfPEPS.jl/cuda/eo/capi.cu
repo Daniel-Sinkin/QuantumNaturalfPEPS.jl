@@ -18,17 +18,6 @@
 #    error "QNPEPS_PACKAGE_VERSION must be provided by CMake"
 #endif
 
-struct qnpeps_eloc_gram_ctx
-{
-    int device;
-    int sites;
-    int compact;
-    int64_t n_samples;
-    int* spins;
-    int* block_offset;
-    int* block_slice;
-};
-
 namespace
 {
 auto check_cfg(const QnpepsElocConfig* c) -> qnpeps_eloc_status
@@ -69,103 +58,6 @@ auto as_cf(qnpeps_eloc_cbuf* p) -> cf*
     return reinterpret_cast<cf*>(p);
 }
 
-__global__ auto cu_gram_samples_to_i32(int* out, const uint8_t* in, int64_t total) -> void
-{
-    const auto stride = int64_t{static_cast<int64_t>(gridDim.x) * blockDim.x};
-    for (auto i = int64_t{static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x}; i < total;
-         i += stride)
-        out[i] = static_cast<int>(in[i]);
-}
-
-auto gram_bond_dim(int axis_len, int pos, int dim_bond) -> int
-{
-    return pos <= 0 or pos >= axis_len ? 1 : dim_bond;
-}
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_chains(
-    const QnpepsElocConfig* cfg,
-    int64_t n_chains,
-    const qnpeps_eloc_cbuf* ma,
-    const qnpeps_eloc_cbuf* mb,
-    const qnpeps_eloc_cbuf* vin,
-    const qnpeps_eloc_cbuf* vend,
-    qnpeps_eloc_cbuf* out,
-    void* stream
-)
-{
-    const auto v = check_cfg(cfg);
-    if (v != QNPEPS_ELOC_OK) return v;
-    if (not ma or not mb or not vin or not vend or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
-    qn::clear_err();
-    const auto s = static_cast<cudaStream_t>(stream);
-    qn_eloc::launch_eloc_chains(
-        n_chains, cfg->chi_eo, as_cf(ma), as_cf(mb), as_cf(vin), as_cf(vend), as_cf(out), s
-    );
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaStreamSynchronize(s));
-    return qn::err_state();
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_build_o(
-    const QnpepsElocConfig* cfg,
-    int64_t n,
-    int32_t slice_dim,
-    const qnpeps_eloc_cbuf* env,
-    const qnpeps_eloc_cbuf* slice_in,
-    const qnpeps_eloc_cbuf* gscale,
-    qnpeps_eloc_cbuf* out,
-    void* stream
-)
-{
-    const auto v = check_cfg(cfg);
-    if (v != QNPEPS_ELOC_OK) return v;
-    if (not env or not slice_in or not gscale or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (slice_dim < 1) return QNPEPS_ELOC_ERR_BAD_CONFIG;
-    qn::clear_err();
-    const auto s = static_cast<cudaStream_t>(stream);
-    qn_eloc::launch_build_o(
-        n, slice_dim, as_cf(env), as_cf(slice_in), as_cf(gscale), as_cf(out), s
-    );
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaStreamSynchronize(s));
-    return qn::err_state();
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_gram(
-    const QnpepsElocConfig* cfg,
-    int32_t ns,
-    int32_t compact_np,
-    int32_t n_blocks,
-    const qnpeps_eloc_cbuf* compact_rows,
-    const int32_t* spins,
-    const int32_t* block_offset,
-    const int32_t* block_slice,
-    qnpeps_eloc_cbuf* out,
-    void* stream
-)
-{
-    const auto v = check_cfg(cfg);
-    if (v != QNPEPS_ELOC_OK) return v;
-    if (not compact_rows or not spins or not block_offset or not block_slice or not out)
-        return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (ns < 1 or compact_np < 1 or n_blocks < 1) return QNPEPS_ELOC_ERR_BAD_CONFIG;
-    qn::clear_err();
-    const auto s = static_cast<cudaStream_t>(stream);
-    qn_eloc::launch_gram(
-        ns,
-        compact_np,
-        n_blocks,
-        as_cf(compact_rows),
-        reinterpret_cast<const int*>(spins),
-        reinterpret_cast<const int*>(block_offset),
-        reinterpret_cast<const int*>(block_slice),
-        as_cf(out),
-        s
-    );
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaStreamSynchronize(s));
-    return qn::err_state();
 }
 
 auto qn_eloc_envs_logpsi(
@@ -191,10 +83,6 @@ auto qn_eloc_run_impl(
     f64 lambda,
     qnpeps::Linalg& linalg
 ) -> void;
-
-auto qn_eloc_run_scratch(
-    const QnpepsElocConfig& cfg, std::int64_t n_samples, const QnpepsElocTermTable* tt
-) -> std::uint64_t;
 
 auto qn_eloc_compact_count(const QnpepsElocConfig& cfg) -> std::int64_t;
 
@@ -361,159 +249,6 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_gram_tile(
     return qn::err_state();
 }
 
-extern "C" qnpeps_eloc_status qnpeps_eloc_gram_ctx_create(
-    const QnpepsElocConfig* cfg,
-    const uint8_t* device_samples,
-    int64_t n_samples,
-    void* stream,
-    qnpeps_eloc_gram_ctx** out
-)
-{
-    const auto v = qnpeps_eloc_status{check_cfg(cfg)};
-    if (v != QNPEPS_ELOC_OK) return v;
-    if (not device_samples or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
-    *out = nullptr;
-    const auto sites64 = int64_t{static_cast<int64_t>(cfg->lx) * cfg->ly};
-    if (n_samples < 1 or sites64 < 1 or n_samples > std::numeric_limits<int64_t>::max() / sites64)
-        return QNPEPS_ELOC_ERR_BAD_CONFIG;
-
-    qn::clear_err();
-    auto* ctx{static_cast<qnpeps_eloc_gram_ctx*>(std::calloc(1, sizeof(qnpeps_eloc_gram_ctx)))};
-    if (not ctx) return QNPEPS_ELOC_ERR_OOM;
-    ctx->sites = static_cast<int>(sites64);
-    ctx->n_samples = n_samples;
-    if (cudaGetDevice(&ctx->device) != cudaSuccess) qn::set_err(QNPEPS_ELOC_ERR_CUDA);
-
-    auto offsets = std::vector<int>(static_cast<std::size_t>(ctx->sites));
-    auto slices = std::vector<int>(static_cast<std::size_t>(ctx->sites));
-    auto compact = int64_t{0};
-    for (auto row = int{0}; row < cfg->lx; ++row)
-    {
-        for (auto col = int{0}; col < cfg->ly; ++col)
-        {
-            const auto slice =
-                int{gram_bond_dim(cfg->ly, col, cfg->dim_bond)
-                    * gram_bond_dim(cfg->lx, row + 1, cfg->dim_bond)
-                    * gram_bond_dim(cfg->ly, col + 1, cfg->dim_bond)
-                    * gram_bond_dim(cfg->lx, row, cfg->dim_bond)};
-            const auto site = std::size_t{static_cast<std::size_t>(row) * cfg->ly + col};
-            if (compact > std::numeric_limits<int>::max() - slice)
-                qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-            offsets[site] = static_cast<int>(compact);
-            slices[site] = slice;
-            compact += slice;
-        }
-    }
-    ctx->compact = static_cast<int>(compact);
-    if (compact != qn_eloc_compact_count(*cfg)) qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-
-    const auto alloc = [](void** ptr, std::size_t bytes) -> void
-    {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        if (cudaMalloc(ptr, bytes) != cudaSuccess) qn::set_err(QNPEPS_ELOC_ERR_OOM);
-    };
-    alloc(reinterpret_cast<void**>(&ctx->spins), sizeof(int) * n_samples * sites64);
-    alloc(reinterpret_cast<void**>(&ctx->block_offset), sizeof(int) * sites64);
-    alloc(reinterpret_cast<void**>(&ctx->block_slice), sizeof(int) * sites64);
-
-    const auto s = cudaStream_t{static_cast<cudaStream_t>(stream)};
-    if (qn::err_state() == QNPEPS_ELOC_OK)
-    {
-        CUDA_CHECK(cudaMemcpyAsync(
-            ctx->block_offset,
-            offsets.data(),
-            sizeof(int) * static_cast<std::size_t>(sites64),
-            cudaMemcpyHostToDevice,
-            s
-        ));
-        CUDA_CHECK(cudaMemcpyAsync(
-            ctx->block_slice,
-            slices.data(),
-            sizeof(int) * static_cast<std::size_t>(sites64),
-            cudaMemcpyHostToDevice,
-            s
-        ));
-        const auto total = int64_t{n_samples * sites64};
-        const auto threads = int{256};
-        auto blocks = int{static_cast<int>((total + threads - 1) / threads)};
-        if (blocks > 4096) blocks = 4096;
-        cu_gram_samples_to_i32<<<blocks, threads, 0, s>>>(ctx->spins, device_samples, total);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaStreamSynchronize(s));
-    }
-
-    if (qn::err_state() != QNPEPS_ELOC_OK)
-    {
-        if (ctx->spins) cudaFree(ctx->spins);
-        if (ctx->block_offset) cudaFree(ctx->block_offset);
-        if (ctx->block_slice) cudaFree(ctx->block_slice);
-        std::free(ctx);
-        return qn::err_state();
-    }
-    *out = ctx;
-    return QNPEPS_ELOC_OK;
-}
-
-extern "C" void qnpeps_eloc_gram_ctx_destroy(qnpeps_eloc_gram_ctx* ctx)
-{
-    if (not ctx) return;
-    int caller_device{};
-    const auto restore =
-        bool{cudaGetDevice(&caller_device) == cudaSuccess and caller_device != ctx->device};
-    if (restore) cudaSetDevice(ctx->device);
-    if (ctx->spins) cudaFree(ctx->spins);
-    if (ctx->block_offset) cudaFree(ctx->block_offset);
-    if (ctx->block_slice) cudaFree(ctx->block_slice);
-    if (restore) cudaSetDevice(caller_device);
-    std::free(ctx);
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_gram_ctx_launch(
-    qnpeps_eloc_gram_ctx* ctx,
-    const qnpeps_eloc_cbuf* rows_a,
-    int64_t sample_base_a,
-    int64_t ns_a,
-    const qnpeps_eloc_cbuf* rows_b,
-    int64_t sample_base_b,
-    int64_t ns_b,
-    qnpeps_eloc_cbuf* out,
-    int64_t out_ld,
-    void* stream
-)
-{
-    if (not ctx or not rows_a or not rows_b or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (sample_base_a < 0 or sample_base_b < 0 or ns_a < 1 or ns_b < 1 or out_ld < ns_b
-        or ns_a > std::numeric_limits<int>::max() or ns_b > std::numeric_limits<int>::max()
-        or out_ld > std::numeric_limits<int>::max() or sample_base_a > ctx->n_samples - ns_a
-        or sample_base_b > ctx->n_samples - ns_b)
-        return QNPEPS_ELOC_ERR_BAD_CONFIG;
-    int device{};
-    if (cudaGetDevice(&device) != cudaSuccess or device != ctx->device)
-        return QNPEPS_ELOC_ERR_BAD_CONFIG;
-
-    qn::clear_err();
-    const auto s = cudaStream_t{static_cast<cudaStream_t>(stream)};
-    qn_eloc::launch_gram_tile(
-        as_cf(out),
-        static_cast<int>(out_ld),
-        ctx->compact,
-        ctx->sites,
-        as_cf(rows_a),
-        as_cf(rows_b),
-        ctx->spins + sample_base_a * ctx->sites,
-        ctx->spins + sample_base_b * ctx->sites,
-        ctx->block_offset,
-        ctx->block_slice,
-        0,
-        static_cast<int>(ns_a),
-        0,
-        static_cast<int>(ns_b),
-        s
-    );
-    CUDA_CHECK(cudaGetLastError());
-    return qn::err_state();
-}
-
 extern "C" qnpeps_eloc_status qnpeps_eloc_compact_count(
     const QnpepsElocConfig* cfg, int64_t* out_count
 )
@@ -522,21 +257,6 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_compact_count(
     if (v != QNPEPS_ELOC_OK) return v;
     if (not out_count) return QNPEPS_ELOC_ERR_NULL_ARG;
     *out_count = qn_eloc_compact_count(*cfg);
-    return QNPEPS_ELOC_OK;
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_run_scratch_bytes(
-    const QnpepsElocConfig* cfg,
-    int64_t n_samples,
-    const QnpepsElocTermTable* terms,
-    uint64_t* out_bytes
-)
-{
-    const auto v = check_cfg(cfg);
-    if (v != QNPEPS_ELOC_OK) return v;
-    if (not out_bytes) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (const auto status = check_terms(*cfg, terms); status != QNPEPS_ELOC_OK) return status;
-    *out_bytes = qn_eloc_run_scratch(*cfg, n_samples, terms);
     return QNPEPS_ELOC_OK;
 }
 

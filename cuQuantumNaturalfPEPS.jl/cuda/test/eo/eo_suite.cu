@@ -379,42 +379,11 @@ auto negative_endpoints() -> bool
     std::int64_t count{};
     std::uint64_t bytes{};
     qnpeps_eloc_ctx* context{};
-    qnpeps_eloc_gram_ctx* gram_context{};
     const auto record = [&](const char* name, bool ok)
     {
         passed =
             emit_case("adversarial", name, ok, ok ? 0.0 : 1.0, "endpoint", "rejected") and passed;
     };
-    record(
-        "endpoint_chains_negative",
-        qnpeps_eloc_chains(&bad, 1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
-    );
-    record(
-        "endpoint_chains_argument",
-        qnpeps_eloc_chains(&cfg, 1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    record(
-        "endpoint_build_o_negative",
-        qnpeps_eloc_build_o(&bad, 1, 1, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
-    );
-    record(
-        "endpoint_build_o_argument",
-        qnpeps_eloc_build_o(&cfg, 1, 1, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    record(
-        "endpoint_gram_negative",
-        qnpeps_eloc_gram(&bad, 1, 1, 1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
-    );
-    record(
-        "endpoint_gram_argument",
-        qnpeps_eloc_gram(&cfg, 1, 1, 1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_NULL_ARG
-    );
     record(
         "endpoint_logpsi_negative",
         qnpeps_eloc_logpsi(&bad, nullptr, nullptr, 1, nullptr, nullptr)
@@ -485,31 +454,6 @@ auto negative_endpoints() -> bool
         "endpoint_gram_tile_argument",
         qnpeps_eloc_gram_tile(&cfg, nullptr, nullptr, 1, nullptr, nullptr, 1, nullptr, nullptr)
             == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    record(
-        "endpoint_gram_ctx_create_negative",
-        qnpeps_eloc_gram_ctx_create(&bad, nullptr, 1, nullptr, &gram_context)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
-    );
-    record(
-        "endpoint_gram_ctx_create_argument",
-        qnpeps_eloc_gram_ctx_create(&cfg, nullptr, 1, nullptr, &gram_context)
-            == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    qnpeps_eloc_gram_ctx_destroy(nullptr);
-    record("endpoint_gram_ctx_destroy_negative", true);
-    record(
-        "endpoint_gram_ctx_launch_negative",
-        qnpeps_eloc_gram_ctx_launch(nullptr, nullptr, 0, 1, nullptr, 0, 1, nullptr, 1, nullptr)
-            == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    record(
-        "endpoint_scratch_negative",
-        qnpeps_eloc_run_scratch_bytes(&bad, 1, &empty, &bytes) == QNPEPS_ELOC_ERR_BAD_VERSION
-    );
-    record(
-        "endpoint_scratch_argument",
-        qnpeps_eloc_run_scratch_bytes(&cfg, 1, &empty, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
     );
     record(
         "endpoint_argument_negative",

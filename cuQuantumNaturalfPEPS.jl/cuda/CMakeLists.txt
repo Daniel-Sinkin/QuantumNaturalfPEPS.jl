@@ -255,10 +255,6 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_eo_core_test PRIVATE CUDA::cudart)
   add_test(NAME qnpeps_eo_core_test COMMAND qnpeps_eo_core_test)
 
-  add_executable(qnpeps_eo_smoke test/eo/smoke.cu)
-  target_include_directories(qnpeps_eo_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/eo)
-  target_link_libraries(qnpeps_eo_smoke PRIVATE qnpeps CUDA::cudart)
-  add_test(NAME qnpeps_eo_smoke COMMAND qnpeps_eo_smoke)
 
   add_executable(qnpeps_eo_suite test/eo/eo_suite.cu)
   target_include_directories(qnpeps_eo_suite PRIVATE
