@@ -129,11 +129,7 @@ auto bcontract(
              .src = {A.p, A.stride},
              .dims_in = A.dim,
              .perm = perm_a,
-             .batch = lanes,
-             .kind = "perm_a",
-             .m = m_int,
-             .n = n_int,
-             .k = contraction_extent}
+             .batch = lanes}
         );
         pa = dst;
         pa_stride = mk;
@@ -153,11 +149,7 @@ auto bcontract(
              .src = {B.p, B.stride},
              .dims_in = B.dim,
              .perm = perm_b,
-             .batch = lanes,
-             .kind = "perm_b",
-             .m = m_int,
-             .n = n_int,
-             .k = contraction_extent}
+             .batch = lanes}
         );
         pb = dst;
         pb_stride = kn;

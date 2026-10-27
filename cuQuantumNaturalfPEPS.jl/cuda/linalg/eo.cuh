@@ -34,96 +34,11 @@ __global__ auto cu_chol_shift(cf* gram, int k, i64 stride, int dim_batch) -> voi
 __global__ auto cu_or_info_bit(const int* info, int n, int bit, int* flag) -> void;
 __global__ auto cu_fill_first_one(cf* x, i64 stride, int n, int dim_batch) -> void;
 
-inline auto checked_tensor_elements(const std::vector<int>& dims, i64 limit, i64& result) -> bool
-{
-    auto total = i64{1};
-    for (const int dim : dims)
-    {
-        if (dim < 1 or total > limit / dim)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            result = 0;
-            return false;
-        }
-        total *= dim;
-    }
-    result = total;
-    return true;
-}
-
 struct EoDeviceBuffer
 {
     cf* p{};
     i64 stride{};
 };
-
-inline auto _permutation_index_map_check(
-    const std::vector<int>& dims_in, const std::vector<int>& perm
-) -> bool
-{
-    if (not same_size(dims_in, perm)) return false;
-    if (not all_nonnegative(perm)) return false;
-    if (not all_nonnegative(dims_in)) return false;
-    return true;
-}
-
-inline auto permutation_index_map(const std::vector<int>& dims_in, const std::vector<int>& perm)
-    -> std::vector<int>
-{
-    if (not _permutation_index_map_check(dims_in, perm))
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return {};
-    }
-    const auto rank = dims_in.size();
-    std::vector<int> dims_out{};
-    dims_out.resize(rank);
-    for (auto k = 0_uz; k < rank; ++k)
-    {
-        assert(perm[k] >= 0);
-        const auto perm_idx = static_cast<usize>(perm[k]);
-        if (perm[k] < 0 or perm_idx >= rank)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-            return {};
-        }
-        dims_out[k] = dims_in[perm_idx];
-    }
-    i64 total{};
-    if (not checked_tensor_elements(dims_out, std::numeric_limits<int>::max(), total)) return {};
-    auto stride_in = std::vector<i64>(rank, 1);
-    for (auto k = usize{1}; k < rank; ++k)
-    {
-        if (dims_in[k - 1] < 1
-            or stride_in[k - 1] > std::numeric_limits<int>::max() / dims_in[k - 1])
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return {};
-        }
-        stride_in[k] = stride_in[k - 1] * dims_in[k - 1];
-    }
-    auto index_map = std::vector<int>(static_cast<usize>(total));
-    auto idx = std::vector<int>(rank, 0);
-    for (auto out_pos = i64{0}; out_pos < total; ++out_pos)
-    {
-        i64 src{};
-        for (auto k = usize{0}; k < rank; ++k)
-        {
-            const auto perm_idx = static_cast<usize>(perm[k]);
-            const auto stride = i64{stride_in[perm_idx]};
-            src += idx[k] * stride;
-        }
-        const auto out_idx = static_cast<usize>(out_pos);
-        const auto src_int = static_cast<int>(src);
-        index_map[out_idx] = src_int;
-        for (auto k = usize{0}; k < rank; ++k)
-        {
-            if (++idx[k] < dims_out[k]) break;
-            idx[k] = 0;
-        }
-    }
-    return index_map;
-}
 
 class DeviceMatrix
 {

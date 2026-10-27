@@ -148,7 +148,7 @@ auto qn_eloc_gram_tile_impl(
         return;
     const auto sites = i64{n_blocks};
 
-    const auto osh = Shape{cfg.lx, cfg.ly, cfg.dim_phys, cfg.dim_bond, cfg.chi_eo, 1};
+    const auto osh = qn_eloc::env::Shape{cfg.lx, cfg.ly, cfg.dim_phys, cfg.dim_bond, cfg.chi_eo, 1};
     std::vector<i64> ok_off{};
     std::vector<int> ok_slice{};
     const auto compact_count = i64{ok_layout(osh, ok_off, ok_slice)};

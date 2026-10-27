@@ -9,6 +9,7 @@
 #include "eloc_kernels.cuh"
 #include "../linalg/eo.cuh"
 #include "capi/qnpeps.h"
+#include "tensor/permutation.cuh"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -29,48 +30,6 @@ using namespace qnpeps;
 namespace qn_eloc::env
 {
 
-__global__ auto cu_gather(
-    cf* out,
-    const cf* in,
-    const int* gather_indices,
-    int n,
-    i64 stride_out,
-    i64 stride_in,
-    int conjugate,
-    int dim_batch
-) -> void;
-
-auto perm_key(const std::vector<int>& dims, const std::vector<int>& perm) -> std::string;
-
-struct PermutationCache
-{
-    std::map<std::string, int*> cache;
-    auto get(const std::vector<int>& dims, const std::vector<int>& perm) -> int*
-    {
-        const auto key = perm_key(dims, perm);
-        auto it = cache.find(key);
-        if (it != cache.end()) return it->second;
-        const auto gather_indices = permutation_index_map(dims, perm);
-        if (gather_indices.size() > std::numeric_limits<usize>::max() / sizeof(int))
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return nullptr;
-        }
-        const auto bytes = usize{sizeof(int) * gather_indices.size()};
-        int* device_ptr{};
-        CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
-        CUDA_CHECK(cudaMemcpy(device_ptr, gather_indices.data(), bytes, cudaMemcpyHostToDevice));
-        cache.emplace(key, device_ptr);
-        return device_ptr;
-    }
-    auto release() -> void
-    {
-        for (auto& entry : cache)
-            maybe_free_device(entry.second);
-        cache.clear();
-    }
-};
-
 struct PermuteOp
 {
     EoDeviceBuffer dst{};
@@ -78,13 +37,9 @@ struct PermuteOp
     std::vector<int> dims_in{};
     std::vector<int> perm{};
     int batch{};
-    const char* kind{"perm"};
-    int m{};
-    int n{};
-    int k{};
 };
 
-auto device_permute(Linalg& linalg, PermutationCache& lookup_tables, const PermuteOp& op) -> void;
+auto device_permute(Linalg& linalg, qnpeps::PermutationCache& cache, const PermuteOp& op) -> void;
 
 __global__ auto cu_project_slab(
     const cf* site,
@@ -170,7 +125,7 @@ struct Worker
     bool want_h{};
     bool want_fb{};
     Linalg& la;
-    PermutationCache permutation_index_maps{};
+    qnpeps::PermutationCache permutation_index_maps{};
     ContextArena* arena{};
     Carver scratch{};
     std::map<i64, cf*> omegas{};
