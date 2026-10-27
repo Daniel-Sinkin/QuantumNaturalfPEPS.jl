@@ -34,6 +34,7 @@ extern "C"
         int32_t meo;
         int32_t truncation_route;
         double density_cutoff;
+        double svd_cutoff;
     } QnpepsElocConfig;
 
     typedef struct qnpeps_eloc_cbuf qnpeps_eloc_cbuf;

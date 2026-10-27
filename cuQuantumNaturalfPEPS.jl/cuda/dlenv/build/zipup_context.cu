@@ -296,6 +296,7 @@ auto enqueue_peps_row(qnpeps_zipup_ctx& opaque_context, const QnpepsZipupPepsRow
         .power_input_exponent = context.dl.fail + 1,
         .omegas = &context.dl.omegas,
         .rangefinder_rng = &context.dl.rangefinder_rng,
+        .svd_route = context.config.dlenv_truncation_route == QNPEPS_TRUNCATION_SVD,
     };
     const auto density_route = context.config.dlenv_truncation_route == QNPEPS_TRUNCATION_DENSITY;
     std::vector<DeviceTensor> output{};

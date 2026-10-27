@@ -64,6 +64,7 @@ struct RangefinderArgs
     cuFloatComplex** sketch_ptrs{};
     int* info{};
     int* fail_flag{};
+    bool svd{};
 };
 
 auto batched_rangefinder(Linalg& linalg, const RangefinderArgs& args) -> void;

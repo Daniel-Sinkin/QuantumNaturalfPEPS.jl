@@ -71,8 +71,8 @@ auto run_cache_setup(
         }
         (pass == 0 ? state.orig_terms : state.tr_terms).push_back(fi);
     }
-    state.active_compact = active_compact_requested_from_env();
-    state.active_compact_min = active_compact_min_from_env();
+    state.active_compact = true;
+    state.active_compact_min = 2;
     const auto orig_active_slots = int{assign_active_slots(state.orig_terms, state.active_compact)};
     const auto tr_active_slots = int{assign_active_slots(state.tr_terms, state.active_compact)};
     active_lists_setup(
@@ -147,26 +147,15 @@ auto run_cache_setup(
     for (const FlipInst& term : state.tr_terms)
         if (term.bucket == Bucket::fourbody) state.tr_fb = true;
     state.orig_h = want_o or state.orig_hterms;
-    const auto density = bool{cfg.truncation_route == 6};
+    const auto density = bool{cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY};
     const auto lanes = int{density ? 1 : static_cast<int>(std::min<i64>(cfg.meo, n_samples))};
-    const auto sh = Shape{
-        cfg.lx, cfg.ly, cfg.dim_phys, cfg.dim_bond, cfg.chi_eo, lanes, density, cfg.density_cutoff
-    };
+    const auto sh = shape_for(cfg, lanes, false);
     worker_setup(
         state.w, sh, state.orig_h, state.orig_fb, nullptr, nullptr, state.stream, context_arena
     );
     if (not state.tr_terms.empty())
     {
-        const auto sht = Shape{
-            cfg.ly,
-            cfg.lx,
-            cfg.dim_phys,
-            cfg.dim_bond,
-            cfg.chi_eo,
-            lanes,
-            density,
-            cfg.density_cutoff
-        };
+        const auto sht = shape_for(cfg, lanes, true);
         worker_setup(
             state.wt, sht, true, state.tr_fb, nullptr, nullptr, state.stream, context_arena
         );

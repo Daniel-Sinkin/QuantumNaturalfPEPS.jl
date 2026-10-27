@@ -10,6 +10,7 @@ struct QnpepsElocConfig
     meo::Int32
     truncation_route::Int32
     density_cutoff::Float64
+    svd_cutoff::Float64
 end
 
 function QnpepsElocConfig(;
@@ -21,9 +22,11 @@ function QnpepsElocConfig(;
     dim_phys=2,
     route=:default,
     density_cutoff::Real=1.0e-13,
+    svd_cutoff::Real=1.0e-13,
 )
     isfinite(density_cutoff) || throw(ArgumentError("density cutoff must be finite"))
     density_cutoff >= 0 || throw(ArgumentError("density cutoff must be nonnegative"))
+    0 <= svd_cutoff <= 1 || throw(ArgumentError("svd cutoff must lie in [0, 1]"))
     return QnpepsElocConfig(
         UInt32(sizeof(QnpepsElocConfig)),
         Int32(lx),
@@ -34,6 +37,7 @@ function QnpepsElocConfig(;
         Int32(meo),
         _truncation_route_value(route),
         Float64(density_cutoff),
+        Float64(svd_cutoff),
     )
 end
 

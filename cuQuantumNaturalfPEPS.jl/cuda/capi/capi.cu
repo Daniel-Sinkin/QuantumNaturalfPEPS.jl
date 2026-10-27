@@ -50,12 +50,13 @@ auto check_cfg(const QnpepsConfig* config) -> qnpeps_status
     if (invalid_sampling_mode) return QNPEPS_ERR_BAD_CONFIG;
     if (config->sampling_mode == QNPEPS_SAMPLING_FULL and config->chi_c < 1)
         return QNPEPS_ERR_BAD_CONFIG;
-    const auto invalid_dlenv_route =
-        config->dlenv_truncation_route != QNPEPS_TRUNCATION_DEFAULT
-        and config->dlenv_truncation_route != QNPEPS_TRUNCATION_DENSITY;
-    const auto invalid_sampler_route =
-        config->sampler_truncation_route != QNPEPS_TRUNCATION_DEFAULT
-        and config->sampler_truncation_route != QNPEPS_TRUNCATION_DENSITY;
+    const auto is_sampler_route = [](int32_t route)
+    {
+        return route == QNPEPS_TRUNCATION_DEFAULT or route == QNPEPS_TRUNCATION_SVD
+               or route == QNPEPS_TRUNCATION_DENSITY;
+    };
+    const auto invalid_dlenv_route = not is_sampler_route(config->dlenv_truncation_route);
+    const auto invalid_sampler_route = not is_sampler_route(config->sampler_truncation_route);
     const auto invalid_dlenv_cutoff =
         not std::isfinite(config->dlenv_density_cutoff) or config->dlenv_density_cutoff < 0.0;
     const auto invalid_sampler_cutoff =

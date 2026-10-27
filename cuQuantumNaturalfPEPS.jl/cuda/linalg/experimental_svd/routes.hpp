@@ -135,12 +135,8 @@ inline auto carve_rangefinder_workspace(
 {
     scratch = cursor.take<char>(0);
     GesvdaWorkspace work{};
-    const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    if (route == RangefinderRoute::gesvda)
-    {
-        const auto storage_rank = int{condition_spectrum_rank(max_dim, k)};
-        carve_direct_workspace(la, work, cursor, max_dim, max_dim, k, storage_rank, dim_batch);
-    }
+    const auto storage_rank = int{condition_spectrum_rank(max_dim, k)};
+    carve_direct_workspace(la, work, cursor, max_dim, max_dim, k, storage_rank, dim_batch);
     if (qn::err_state() != QNPEPS_ELOC_OK) return;
     auto* end = cursor.take<char>(0);
     if (qn::err_state() != QNPEPS_ELOC_OK) return;
@@ -280,6 +276,7 @@ inline auto run_direct_gesvda_cutoff(
     MatrixBatch q_out,
     MatrixBatch r_out,
     int dim_batch,
+    f64 cutoff,
     int* fail_flag,
     void* scratch,
     usize scratch_bytes
@@ -367,14 +364,7 @@ inline auto run_direct_gesvda_cutoff(
         {.op_a = BlasOp::conj_trans, .op_b = BlasOp::none}
     );
     if (not apply_component_mask(
-            la,
-            work,
-            panel,
-            q_candidate,
-            r_candidate,
-            work.singular,
-            rangefinder_gesvda_cutoff_from_env(),
-            dim_batch
+            la, work, panel, q_candidate, r_candidate, work.singular, cutoff, dim_batch
         ))
         return false;
     const auto total =

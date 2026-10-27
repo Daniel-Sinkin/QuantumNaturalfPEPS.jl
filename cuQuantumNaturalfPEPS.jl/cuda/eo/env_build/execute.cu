@@ -32,22 +32,13 @@ auto qn_eloc_envs_logpsi(
     auto done = i64{0};
     while (done < n_samples)
     {
-        const auto density = bool{cfg.truncation_route == 6};
+        const auto density = bool{cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY};
         const auto lanes =
             int{density ? 1 : static_cast<int>(std::min<i64>(cfg.meo, n_samples - done))};
         i64 output_offset{};
         if (not arena_slot({2u, static_cast<std::uint64_t>(done)}, output_offset)) return;
         auto wave_samples{samples + done * sites};
-        auto sh = Shape{
-            cfg.lx,
-            cfg.ly,
-            cfg.dim_phys,
-            cfg.dim_bond,
-            cfg.chi_eo,
-            lanes,
-            density,
-            cfg.density_cutoff
-        };
+        auto sh = shape_for(cfg, lanes, false);
         worker_ensure(w, sh, false, false, peps, wave_samples, stream, context_arena);
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         worker_begin_rangefinders(w);
@@ -162,7 +153,7 @@ auto run_cache_execute(
     auto done = i64{0};
     while (done < n_samples)
     {
-        const auto density = bool{cfg.truncation_route == 6};
+        const auto density = bool{cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY};
         const auto lanes =
             int{density ? 1 : static_cast<int>(std::min<i64>(cfg.meo, n_samples - done))};
         const auto so = i64{done * sites};
@@ -178,16 +169,7 @@ auto run_cache_execute(
                 o_wave_bytes
             ))
             return;
-        auto sh = Shape{
-            cfg.lx,
-            cfg.ly,
-            cfg.dim_phys,
-            cfg.dim_bond,
-            cfg.chi_eo,
-            lanes,
-            density,
-            cfg.density_cutoff
-        };
+        auto sh = shape_for(cfg, lanes, false);
         worker_ensure(w, sh, orig_h, orig_fb, peps, samples + so, stream, *state.context_arena);
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         prepare_active_lists(orig_active, w.samples, sites, lanes, stream);
@@ -242,16 +224,7 @@ auto run_cache_execute(
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         if (not tr_terms.empty())
         {
-            auto sht = Shape{
-                cfg.ly,
-                cfg.lx,
-                cfg.dim_phys,
-                cfg.dim_bond,
-                cfg.chi_eo,
-                lanes,
-                density,
-                cfg.density_cutoff
-            };
+            auto sht = shape_for(cfg, lanes, true);
             worker_ensure(
                 wt, sht, true, tr_fb, peps_t, samples_t + so, stream, *state.context_arena
             );

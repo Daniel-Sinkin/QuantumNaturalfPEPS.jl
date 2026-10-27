@@ -108,8 +108,7 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     };
 
     const auto graph_capturable =
-        ctx.use_graph and cfg.dlenv_truncation_route == QNPEPS_TRUNCATION_DEFAULT
-        and trunc_svd::require_dlenv_route() == trunc_svd::Route::rangefinder;
+        ctx.use_graph and cfg.dlenv_truncation_route == QNPEPS_TRUNCATION_DEFAULT;
 
     if (graph_capturable and target_lane.graph)
     {

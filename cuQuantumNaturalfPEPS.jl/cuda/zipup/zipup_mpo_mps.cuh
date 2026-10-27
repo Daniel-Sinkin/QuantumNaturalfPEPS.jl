@@ -33,6 +33,7 @@ struct State
     int* power_input_exponent{};
     std::map<std::pair<int, int>, cuFloatComplex*>* omegas{};
     RangefinderRng* rangefinder_rng{};
+    bool svd_route{};
 };
 
 struct RangefinderArgs

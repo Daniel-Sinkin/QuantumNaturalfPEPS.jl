@@ -195,44 +195,6 @@ enum class RangefinderRoute
     gesvda
 };
 
-inline auto rangefinder_route_from_env() -> RangefinderRoute
-{
-    auto value{std::getenv("QNPEPS_E0191_RF_ROUTE")};
-    if (not value or value[0] == '\0' or std::strcmp(value, "cholqr") == 0)
-        return RangefinderRoute::cholqr;
-    if (std::strcmp(value, "householder") == 0) return RangefinderRoute::householder;
-    if (std::strcmp(value, "gesvda_cutoff") == 0) return RangefinderRoute::gesvda;
-    qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-    return RangefinderRoute::cholqr;
-}
-
-inline auto rangefinder_route_uses_householder_scratch() -> bool
-{
-    const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    return route == RangefinderRoute::householder or route == RangefinderRoute::cholqr;
-}
-
-inline auto rangefinder_route_uses_experimental_scratch() -> bool
-{
-    const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    return route == RangefinderRoute::gesvda;
-}
-
-inline auto rangefinder_gesvda_cutoff_from_env() -> f64
-{
-    auto value{std::getenv("QNPEPS_ELOC_GESVDA_CUTOFF")};
-    if (not value or value[0] == '\0') return 1.0e-13;
-    char* end{};
-    const auto parsed = f64{std::strtod(value, &end)};
-    if (not end or end == value or end[0] != '\0' or not std::isfinite(parsed) or parsed < 0.0
-        or parsed > 1.0)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return 0.0;
-    }
-    return parsed;
-}
-
 auto rangefinder_experimental_carve(
     Linalg& la,
     ArenaCursor& arena,
@@ -248,6 +210,8 @@ auto batched_rangefinder(
     MatrixBatch panel,
     int k,
     bool exact_factorization,
+    RangefinderRoute route,
+    f64 svd_cutoff,
     const cf* omega,
     MatrixBatch q_out,
     MatrixBatch r_out,

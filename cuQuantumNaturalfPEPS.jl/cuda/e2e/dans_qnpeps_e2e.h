@@ -40,6 +40,7 @@ extern "C"
         double sampler_density_cutoff;
         double projected_density_cutoff;
         double local_energy_density_cutoff;
+        double local_energy_svd_cutoff;
     } QnpepsE2eConfig;
 
     typedef struct qnpeps_e2e_cbuf qnpeps_e2e_cbuf;

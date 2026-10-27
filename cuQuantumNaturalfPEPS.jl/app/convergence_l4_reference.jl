@@ -12,7 +12,14 @@ include(joinpath(@__DIR__, "convergence_l4_reference", "io.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "state.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "ranks.jl"))
 
-const CONVERGENCE_EO_ROUTES = ("cholqr", "householder", "gesvda_cutoff")
+const CONVERGENCE_ROUTES = Dict(
+    "rf" => (route=:default, svd_cutoff=1.0e-13),
+    "rangefinder" => (route=:default, svd_cutoff=1.0e-13),
+    "cholqr" => (route=:default, svd_cutoff=1.0e-13),
+    "householder" => (route=:householder, svd_cutoff=1.0e-13),
+    "density" => (route=:density, svd_cutoff=1.0e-13),
+    "svd" => (route=:svd, svd_cutoff=0.0),
+)
 const CONVERGENCE_TRAJECTORY_HEADER = join(
     (
         "step",
@@ -60,35 +67,14 @@ function convergence_help()
         "usage convergence_l4_reference.jl [--steps N] [--route ROUTE] [--chi N] " *
         "[--precision fp32|fp64] [--output DIR] [--figure-only]",
     )
-    println(
-        "composite routes rangefinder, rf, svd, and density are accepted with every E O selector",
-    )
+    println("routes rf, rangefinder, cholqr, householder, svd, and density are accepted")
     return nothing
 end
 
-function configure_convergence_route!(route::AbstractString)
-    if route == "svd"
-        ENV["QNPEPS_SAMPLER_TRUNC"] = "svd"
-        ENV["QNPEPS_DLENV_TRUNC"] = "svd"
-        ENV["QNPEPS_E0191_RF_ROUTE"] = "gesvda_cutoff"
-        ENV["QNPEPS_ELOC_GESVDA_CUTOFF"] = "0"
-    elseif route in ("rf", "rangefinder")
-        ENV["QNPEPS_SAMPLER_TRUNC"] = "rf"
-        ENV["QNPEPS_DLENV_TRUNC"] = "rf"
-        ENV["QNPEPS_E0191_RF_ROUTE"] = "cholqr"
-    elseif route == "density"
-        ENV["QNPEPS_SAMPLER_TRUNC"] = "rf"
-        ENV["QNPEPS_DLENV_TRUNC"] = "rf"
-        ENV["QNPEPS_E0191_RF_ROUTE"] = "cholqr"
-    elseif route in CONVERGENCE_EO_ROUTES
-        ENV["QNPEPS_SAMPLER_TRUNC"] = "rf"
-        ENV["QNPEPS_DLENV_TRUNC"] = "rf"
-        ENV["QNPEPS_E0191_RF_ROUTE"] = route
-        route == "gesvda_cutoff" && (ENV["QNPEPS_ELOC_GESVDA_CUTOFF"] = "1e-13")
-    else
+function convergence_truncation(route::AbstractString)
+    haskey(CONVERGENCE_ROUTES, route) ||
         throw(ArgumentError("unknown truncation route $(repr(route))"))
-    end
-    return nothing
+    return CONVERGENCE_ROUTES[route]
 end
 
 function convergence_output_directory(options)
@@ -184,7 +170,8 @@ function convergence_config(options, seed)
         sampling_mode=:full,
         contract_dim=options[:chi],
         sample_batch=63,
-        truncation_route=options[:route] == "density" ? :density : :default,
+        truncation_route=convergence_truncation(options[:route]).route,
+        local_energy_svd_cutoff=convergence_truncation(options[:route]).svd_cutoff,
     )
 end
 
@@ -198,7 +185,7 @@ function convergence_dry_run(options)
     options[:dry_run] || return false
     options[:chi] >= 2 || throw(ArgumentError("chi must be at least 2"))
     options[:steps] <= 2000 || throw(ArgumentError("steps exceeds the E0261 budget"))
-    configure_convergence_route!(options[:route])
+    convergence_truncation(options[:route])
     config = convergence_config(options, CONVERGENCE_FIRST_SEED)
     terms = heisenberg_terms(4, 4; J1=1.0, J2=0.58)
     path = convergence_library_path()
@@ -269,7 +256,7 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
     CUDA.functional() || error("convergence_l4_reference.jl requires CUDA")
     options[:chi] >= 2 || throw(ArgumentError("chi must be at least 2"))
     options[:steps] <= 2000 || throw(ArgumentError("steps exceeds the E0261 budget"))
-    configure_convergence_route!(options[:route])
+    convergence_truncation(options[:route])
 
     fixture_path = joinpath(CONVERGENCE_REFERENCE_ROOT, "fixtures", "l4_d6_a1.5_s1.qnf")
     final_path = joinpath(CONVERGENCE_REFERENCE_WINDOW, "final_states", "reference_J.qnf")

@@ -68,21 +68,16 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     w.sketch_ptrs = cv.take<cf*>(lanes);
     w.info = cv.take<int>(lanes);
     w.fail_flag = cv.take<int>(1);
-    if (rangefinder_route_uses_householder_scratch())
+    if (sh.rangefinder != RangefinderRoute::gesvda)
     {
         w.qr_scratch_bytes = qnpeps::qr_scratch_bytes(w.la, chi_bond, sh.chi);
         w.qr_scratch = cv.take<char>(w.qr_scratch_bytes);
     }
-    else if (rangefinder_route_uses_experimental_scratch())
+    else
     {
         rangefinder_experimental_carve(
             w.la, cv, chi_bond, sh.chi, sh.lanes, w.qr_scratch, w.qr_scratch_bytes
         );
-    }
-    else
-    {
-        w.qr_scratch = nullptr;
-        w.qr_scratch_bytes = 0;
     }
     usize vertical_scales{};
     if (not arena_product(
@@ -331,7 +326,7 @@ auto worker_ensure(
 ) -> void
 {
     if (w.arena
-        and (w.sh.lanes != sh.lanes or w.sh.density != sh.density or w.sh.density_cutoff != sh.density_cutoff or w.want_h != want_h or w.want_fb != want_fb))
+        and (w.sh.lanes != sh.lanes or w.sh.density != sh.density or w.sh.density_cutoff != sh.density_cutoff or w.sh.rangefinder != sh.rangefinder or w.sh.svd_cutoff != sh.svd_cutoff or w.want_h != want_h or w.want_fb != want_fb))
     {
         auto& linalg = w.la;
         worker_teardown(w);

@@ -29,6 +29,8 @@ extern "C"
     typedef enum qnpeps_truncation_route
     {
         QNPEPS_TRUNCATION_DEFAULT = 0,
+        QNPEPS_TRUNCATION_SVD = 1,
+        QNPEPS_TRUNCATION_HOUSEHOLDER = 2,
         QNPEPS_TRUNCATION_DENSITY = 6
     } qnpeps_truncation_route;
 

@@ -9,6 +9,7 @@
 #include "dtensor.cuh"
 #include "eloc_kernels.cuh"
 #include "../linalg/eo.cuh"
+#include "capi/qnpeps.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -120,7 +121,29 @@ struct Shape
     int lanes{};
     bool density{};
     f64 density_cutoff{};
+    RangefinderRoute rangefinder{};
+    f64 svd_cutoff{};
 };
+
+inline auto shape_for(const QnpepsElocConfig& cfg, int lanes, bool transposed) -> Shape
+{
+    const auto route = cfg.truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
+                           ? RangefinderRoute::householder
+                       : cfg.truncation_route == QNPEPS_TRUNCATION_SVD ? RangefinderRoute::gesvda
+                                                                       : RangefinderRoute::cholqr;
+    return Shape{
+        transposed ? cfg.ly : cfg.lx,
+        transposed ? cfg.lx : cfg.ly,
+        cfg.dim_phys,
+        cfg.dim_bond,
+        cfg.chi_eo,
+        lanes,
+        cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY,
+        cfg.density_cutoff,
+        route,
+        cfg.svd_cutoff
+    };
+}
 
 auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> bool;
 
@@ -518,18 +541,6 @@ struct ActiveLists
     bool owns_device{};
     std::vector<int> host_counts{};
 };
-
-inline auto active_compact_requested_from_env() -> bool
-{
-    auto value{std::getenv("QNPEPS_ELOC_ACTIVE_COMPACT")};
-    return value == nullptr or value[0] == '\0' or value[0] != '0';
-}
-
-inline auto active_compact_min_from_env() -> int
-{
-    auto value{std::getenv("QNPEPS_ELOC_ACTIVE_MIN")};
-    return value and value[0] != '\0' ? std::max(1, std::atoi(value)) : 2;
-}
 
 auto assign_active_slots(std::vector<FlipInst>& terms, bool enabled) -> int;
 

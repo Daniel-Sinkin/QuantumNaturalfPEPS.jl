@@ -20,6 +20,8 @@ auto batched_rangefinder(
     MatrixBatch panel,
     int k,
     bool exact_factorization,
+    RangefinderRoute route,
+    f64 svd_cutoff,
     const cf* omega,
     MatrixBatch q_out,
     MatrixBatch r_out,
@@ -37,7 +39,6 @@ auto batched_rangefinder(
 {
     const auto rows = panel.rows();
     const auto cols = panel.cols();
-    const auto route = RangefinderRoute{rangefinder_route_from_env()};
     if (exact_factorization and route != RangefinderRoute::gesvda and k == std::min(rows, cols))
     {
         const auto copy_batch = [&](MatrixBatch dst, MatrixBatch src)
@@ -81,7 +82,16 @@ auto batched_rangefinder(
     if (route == RangefinderRoute::gesvda)
     {
         qn_eloc::e0191::run_direct_gesvda_cutoff(
-            la, panel, k, q_out, r_out, dim_batch, fail_flag, robust_scratch, robust_scratch_bytes
+            la,
+            panel,
+            k,
+            q_out,
+            r_out,
+            dim_batch,
+            svd_cutoff,
+            fail_flag,
+            robust_scratch,
+            robust_scratch_bytes
         );
         return;
     }

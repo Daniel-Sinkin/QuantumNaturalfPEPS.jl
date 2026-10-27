@@ -209,6 +209,7 @@ static auto carve_sampler_arena(
         .seed = ctx.cfg.seed,
         .batch_base = 0,
         .density_route = ctx.cfg.sampler_truncation_route == QNPEPS_TRUNCATION_DENSITY,
+        .svd_route = ctx.cfg.sampler_truncation_route == QNPEPS_TRUNCATION_SVD,
         .state_density_cutoff = ctx.cfg.sampler_density_cutoff,
         .projected_density_cutoff = ctx.cfg.projected_density_cutoff,
     };
@@ -429,11 +430,6 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
         return;
     }
 
-    const auto sampler_truncation = trunc_svd::require_sampler_route();
-    if (sampler_truncation == trunc_svd::Route::invalid) return;
-    const auto dlenv_truncation = trunc_svd::require_dlenv_route();
-    if (dlenv_truncation == trunc_svd::Route::invalid) return;
-
     auto& state = ctx.sampler;
     auto& samp = state.samp;
     const auto cfg = make_sampler_config(ctx);
@@ -451,9 +447,8 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     if (not initialize_contraction_pointer_arrays(state, num_rows, num_cols, lane_capacity)) return;
 
     if (not allocate_sampler_staging(state, lane_capacity, cfg.num_sites())) return;
-    const auto graph_capturable = not cfg.density_route
-                                  and sampler_truncation == trunc_svd::Route::rangefinder
-                                  and dlenv_truncation == trunc_svd::Route::rangefinder;
+    const auto graph_capturable = ctx.cfg.sampler_truncation_route == QNPEPS_TRUNCATION_DEFAULT
+                                  and ctx.cfg.dlenv_truncation_route != QNPEPS_TRUNCATION_SVD;
     ctx.use_graph = graph_capturable;
 
     ctx.sampler.allocation.allocated = true;

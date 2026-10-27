@@ -290,6 +290,8 @@ auto build_env_row(
             {w.tmp_b.p, w.tmp_b.stride, rangefinder_rows, b_dim},
             next_rank,
             exact_factorization,
+            sh.rangefinder,
+            sh.svd_cutoff,
             omega_for(w, b_dim, next_rank),
             {out_site(col), w.slot_env, rangefinder_rows, next_rank},
             {w.rnext.p, w.rnext.stride, next_rank, b_dim},

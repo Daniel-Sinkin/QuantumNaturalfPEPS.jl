@@ -1,4 +1,5 @@
 #include "common.cuh"
+#include "capi/qnpeps.h"
 #include "dans_qnpeps_eloc.h"
 #include "eloc_kernels.cuh"
 #include "env_build.cuh"
@@ -36,8 +37,12 @@ auto check_cfg(const QnpepsElocConfig* c) -> qnpeps_eloc_status
     if (c->struct_size != sizeof(QnpepsElocConfig)) return QNPEPS_ELOC_ERR_BAD_VERSION;
     if (c->lx < 2 or c->ly < 2 or c->dim_phys < 1 or c->dim_bond < 1 or c->chi_eo < 1 or c->meo < 1)
         return QNPEPS_ELOC_ERR_BAD_CONFIG;
-    if ((c->truncation_route != 0 and c->truncation_route != 6)
-        or not std::isfinite(c->density_cutoff) or c->density_cutoff < 0.0)
+    const auto known_route = c->truncation_route == QNPEPS_TRUNCATION_DEFAULT
+                             or c->truncation_route == QNPEPS_TRUNCATION_SVD
+                             or c->truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
+                             or c->truncation_route == QNPEPS_TRUNCATION_DENSITY;
+    if (not known_route or not std::isfinite(c->density_cutoff) or c->density_cutoff < 0.0
+        or not std::isfinite(c->svd_cutoff) or c->svd_cutoff < 0.0 or c->svd_cutoff > 1.0)
         return QNPEPS_ELOC_ERR_BAD_CONFIG;
     return QNPEPS_ELOC_OK;
 }

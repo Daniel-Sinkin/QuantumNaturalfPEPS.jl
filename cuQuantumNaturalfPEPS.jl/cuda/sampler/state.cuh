@@ -40,6 +40,7 @@ struct SamplerConfig
     u64 seed{};
     u64 batch_base{};
     bool density_route{};
+    bool svd_route{};
     f64 state_density_cutoff{};
     f64 projected_density_cutoff{};
 
@@ -195,6 +196,7 @@ class Sampler
                 .sketch_ptrs = sketch_ptrs_,
                 .info = info_,
                 .fail_flag = fail_,
+                .svd = cfg_.svd_route,
             }
         );
     }

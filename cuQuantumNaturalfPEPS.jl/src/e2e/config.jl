@@ -17,6 +17,7 @@ struct QnpepsE2eConfig
     sampler_density_cutoff::Float64
     projected_density_cutoff::Float64
     local_energy_density_cutoff::Float64
+    local_energy_svd_cutoff::Float64
 end
 
 Base.@kwdef struct QnpepsE2eEulerStepArgs
@@ -62,6 +63,7 @@ function QnpepsE2eConfig(;
     sampler_density_cutoff::Real=1.0e-3,
     projected_density_cutoff::Real=1.0e-4,
     local_energy_density_cutoff::Real=1.0e-13,
+    local_energy_svd_cutoff::Real=1.0e-13,
 )
     mode =
         sampling_mode === :fast ? Int32(0) :
@@ -80,6 +82,8 @@ function QnpepsE2eConfig(;
     )
     all(cutoff -> isfinite(cutoff) && cutoff >= 0, cutoffs) ||
         throw(ArgumentError("density cutoffs must be finite and nonnegative"))
+    0 <= local_energy_svd_cutoff <= 1 ||
+        throw(ArgumentError("local_energy_svd_cutoff must lie in [0, 1]"))
     return QnpepsE2eConfig(
         UInt32(sizeof(QnpepsE2eConfig)),
         Int32(lx),
@@ -99,5 +103,6 @@ function QnpepsE2eConfig(;
         Float64(sampler_density_cutoff),
         Float64(projected_density_cutoff),
         Float64(local_energy_density_cutoff),
+        Float64(local_energy_svd_cutoff),
     )
 end

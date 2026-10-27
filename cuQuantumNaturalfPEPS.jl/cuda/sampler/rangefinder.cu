@@ -15,25 +15,6 @@ namespace trunc_svd
 {
 namespace
 {
-[[nodiscard]] auto resolve_route(const char* variable) -> Route
-{
-    auto value = static_cast<const char*>(std::getenv(variable));
-    if (value == nullptr) return Route::rangefinder;
-    if (std::strcmp(value, "rf") == 0) return Route::rangefinder;
-    if (std::strcmp(value, "svd") == 0) return Route::svd;
-    return Route::invalid;
-}
-
-[[nodiscard]] auto reject_route(const char* variable) -> Route
-{
-    std::array<char, 128> message{};
-    std::snprintf(
-        message.data(), message.size(), "%s accepts only the values rf and svd", variable
-    );
-    set_err_at(QNPEPS_ERR_BAD_CONFIG, __FILE__, __LINE__, message.data());
-    return Route::invalid;
-}
-
 [[nodiscard]] auto copy_left_factors(
     Linalg& la, const cuFloatComplex* left, CuMatrixBatchedCF32 q_out, int dim_batch
 ) -> bool
@@ -99,20 +80,6 @@ __global__ auto cu_pad_unconverged_lanes(CuPadUnconvergedLanesArgs args) -> void
             column_base[row] = cuFloatComplex{0.0f, 0.0f};
         }
     }
-}
-
-auto require_sampler_route() -> Route
-{
-    static const auto route = resolve_route(k_sampler_variable);
-    if (route == Route::invalid) return reject_route(k_sampler_variable);
-    return route;
-}
-
-auto require_dlenv_route() -> Route
-{
-    static const auto route = resolve_route(k_dlenv_variable);
-    if (route == Route::invalid) return reject_route(k_dlenv_variable);
-    return route;
 }
 
 auto batched_rangefinder_svd(Linalg& la, const RangefinderArgs& args) -> void
@@ -219,9 +186,7 @@ auto orthonormalize_panel(Linalg& la, CuMatrixCF32 panel) -> void
 
 auto batched_rangefinder(Linalg& la, const RangefinderArgs& args) -> void
 {
-    const auto route = trunc_svd::require_sampler_route();
-    if (route == trunc_svd::Route::invalid) return;
-    if (route == trunc_svd::Route::svd)
+    if (args.svd)
     {
         trunc_svd::batched_rangefinder_svd(la, args);
         return;

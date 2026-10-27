@@ -19,6 +19,8 @@ end
 const SAMPLING_FAST = Int32(0)
 const SAMPLING_FULL = Int32(1)
 const TRUNCATION_DEFAULT = Int32(0)
+const TRUNCATION_SVD = Int32(1)
+const TRUNCATION_HOUSEHOLDER = Int32(2)
 const TRUNCATION_DENSITY = Int32(6)
 const MAX_BATCH_SIZE = 2048
 
@@ -33,13 +35,11 @@ function _sampling_mode_value(mode)::Int32
 end
 
 function _truncation_route_value(route)::Int32
-    if route === :default || route == TRUNCATION_DEFAULT
-        return TRUNCATION_DEFAULT
-    end
-    if route === :density || route == TRUNCATION_DENSITY
-        return TRUNCATION_DENSITY
-    end
-    throw(ArgumentError("truncation route must be :default or :density"))
+    route in (:default, :rf, :rangefinder, TRUNCATION_DEFAULT) && return TRUNCATION_DEFAULT
+    route in (:svd, TRUNCATION_SVD) && return TRUNCATION_SVD
+    route in (:householder, TRUNCATION_HOUSEHOLDER) && return TRUNCATION_HOUSEHOLDER
+    route in (:density, TRUNCATION_DENSITY) && return TRUNCATION_DENSITY
+    throw(ArgumentError("truncation route must be :default, :svd, :householder or :density"))
 end
 
 function QnpepsConfig(;

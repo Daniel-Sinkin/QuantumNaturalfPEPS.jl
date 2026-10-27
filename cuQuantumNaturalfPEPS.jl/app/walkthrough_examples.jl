@@ -146,9 +146,6 @@ function walkthrough_examples(arguments=ARGS)::Nothing
 section("environment") do io
     emit(io, "[env] QNPEPS_LIB ", get(ENV, "QNPEPS_LIB", "unset"))
     emit(io, "[env] active project ", Base.active_project())
-    emit(io, "[env] QNPEPS_SAMPLER_TRUNC ", get(ENV, "QNPEPS_SAMPLER_TRUNC", "unset"))
-    emit(io, "[env] QNPEPS_DLENV_TRUNC ", get(ENV, "QNPEPS_DLENV_TRUNC", "unset"))
-    emit(io, "[env] QNPEPS_E0191_RF_ROUTE ", get(ENV, "QNPEPS_E0191_RF_ROUTE", "unset"))
     emit(io, "[env] julia ", VERSION)
     emit(io, "[cuda] devices ", CUDA.ndevices())
     for d in CUDA.devices()

@@ -239,13 +239,8 @@ function eo_term_table(
     )
 end
 
-function _eo_term_active_compact_from_env()::Bool
-    value = get(ENV, "QNPEPS_ELOC_ACTIVE_COMPACT", "")
-    return isempty(value) || first(value) != '0'
-end
-
 function eo_term_table(config::QnpepsElocConfig, terms::HeisenbergTerms)::EoTermTable
-    return eo_term_table(config, terms, _eo_term_active_compact_from_env())
+    return eo_term_table(config, terms, true)
 end
 
 function _eo_term_table_validate_pointers(table::EoTermTable)::Nothing
@@ -268,7 +263,5 @@ function _eo_term_table_validate_pointers(table::EoTermTable)::Nothing
     abi.n_flip == table.abi.n_flip &&
     abi.padding_flip == table.abi.padding_flip &&
     abi.flip == table.abi.flip || throw(ArgumentError("E/O ABI table changed"))
-    table.active_compact == _eo_term_active_compact_from_env() ||
-        throw(ArgumentError("E/O active-compaction policy changed after table construction"))
     return nothing
 end

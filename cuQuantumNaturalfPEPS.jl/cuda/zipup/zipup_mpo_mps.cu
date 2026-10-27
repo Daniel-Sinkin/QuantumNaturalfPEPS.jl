@@ -402,9 +402,6 @@ auto set_rangefinder_failure(int failure) -> qnpeps_status
 auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const RangefinderArgs& args)
     -> void
 {
-    const auto route = trunc_svd::require_dlenv_route();
-    if (route == trunc_svd::Route::invalid) return;
-
     int rank{std::min({args.maxdim, args.rows, args.cols})};
     if (rank < 1) rank = 1;
     *args.rank_out = rank;
@@ -464,7 +461,7 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
         );
     }
 
-    if (route == trunc_svd::Route::svd)
+    if (state.svd_route)
     {
         trunc_svd::orthonormalize_panel(la, sketch_matrix);
         if (err_state() != QNPEPS_OK) return;

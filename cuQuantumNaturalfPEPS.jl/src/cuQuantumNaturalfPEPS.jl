@@ -14,7 +14,7 @@ include("e2e/e2e.jl")
 include("capi/ffi_extensions.jl")
 
 export QnpepsConfig
-export TRUNCATION_DEFAULT, TRUNCATION_DENSITY
+export TRUNCATION_DEFAULT, TRUNCATION_SVD, TRUNCATION_HOUSEHOLDER, TRUNCATION_DENSITY
 export QnpepsElocConfig
 export QnpepsElocDiagBond, QnpepsElocFlipTerm, QnpepsElocTermTable, HeisenbergTerms
 export ELOC_DIAG_ONE_SITE_Z, ELOC_CAP_ONE_SITE_Z

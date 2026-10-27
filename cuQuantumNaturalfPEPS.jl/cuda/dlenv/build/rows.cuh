@@ -14,6 +14,7 @@ struct BuildEnvRowArgs
     int maxdim{};
     int* fail_flag{};
     int build_step{};
+    bool svd_route{};
 };
 
 class EnvironmentRowBuilder
@@ -37,6 +38,7 @@ class EnvironmentRowBuilder
             .power_input_exponent = args.fail_flag + 1,
             .omegas = &build_state_.omegas,
             .rangefinder_rng = &build_state_.rangefinder_rng,
+            .svd_route = args.svd_route,
         };
         auto grouped_output = zipup::fused_peps_row(
             state,
@@ -108,6 +110,7 @@ class EnvironmentRowBuilder
             .maxdim = maxdim,
             .fail_flag = fail_flag,
             .build_step = 0,
+            .svd_route = truncation_route == QNPEPS_TRUNCATION_SVD,
         });
 
         auto density_gauge = 0.0;
@@ -144,6 +147,7 @@ class EnvironmentRowBuilder
                     .maxdim = maxdim,
                     .fail_flag = fail_flag,
                     .build_step = build_step,
+                    .svd_route = truncation_route == QNPEPS_TRUNCATION_SVD,
                 });
         }
 

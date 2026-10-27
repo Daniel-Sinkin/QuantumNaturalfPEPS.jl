@@ -62,17 +62,24 @@ inline void set_err(qnpeps_e2e_status s)
 [[nodiscard]] inline auto has_valid_truncation(const QnpepsE2eConfig& config) noexcept -> bool
 {
     const auto is_known_route = config.truncation_route == QNPEPS_TRUNCATION_DEFAULT
+                                or config.truncation_route == QNPEPS_TRUNCATION_SVD
+                                or config.truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
                                 or config.truncation_route == QNPEPS_TRUNCATION_DENSITY;
     return is_known_route and is_valid_density_cutoff(config.dlenv_density_cutoff)
            and is_valid_density_cutoff(config.sampler_density_cutoff)
            and is_valid_density_cutoff(config.projected_density_cutoff)
-           and is_valid_density_cutoff(config.local_energy_density_cutoff);
+           and is_valid_density_cutoff(config.local_energy_density_cutoff)
+           and is_valid_density_cutoff(config.local_energy_svd_cutoff)
+           and config.local_energy_svd_cutoff <= 1.0;
 }
 
 inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsConfig& sampler) noexcept -> void
 {
-    sampler.dlenv_truncation_route = config.truncation_route;
-    sampler.sampler_truncation_route = config.truncation_route;
+    const auto route = config.truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
+                           ? int32_t{QNPEPS_TRUNCATION_DEFAULT}
+                           : config.truncation_route;
+    sampler.dlenv_truncation_route = route;
+    sampler.sampler_truncation_route = route;
     sampler.dlenv_density_cutoff = config.dlenv_density_cutoff;
     sampler.sampler_density_cutoff = config.sampler_density_cutoff;
     sampler.projected_density_cutoff = config.projected_density_cutoff;
@@ -83,6 +90,7 @@ inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsElocConfig& lo
 {
     local_energy.truncation_route = config.truncation_route;
     local_energy.density_cutoff = config.local_energy_density_cutoff;
+    local_energy.svd_cutoff = config.local_energy_svd_cutoff;
 }
 
 }
