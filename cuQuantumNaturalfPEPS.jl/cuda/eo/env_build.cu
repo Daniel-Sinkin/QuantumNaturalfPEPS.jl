@@ -35,6 +35,6 @@
 #include "env_build/term_evaluation.hpp"
 #include "env_build/outputs.hpp"
 #include "env_build/planning.hpp"
-#include "env_build/graph_cache.hpp"
+#include "env_build/run_cache.hpp"
 #include "env_build/execute.hpp"
 #include "env_build/context.hpp"

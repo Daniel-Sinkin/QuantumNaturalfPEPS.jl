@@ -302,14 +302,6 @@ auto build_env_row(
             ))
             return;
         const auto next_rank = int{std::max(1, std::min({sh.chi, rangefinder_rows, b_dim}))};
-        const auto call_stride = usize{2 * static_cast<usize>(lanes)};
-        const auto rangefinder_call = int{w.rangefinder_call++};
-        const auto log_offset = usize{static_cast<usize>(rangefinder_call) * call_stride};
-        if (log_offset + call_stride > w.failure_log_count)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-            return;
-        }
         auto robust_scratch{
             w.qr_scratch ? static_cast<void*>(w.qr_scratch) : static_cast<void*>(w.tmp_a.p)
         };
@@ -340,8 +332,6 @@ auto build_env_row(
             w.sketch_ptrs,
             w.info,
             w.fail_flag,
-            w.failure_log + log_offset,
-            w.fallback_info ? w.fallback_info + log_offset : nullptr,
             robust_scratch,
             robust_scratch_bytes
         );

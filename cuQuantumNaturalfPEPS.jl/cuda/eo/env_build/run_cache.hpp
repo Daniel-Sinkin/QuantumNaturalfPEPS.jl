@@ -41,36 +41,6 @@
 namespace qn_eloc::env
 {
 
-struct GraphSlot
-{
-    cudaGraphExec_t exec{};
-    int rangefinder_calls{};
-    bool warmed{};
-    bool failed{};
-};
-
-struct WaveGraphs
-{
-    GraphSlot orig_logpsi{};
-    GraphSlot orig_stage{};
-    GraphSlot orig_o{};
-    GraphSlot tr_logpsi{};
-    GraphSlot tr_stage{};
-    std::vector<int> orig_fallback{};
-    std::vector<int> tr_fallback{};
-};
-
-struct GraphBinding
-{
-    const cf* peps{};
-    const u8* samples{};
-    f64* logpsi_out{};
-    f64* e_loc_out{};
-    cf* o_rows_dev{};
-    GraphSlot preprocess{};
-    std::vector<WaveGraphs> waves{};
-};
-
 struct RunCache
 {
     explicit RunCache(Linalg& linalg) : w(linalg), wt(linalg) {}
@@ -109,8 +79,6 @@ struct RunCache
     Worker w;
     Worker wt;
     std::vector<std::pair<i64, int>> wave_ranges{};
-    std::vector<GraphBinding> graph_bindings{};
-    bool graph_enabled{};
     ContextArena* context_arena{};
     bool ready{};
 };
@@ -121,140 +89,9 @@ auto cache_alloc(RunCache& state, T*& pointer, usize count) -> void
     pointer = state.context_arena->take<T>(count);
 }
 
-auto graph_requested_from_env() -> bool
-{
-    auto value{std::getenv("QNPEPS_ELOC_GRAPH")};
-    return value == nullptr or value[0] == '\0' or value[0] != '0';
-}
-
-auto destroy_graph_slot(GraphSlot& slot) -> void
-{
-    if (slot.exec) CUDA_NOCHECK(cudaGraphExecDestroy(slot.exec));
-    slot = GraphSlot{};
-}
-
-auto destroy_orig_graphs(WaveGraphs& wave) -> void
-{
-    destroy_graph_slot(wave.orig_logpsi);
-    destroy_graph_slot(wave.orig_stage);
-    destroy_graph_slot(wave.orig_o);
-}
-
-auto destroy_transposed_graphs(WaveGraphs& wave) -> void
-{
-    destroy_graph_slot(wave.tr_logpsi);
-    destroy_graph_slot(wave.tr_stage);
-}
-
-auto destroy_graph_binding(GraphBinding& binding) -> void
-{
-    destroy_graph_slot(binding.preprocess);
-    for (WaveGraphs& wave : binding.waves)
-    {
-        destroy_orig_graphs(wave);
-        destroy_transposed_graphs(wave);
-    }
-}
-
-auto find_graph_binding(
-    RunCache& state,
-    const cf* peps,
-    const u8* samples,
-    f64* logpsi_out,
-    f64* e_loc_out,
-    cf* o_rows_dev
-) -> GraphBinding*
-{
-    for (GraphBinding& binding : state.graph_bindings)
-    {
-        if (binding.peps == peps and binding.samples == samples and binding.logpsi_out == logpsi_out
-            and binding.e_loc_out == e_loc_out and binding.o_rows_dev == o_rows_dev)
-            return &binding;
-    }
-    GraphBinding binding{};
-    binding.peps = peps;
-    binding.samples = samples;
-    binding.logpsi_out = logpsi_out;
-    binding.e_loc_out = e_loc_out;
-    binding.o_rows_dev = o_rows_dev;
-    binding.waves.resize(state.wave_ranges.size());
-    state.graph_bindings.push_back(std::move(binding));
-    return &state.graph_bindings.back();
-}
-
-template <typename Enqueue>
-auto run_graph_region(
-    RunCache& state, GraphSlot* slot, Enqueue&& enqueue, int* rangefinder_call = nullptr
-) -> void
-{
-    if (not slot or not state.graph_enabled)
-    {
-        enqueue();
-        return;
-    }
-    if (slot->exec)
-    {
-        CUDA_CHECK(cudaGraphLaunch(slot->exec, state.stream));
-        if (rangefinder_call) *rangefinder_call += slot->rangefinder_calls;
-        return;
-    }
-    if (slot->failed)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_CUDA);
-        return;
-    }
-    if (not slot->warmed)
-    {
-        const auto call_before = int{rangefinder_call ? *rangefinder_call : 0};
-        enqueue();
-        if (rangefinder_call) slot->rangefinder_calls = *rangefinder_call - call_before;
-        slot->warmed = qn::err_state() == QNPEPS_ELOC_OK;
-        return;
-    }
-
-    cudaGraph_t graph{};
-    const auto begin_status =
-        cudaError_t{cudaStreamBeginCapture(state.stream, cudaStreamCaptureModeThreadLocal)};
-    if (begin_status != cudaSuccess)
-    {
-        cudaGetLastError();
-        slot->failed = true;
-        qn::set_err(QNPEPS_ELOC_ERR_CUDA);
-        return;
-    }
-    const auto call_before = int{rangefinder_call ? *rangefinder_call : 0};
-    enqueue();
-    if (rangefinder_call and *rangefinder_call - call_before != slot->rangefinder_calls)
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-    const auto end_status = cudaError_t{cudaStreamEndCapture(state.stream, &graph)};
-    const auto enqueued = bool{qn::err_state() == QNPEPS_ELOC_OK};
-    cudaGraphExec_t exec{};
-    const auto instantiate_status = cudaError_t{
-        end_status == cudaSuccess and enqueued
-            ? cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0)
-            : cudaErrorUnknown
-    };
-    if (end_status == cudaSuccess and enqueued and instantiate_status == cudaSuccess)
-    {
-        CUDA_NOCHECK(cudaGraphDestroy(graph));
-        slot->exec = exec;
-        CUDA_CHECK(cudaGraphLaunch(slot->exec, state.stream));
-        return;
-    }
-
-    if (exec) CUDA_NOCHECK(cudaGraphExecDestroy(exec));
-    if (graph) CUDA_NOCHECK(cudaGraphDestroy(graph));
-    cudaGetLastError();
-    slot->failed = true;
-    qn::set_err(QNPEPS_ELOC_ERR_CUDA);
-}
-
 auto run_cache_teardown(RunCache& state) -> void
 {
     if (state.stream) CUDA_NOCHECK(cudaStreamSynchronize(state.stream));
-    for (GraphBinding& binding : state.graph_bindings)
-        destroy_graph_binding(binding);
-    state.graph_bindings.clear();
     worker_teardown(state.w);
     worker_teardown(state.wt);
     active_lists_teardown(state.orig_active);

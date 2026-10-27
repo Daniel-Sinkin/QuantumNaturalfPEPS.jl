@@ -33,11 +33,7 @@ __global__ auto cu_normalize_log(
     cf* x, int n, i64 stride, f64* lognorm_acc, int dim_batch, f32* scale_out = {}
 ) -> void;
 __global__ auto cu_chol_shift(cf* gram, int k, i64 stride, int dim_batch) -> void;
-__global__ auto cu_or_info(const int* info, int n, int* flag) -> void;
 __global__ auto cu_or_info_bit(const int* info, int n, int bit, int* flag) -> void;
-__global__ auto cu_record_lane_info(const int* info, int* failure_log, int lane) -> void;
-__global__ auto cu_or_unmasked_info(const int* info, const int* mask, int n, int* flag) -> void;
-__global__ auto cu_union_info(const int* info, int* mask, int n) -> void;
 __global__ auto cu_fill_first_one(cf* x, i64 stride, int n, int dim_batch) -> void;
 
 inline auto checked_tensor_elements(const std::vector<int>& dims, i64 limit, i64& result) -> bool
@@ -199,28 +195,8 @@ enum class RangefinderRoute
     gesvda
 };
 
-inline thread_local bool householder_route_forced{};
-
-class HouseholderRouteScope
-{
-  public:
-    HouseholderRouteScope() noexcept : previous_(householder_route_forced)
-    {
-        householder_route_forced = true;
-    }
-    ~HouseholderRouteScope() { householder_route_forced = previous_; }
-    HouseholderRouteScope(const HouseholderRouteScope&) = delete;
-    auto operator=(const HouseholderRouteScope&) -> HouseholderRouteScope& = delete;
-    HouseholderRouteScope(HouseholderRouteScope&&) = delete;
-    auto operator=(HouseholderRouteScope&&) -> HouseholderRouteScope& = delete;
-
-  private:
-    bool previous_{};
-};
-
 inline auto rangefinder_route_from_env() -> RangefinderRoute
 {
-    if (householder_route_forced) return RangefinderRoute::householder;
     auto value{std::getenv("QNPEPS_E0191_RF_ROUTE")};
     if (not value or value[0] == '\0' or std::strcmp(value, "cholqr") == 0)
         return RangefinderRoute::cholqr;
@@ -283,8 +259,6 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    int* failure_log,
-    const int* fallback_info,
     void* robust_scratch,
     usize robust_scratch_bytes
 ) -> void;
@@ -329,16 +303,7 @@ inline auto qr_scratch_bytes(Linalg& linalg, int m, int n) -> usize
 }
 
 inline auto qr(
-    Linalg& linalg,
-    int m,
-    int n,
-    cf* A,
-    int lda,
-    void* scratch,
-    int* fail_flag,
-    int failure_bit = 1,
-    int* failure_log = nullptr,
-    int failure_lane = 0
+    Linalg& linalg, int m, int n, cf* A, int lda, void* scratch, int* fail_flag, int failure_bit = 1
 ) -> void
 {
     auto* base = static_cast<char*>(scratch);
@@ -363,8 +328,6 @@ inline auto qr(
     ));
     if (fail_flag)
         cu_or_info_bit<<<1, 1, 0, linalg.stream()>>>(device_status, 1, failure_bit, fail_flag);
-    if (failure_log)
-        cu_record_lane_info<<<1, 1, 0, linalg.stream()>>>(device_status, failure_log, failure_lane);
     CUSOLVER_CHECK(cusolverDnCungqr(
         linalg.cusolver(),
         m,
@@ -379,8 +342,6 @@ inline auto qr(
     ));
     if (fail_flag)
         cu_or_info_bit<<<1, 1, 0, linalg.stream()>>>(device_status, 1, failure_bit, fail_flag);
-    if (failure_log)
-        cu_record_lane_info<<<1, 1, 0, linalg.stream()>>>(device_status, failure_log, failure_lane);
 }
 
 inline auto qr_scratch_bytes(Linalg& linalg, DeviceMatrix A) -> usize

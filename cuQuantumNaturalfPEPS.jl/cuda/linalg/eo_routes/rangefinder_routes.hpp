@@ -4,6 +4,7 @@
 #include "../eo.cuh"
 
 #include <algorithm>
+#include <vector>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda/std/cmath>
@@ -30,8 +31,6 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    int* failure_log,
-    const int* fallback_info,
     void* robust_scratch,
     usize robust_scratch_bytes
 ) -> void
@@ -82,17 +81,7 @@ auto batched_rangefinder(
     if (route == RangefinderRoute::gesvda)
     {
         qn_eloc::e0191::run_direct_gesvda_cutoff(
-            la,
-            panel,
-            k,
-            q_out,
-            r_out,
-            dim_batch,
-            fail_flag,
-            failure_log,
-            fallback_info,
-            robust_scratch,
-            robust_scratch_bytes
+            la, panel, k, q_out, r_out, dim_batch, fail_flag, robust_scratch, robust_scratch_bytes
         );
         return;
     }
@@ -195,20 +184,7 @@ auto batched_rangefinder(
         return;
     }
 
-    bool has_fallback{};
-    if (fallback_info)
-    {
-        for (auto pass = int{0}; pass < 2; ++pass)
-        {
-            for (auto lane = int{0}; lane < dim_batch; ++lane)
-                has_fallback = has_fallback or fallback_info[pass * dim_batch + lane] != 0;
-        }
-    }
-    if (has_fallback and qr_scratch_bytes(la, rows, k) > robust_scratch_bytes)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        return;
-    }
+    auto lane_info = std::vector<int>(static_cast<usize>(dim_batch));
     for (auto pass = int{0}; pass < 2; ++pass)
     {
         la.matmul_batched(
@@ -222,53 +198,43 @@ auto batched_rangefinder(
             gram.p, k, gram.stride, dim_batch
         );
         la.cholesky_batched(k, gram_ptrs, k, info, dim_batch);
-        auto pass_log{failure_log + pass * dim_batch};
-        if (fallback_info)
+        CUDA_CHECK(cudaMemcpyAsync(
+            lane_info.data(),
+            info,
+            sizeof(int) * lane_info.size(),
+            cudaMemcpyDeviceToHost,
+            la.stream()
+        ));
+        CUDA_CHECK(cudaStreamSynchronize(la.stream()));
+        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        for (auto lane = int{0}; lane < dim_batch; ++lane)
         {
-            if (fail_flag)
+            const auto lane_status = int{lane_info[static_cast<usize>(lane)]};
+            if (lane_status == 0) continue;
+            if (lane_status < 0)
             {
-                cu_or_unmasked_info<<<(dim_batch + 255) / 256, 256, 0, la.stream()>>>(
-                    info, pass_log, dim_batch, fail_flag
+                qn::set_backend_err(
+                    QNPEPS_ELOC_ERR_CUDA, "cholesky_batched", lane_status, __FILE__, __LINE__
                 );
+                return;
             }
-            cu_union_info<<<(dim_batch + 255) / 256, 256, 0, la.stream()>>>(
-                info, pass_log, dim_batch
+            if (qr_scratch_bytes(la, rows, k) > robust_scratch_bytes)
+            {
+                qn::set_err(QNPEPS_ELOC_ERR_OOM);
+                return;
+            }
+            qr(la,
+               rows,
+               k,
+               sketch.p + static_cast<i64>(lane) * sketch.stride,
+               rows,
+               robust_scratch,
+               fail_flag,
+               2);
+            const auto blocks = int{std::max(1, (k * k + 255) / 256)};
+            cu_fill_identity<<<blocks, 256, 0, la.stream()>>>(
+                gram.p + static_cast<i64>(lane) * gram.stride, gram.stride, k, 1, nullptr
             );
-            CUDA_CHECK(cudaGetLastError());
-            for (auto lane = int{0}; lane < dim_batch; ++lane)
-            {
-                if (fallback_info[pass * dim_batch + lane] != 0)
-                {
-                    qr(la,
-                       rows,
-                       k,
-                       sketch.p + static_cast<i64>(lane) * sketch.stride,
-                       rows,
-                       robust_scratch,
-                       fail_flag,
-                       2);
-                    const auto blocks = int{std::max(1, (k * k + 255) / 256)};
-                    cu_fill_identity<<<blocks, 256, 0, la.stream()>>>(
-                        gram.p + static_cast<i64>(lane) * gram.stride, gram.stride, k, 1, nullptr
-                    );
-                }
-            }
-        }
-        else
-        {
-            CUDA_CHECK(cudaMemcpyAsync(
-                pass_log,
-                info,
-                sizeof(int) * static_cast<usize>(dim_batch),
-                cudaMemcpyDeviceToDevice,
-                la.stream()
-            ));
-            if (fail_flag)
-            {
-                cu_or_info<<<(dim_batch + 255) / 256, 256, 0, la.stream()>>>(
-                    info, dim_batch, fail_flag
-                );
-            }
         }
         la.solve_triangular_batched(rows, k, gram_ptrs, k, sketch_ptrs, rows, dim_batch);
     }

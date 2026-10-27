@@ -281,8 +281,6 @@ inline auto run_direct_gesvda_cutoff(
     MatrixBatch r_out,
     int dim_batch,
     int* fail_flag,
-    int* failure_log,
-    const int* fallback_info,
     void* scratch,
     usize scratch_bytes
 ) -> bool
@@ -330,7 +328,6 @@ inline auto run_direct_gesvda_cutoff(
         return false;
     const auto record_gesvda_info_args = CuRecordGesvdaInfoArgs{
         .info = work.info,
-        .failure_log = failure_log,
         .fail_flag = fail_flag,
         .dim_batch = dim_batch,
     };
@@ -395,7 +392,6 @@ inline auto run_direct_gesvda_cutoff(
         .q_out = q_out.data(),
         .q_stride = q_out.stride(),
         .info = work.info,
-        .replay_mask = fallback_info ? failure_log : nullptr,
         .rows = rows,
         .cols = cols,
         .k = k,
@@ -412,7 +408,6 @@ inline auto run_direct_gesvda_cutoff(
     {
         const auto record_gesvda_info_args = CuRecordGesvdaInfoArgs{
             .info = work.info,
-            .failure_log = failure_log,
             .fail_flag = fail_flag,
             .dim_batch = dim_batch,
         };

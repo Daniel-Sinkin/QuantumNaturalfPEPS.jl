@@ -66,12 +66,8 @@ struct Worker
     cf** sketch_ptrs{};
     int* info{};
     int* fail_flag{};
-    int* failure_log{};
-    usize failure_log_count{};
     char* qr_scratch{};
     usize qr_scratch_bytes{};
-    int rangefinder_call{};
-    const int* fallback_info{};
     f64* f_down{};
     f64* f_top{};
     f64* f_ov{};
@@ -170,16 +166,11 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     i64 gram_slot{};
     i64 fold4_slot{};
     int chi_bond{};
-    int rangefinder_calls{};
     if (not arena_slot({C, D, C}, w.slot_env) or not arena_slot({D, D, D, D}, w.slot_proj)
         or not arena_slot({C, C, D, D, D}, w.slot_tmp) or not arena_slot({C, C, D}, w.slot_r)
         or not arena_slot({C, C, D}, w.slot_rf) or not arena_slot({C, D, C}, w.slot_h)
         or not arena_slot({C, D, D, C}, w.slot_fb) or not arena_slot({C, C}, gram_slot)
-        or not arena_slot({C, D, D, C, D}, fold4_slot) or not arena_int({C, D}, chi_bond)
-        or not arena_int(
-            {2u, static_cast<std::uint64_t>(sh.lx - 1), static_cast<std::uint64_t>(sh.ly)},
-            rangefinder_calls
-        ))
+        or not arena_slot({C, D, D, C, D}, fold4_slot) or not arena_int({C, D}, chi_bond))
         return 0;
     i64 env_cuts{};
     i64 h_cuts_i64{};
@@ -227,14 +218,6 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     w.sketch_ptrs = cv.take<cf*>(lanes);
     w.info = cv.take<int>(lanes);
     w.fail_flag = cv.take<int>(1);
-    if (not arena_product(
-            {2u,
-             static_cast<std::uint64_t>(rangefinder_calls),
-             static_cast<std::uint64_t>(sh.lanes)},
-            w.failure_log_count
-        ))
-        return 0;
-    w.failure_log = cv.take<int>(w.failure_log_count);
     if (rangefinder_route_uses_householder_scratch())
     {
         w.qr_scratch_bytes = qnpeps::qr_scratch_bytes(w.la, chi_bond, sh.chi);
@@ -387,16 +370,12 @@ auto worker_setup(
     for (auto lane = usize{0}; lane < lanes; ++lane)
         hp[lane] = w.gram.p + static_cast<i64>(lane) * w.gram.stride;
     usize pointer_bytes{};
-    usize failure_bytes{};
-    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)
-        or not arena_product({sizeof(int), w.failure_log_count}, failure_bytes))
-        return;
+    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)) return;
     CUDA_CHECK(cudaMemcpy(w.gram_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
     for (auto lane = usize{0}; lane < lanes; ++lane)
         hp[lane] = w.sketch.p + static_cast<i64>(lane) * w.sketch.stride;
     CUDA_CHECK(cudaMemcpy(w.sketch_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
-    CUDA_CHECK(cudaMemsetAsync(w.failure_log, 0, failure_bytes, stream));
 
     int site_count_int{};
     usize site_slots{};
@@ -458,10 +437,7 @@ auto worker_rearm_constants(Worker& w, cudaStream_t stream) -> void
     const auto lanes = usize{static_cast<usize>(w.sh.lanes)};
     auto pointers = std::vector<cf*>(lanes);
     usize pointer_bytes{};
-    usize failure_bytes{};
-    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)
-        or not arena_product({sizeof(int), w.failure_log_count}, failure_bytes))
-        return;
+    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)) return;
     for (auto lane = usize{0}; lane < lanes; ++lane)
         pointers[lane] = w.gram.p + static_cast<i64>(lane) * w.gram.stride;
     CUDA_CHECK(
@@ -473,7 +449,6 @@ auto worker_rearm_constants(Worker& w, cudaStream_t stream) -> void
         w.sketch_ptrs, pointers.data(), pointer_bytes, cudaMemcpyHostToDevice, stream
     ));
     CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
-    CUDA_CHECK(cudaMemsetAsync(w.failure_log, 0, failure_bytes, stream));
     if (w.want_h or w.want_fb)
     {
         cu_fill_first_one<<<1, 256, 0, stream>>>(w.unit, 1, 1, w.sh.lanes);
@@ -481,37 +456,9 @@ auto worker_rearm_constants(Worker& w, cudaStream_t stream) -> void
     }
 }
 
-auto worker_begin_rangefinders(Worker& w, const std::vector<int>* fallback) -> void
+auto worker_begin_rangefinders(Worker& w) -> void
 {
-    if (fallback and fallback->size() != w.failure_log_count)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return;
-    }
-    if (fallback)
-    {
-        for (const int info : *fallback)
-        {
-            if (info < 0)
-            {
-                qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-                return;
-            }
-        }
-    }
-    w.rangefinder_call = 0;
-    w.fallback_info = fallback ? fallback->data() : nullptr;
     CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), w.la.stream()));
-    usize failure_bytes{};
-    if (not arena_product({sizeof(int), w.failure_log_count}, failure_bytes)) return;
-    if (fallback)
-    {
-        CUDA_CHECK(cudaMemcpyAsync(
-            w.failure_log, fallback->data(), failure_bytes, cudaMemcpyHostToDevice, w.la.stream()
-        ));
-    }
-    else
-        CUDA_CHECK(cudaMemsetAsync(w.failure_log, 0, failure_bytes, w.la.stream()));
 }
 
 auto worker_rangefinder_failed(Worker& w) -> int
@@ -520,32 +467,6 @@ auto worker_rangefinder_failed(Worker& w) -> int
     CUDA_CHECK(cudaStreamSynchronize(w.la.stream()));
     CUDA_CHECK(cudaMemcpy(&fail, w.fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
     return qn::err_state() == QNPEPS_ELOC_OK ? fail : -1;
-}
-
-auto worker_failure_log(Worker& w) -> std::vector<int>
-{
-    auto log = std::vector<int>(w.failure_log_count);
-    usize failure_bytes{};
-    if (not arena_product({sizeof(int), w.failure_log_count}, failure_bytes)) return {};
-    CUDA_CHECK(cudaMemcpy(log.data(), w.failure_log, failure_bytes, cudaMemcpyDeviceToHost));
-    return log;
-}
-
-auto expand_rangefinder_fallback(Worker& w, std::vector<int>& fallback) -> bool
-{
-    const auto expanded = std::vector<int>{worker_failure_log(w)};
-    if (qn::err_state() != QNPEPS_ELOC_OK or expanded.size() != fallback.size()) return false;
-    bool changed{};
-    for (auto index = usize{0}; index < expanded.size(); ++index)
-    {
-        if (fallback[index] == 0 and expanded[index] != 0)
-        {
-            changed = true;
-        }
-    }
-    if (not changed) return false;
-    fallback = expanded;
-    return true;
 }
 
 auto worker_ensure(

@@ -109,43 +109,12 @@ __global__ auto cu_chol_shift(cf* gram, int k, i64 stride, int dim_batch) -> voi
         gram_lane[diag + diag * k].re += shift;
 }
 
-__global__ auto cu_or_info(const int* info, int n, int* flag) -> void
-{
-    const auto idx = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    const auto grid_stride = int{static_cast<int>(gridDim.x * blockDim.x)};
-    for (auto i = idx; i < n; i += grid_stride)
-        if (info[i] != 0) atomicOr(flag, 1);
-}
-
 __global__ auto cu_or_info_bit(const int* info, int n, int bit, int* flag) -> void
 {
     const auto idx = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
     const auto grid_stride = int{static_cast<int>(gridDim.x * blockDim.x)};
     for (auto i = idx; i < n; i += grid_stride)
         if (info[i] != 0) atomicOr(flag, bit);
-}
-
-__global__ auto cu_record_lane_info(const int* info, int* failure_log, int lane) -> void
-{
-    if (info[0] == 0) return;
-    const auto encoded = int{info[0] > 0 ? info[0] : 1000000 - info[0]};
-    atomicCAS(failure_log + lane, 0, encoded);
-}
-
-__global__ auto cu_or_unmasked_info(const int* info, const int* mask, int n, int* flag) -> void
-{
-    const auto idx = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    const auto grid_stride = int{static_cast<int>(gridDim.x * blockDim.x)};
-    for (auto i = idx; i < n; i += grid_stride)
-        if (info[i] != 0 and mask[i] == 0) atomicOr(flag, 1);
-}
-
-__global__ auto cu_union_info(const int* info, int* mask, int n) -> void
-{
-    const auto idx = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    const auto grid_stride = int{static_cast<int>(gridDim.x * blockDim.x)};
-    for (auto i = idx; i < n; i += grid_stride)
-        if (info[i] != 0) mask[i] = info[i];
 }
 
 __global__ auto cu_fill_identity(

@@ -37,7 +37,13 @@
 #include "term_evaluation.hpp"
 #include "outputs.hpp"
 #include "planning.hpp"
-#include "graph_cache.hpp"
+#include "run_cache.hpp"
+
+inline auto report_rangefinder_failure(int fail) -> void
+{
+    if (fail > 0)
+        qn::set_backend_err(QNPEPS_ELOC_ERR_CUDA, "rangefinder", fail, __FILE__, __LINE__);
+}
 
 auto qn_eloc_envs_logpsi(
     const QnpepsElocConfig& cfg,
@@ -69,7 +75,6 @@ auto qn_eloc_envs_logpsi(
     const auto sites = i64{sites_int};
     (void) sample_sites;
     auto done = i64{0};
-    auto use_householder = false;
     while (done < n_samples)
     {
         const auto density = bool{cfg.truncation_route == 6};
@@ -90,55 +95,9 @@ auto qn_eloc_envs_logpsi(
         };
         worker_ensure(w, sh, false, false, peps, wave_samples, stream, context_arena);
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        const auto run_logpsi_householder = [&]() -> int
-        {
-            const qnpeps::HouseholderRouteScope householder{};
-            worker_begin_rangefinders(w, nullptr);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-            compute_logpsi(w, logpsi_out + output_offset, false);
-            return worker_rangefinder_failed(w);
-        };
-        auto fail = int{};
-        if (use_householder)
-            fail = run_logpsi_householder();
-        else
-        {
-            worker_begin_rangefinders(w, nullptr);
-            compute_logpsi(w, logpsi_out + output_offset, false);
-            fail = worker_rangefinder_failed(w);
-        }
-        if (fail > 0 and not use_householder)
-        {
-            if ((fail & 2) != 0)
-            {
-                qn::set_backend_err(
-                    QNPEPS_ELOC_ERR_CUDA, "rangefinder_householder", fail, __FILE__, __LINE__
-                );
-                return;
-            }
-            auto fallback = std::vector<int>{worker_failure_log(w)};
-            for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
-            {
-                worker_begin_rangefinders(w, &fallback);
-                if (qn::err_state() != QNPEPS_ELOC_OK) return;
-                compute_logpsi(w, logpsi_out + output_offset, false);
-                fail = worker_rangefinder_failed(w);
-                if (fail <= 0 or (fail & 2) != 0) break;
-                if (not expand_rangefinder_fallback(w, fallback)) break;
-            }
-            if (fail != 0)
-            {
-                use_householder = true;
-                fail = run_logpsi_householder();
-            }
-        }
-        if (fail < 0) return;
-        if (fail != 0)
-        {
-            qn::set_backend_err(
-                QNPEPS_ELOC_ERR_CUDA, "rangefinder_recovery", fail, __FILE__, __LINE__
-            );
-        }
+        worker_begin_rangefinders(w);
+        compute_logpsi(w, logpsi_out + output_offset, false);
+        report_rangefinder_failure(worker_rangefinder_failed(w));
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         done += lanes;
     }
@@ -214,28 +173,19 @@ auto run_cache_execute(
     auto spins_i32{state.spins_i32};
     auto& orig_active{state.orig_active};
     auto& tr_active{state.tr_active};
-    auto graph_binding{
-        state.graph_enabled
-            ? find_graph_binding(state, peps, samples, logpsi_out, e_loc_out, o_rows_dev)
-            : nullptr
-    };
 
     if (not tr_terms.empty())
     {
-        const auto preprocess = [&]
-        {
-            build_transposed_peps(cfg, peps, peps_t, stream);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            const auto threads = int{256};
-            const auto total = i64{sample_sites};
-            const auto blocks =
-                int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-            cu_transpose_samples<<<blocks, threads, 0, stream>>>(
-                samples, samples_t, cfg.lx, cfg.ly, n_samples
-            );
-            CUDA_CHECK(cudaGetLastError());
-        };
-        run_graph_region(state, graph_binding ? &graph_binding->preprocess : nullptr, preprocess);
+        build_transposed_peps(cfg, peps, peps_t, stream);
+        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        const auto threads = int{256};
+        const auto total = i64{sample_sites};
+        const auto blocks =
+            int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
+        cu_transpose_samples<<<blocks, threads, 0, stream>>>(
+            samples, samples_t, cfg.lx, cfg.ly, n_samples
+        );
+        CUDA_CHECK(cudaGetLastError());
     }
     if (want_gram)
     {
@@ -255,8 +205,6 @@ auto run_cache_execute(
     auto& w{state.w};
     auto& wt{state.wt};
     auto done = i64{0};
-    auto use_householder = false;
-    usize wave_index{};
     while (done < n_samples)
     {
         const auto density = bool{cfg.truncation_route == 6};
@@ -275,7 +223,6 @@ auto run_cache_execute(
                 o_wave_bytes
             ))
             return;
-        auto wave_graphs{graph_binding ? &graph_binding->waves[wave_index] : nullptr};
         auto sh = Shape{
             cfg.lx,
             cfg.ly,
@@ -290,146 +237,53 @@ auto run_cache_execute(
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         prepare_active_lists(orig_active, w.samples, sites, lanes, stream);
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        const auto run_orig = [&](const std::vector<int>* fallback) -> int
+        worker_begin_rangefinders(w);
+        compute_logpsi(w, logpsi_out + output_offset, orig_h or orig_fb);
+        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        emit_stage_c(w, orig_h, orig_fb);
+        CUDA_CHECK(cudaMemsetAsync(e_loc_out + output_offset, 0, energy_bytes, stream));
+        launch_diagonal(w, e_loc_out + output_offset, d_a, d_b, d_j, tt->n_diag);
+        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        for (const FlipInst& t : orig_terms)
         {
-            worker_begin_rangefinders(w, fallback);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-            run_graph_region(
-                state,
-                wave_graphs ? &wave_graphs->orig_logpsi : nullptr,
-                [&] { compute_logpsi(w, logpsi_out + output_offset, orig_h or orig_fb); },
-                &w.rangefinder_call
-            );
-            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-            {
-                run_graph_region(
-                    state,
-                    wave_graphs ? &wave_graphs->orig_stage : nullptr,
-                    [&]
-                    {
-                        emit_stage_c(w, orig_h, orig_fb);
-                        CUDA_CHECK(
-                            cudaMemsetAsync(e_loc_out + output_offset, 0, energy_bytes, stream)
-                        );
-                        launch_diagonal(w, e_loc_out + output_offset, d_a, d_b, d_j, tt->n_diag);
-                    },
-                    &w.rangefinder_call
-                );
-            }
-            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-            {
-                for (const FlipInst& t : orig_terms)
-                {
-                    const auto active =
-                        int{t.active_slot >= 0
-                                ? orig_active.host_counts[static_cast<usize>(t.active_slot)]
-                                : -1};
-                    auto active_indices{
-                        t.active_slot >= 0
-                            ? orig_active.indices
-                                  + static_cast<i64>(t.active_slot) * orig_active.max_lanes
-                            : nullptr
-                    };
-                    eval_flip_inst(
-                        w,
-                        t,
-                        value_buf,
-                        e_loc_out + output_offset,
-                        logpsi_out + output_offset,
-                        active_indices,
-                        active,
-                        active_compact_min
-                    );
-                }
-            }
-            if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-            if (want_o)
-            {
-                auto wave_base{o_rows_dev + done * compact_count};
-                run_graph_region(
-                    state,
-                    wave_graphs ? &wave_graphs->orig_o : nullptr,
-                    [&]
-                    {
-                        emit_o_rows(
-                            w,
-                            wave_base,
-                            compact_count,
-                            ok_off,
-                            ok_slice,
-                            logpsi_out + output_offset,
-                            gscratch
-                        );
-                    },
-                    &w.rangefinder_call
-                );
-                if (o_rows_host)
-                {
-                    CUDA_CHECK(cudaMemcpyAsync(
-                        o_rows_host + done * compact_count,
-                        wave_base,
-                        o_wave_bytes,
-                        cudaMemcpyDeviceToHost,
-                        stream
-                    ));
-                }
-            }
-            return worker_rangefinder_failed(w);
-        };
-        const auto run_householder = [&](auto&& run, auto&& destroy_graphs) -> int
-        {
-            const auto graphs_were_enabled = state.graph_enabled;
-            state.graph_enabled = false;
-            if (wave_graphs) destroy_graphs(*wave_graphs);
-            const qnpeps::HouseholderRouteScope householder{};
-            const auto fail = int{run(nullptr)};
-            state.graph_enabled = graphs_were_enabled;
-            return fail;
-        };
-        const auto destroy_orig = [](auto& graphs) { destroy_orig_graphs(graphs); };
-        const auto run_orig_recovered = [&]() -> int
-        {
-            if (use_householder) return run_householder(run_orig, destroy_orig);
-            std::vector<int> transient_fallback{};
-            auto& fallback{wave_graphs ? wave_graphs->orig_fallback : transient_fallback};
-            const auto active_fallback = [&]() -> const std::vector<int>*
-            { return fallback.empty() ? nullptr : &fallback; };
-            auto orig_fail = int{run_orig(active_fallback())};
-            if (orig_fail <= 0) return orig_fail;
-            if ((orig_fail & 2) != 0)
-            {
-                return orig_fail;
-            }
-            bool changed{};
-            if (fallback.empty())
-            {
-                fallback = worker_failure_log(w);
-                changed = qn::err_state() == QNPEPS_ELOC_OK;
-            }
-            else
-                changed = expand_rangefinder_fallback(w, fallback);
-            if (changed)
-            {
-                if (wave_graphs) destroy_orig_graphs(*wave_graphs);
-                for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
-                {
-                    orig_fail = run_orig(&fallback);
-                    if (orig_fail <= 0 or (orig_fail & 2) != 0) break;
-                    if (not expand_rangefinder_fallback(w, fallback)) break;
-                    if (wave_graphs) destroy_orig_graphs(*wave_graphs);
-                }
-            }
-            if (orig_fail == 0) return orig_fail;
-            use_householder = true;
-            return run_householder(run_orig, destroy_orig);
-        };
-        auto fail = int{run_orig_recovered()};
-        if (fail != 0)
-        {
-            qn::set_backend_err(
-                QNPEPS_ELOC_ERR_CUDA, "rangefinder_recovery", fail, __FILE__, __LINE__
+            const auto active =
+                int{t.active_slot >= 0 ? orig_active.host_counts[static_cast<usize>(t.active_slot)]
+                                       : -1};
+            auto active_indices{
+                t.active_slot >= 0
+                    ? orig_active.indices + static_cast<i64>(t.active_slot) * orig_active.max_lanes
+                    : nullptr
+            };
+            eval_flip_inst(
+                w,
+                t,
+                value_buf,
+                e_loc_out + output_offset,
+                logpsi_out + output_offset,
+                active_indices,
+                active,
+                active_compact_min
             );
         }
+        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        if (want_o)
+        {
+            auto wave_base{o_rows_dev + done * compact_count};
+            emit_o_rows(
+                w, wave_base, compact_count, ok_off, ok_slice, logpsi_out + output_offset, gscratch
+            );
+            if (o_rows_host)
+            {
+                CUDA_CHECK(cudaMemcpyAsync(
+                    o_rows_host + done * compact_count,
+                    wave_base,
+                    o_wave_bytes,
+                    cudaMemcpyDeviceToHost,
+                    stream
+                ));
+            }
+        }
+        report_rangefinder_failure(worker_rangefinder_failed(w));
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         if (not tr_terms.empty())
         {
@@ -449,106 +303,37 @@ auto run_cache_execute(
             if (qn::err_state() != QNPEPS_ELOC_OK) return;
             prepare_active_lists(tr_active, wt.samples, sites, lanes, stream);
             if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            const auto run_transposed = [&](const std::vector<int>* fallback) -> int
+            worker_begin_rangefinders(wt);
+            compute_logpsi(wt, logpsi_tr, true);
+            if (qn::err_state() != QNPEPS_ELOC_OK) return;
+            emit_stage_c(wt, true, tr_fb);
+            if (qn::err_state() != QNPEPS_ELOC_OK) return;
+            for (const FlipInst& t : tr_terms)
             {
-                worker_begin_rangefinders(wt, fallback);
-                if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-                run_graph_region(
-                    state,
-                    wave_graphs ? &wave_graphs->tr_logpsi : nullptr,
-                    [&] { compute_logpsi(wt, logpsi_tr, true); },
-                    &wt.rangefinder_call
-                );
-                if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-                {
-                    run_graph_region(
-                        state,
-                        wave_graphs ? &wave_graphs->tr_stage : nullptr,
-                        [&] { emit_stage_c(wt, true, tr_fb); },
-                        &wt.rangefinder_call
-                    );
-                }
-                if (qn::err_state() != QNPEPS_ELOC_OK) return -1;
-                {
-                    for (const FlipInst& t : tr_terms)
-                    {
-                        const auto active =
-                            int{t.active_slot >= 0
-                                    ? tr_active.host_counts[static_cast<usize>(t.active_slot)]
-                                    : -1};
-                        auto active_indices{
-                            t.active_slot >= 0
-                                ? tr_active.indices
-                                      + static_cast<i64>(t.active_slot) * tr_active.max_lanes
-                                : nullptr
-                        };
-                        eval_flip_inst(
-                            wt,
-                            t,
-                            value_buf,
-                            e_loc_out + output_offset,
-                            logpsi_tr,
-                            active_indices,
-                            active,
-                            active_compact_min
-                        );
-                    }
-                }
-                return worker_rangefinder_failed(wt);
-            };
-            const auto destroy_transposed = [](auto& graphs) { destroy_transposed_graphs(graphs); };
-            std::vector<int> transient_fallback{};
-            auto& fallback{wave_graphs ? wave_graphs->tr_fallback : transient_fallback};
-            auto fail =
-                int{use_householder ? run_householder(run_transposed, destroy_transposed)
-                                    : run_transposed(fallback.empty() ? nullptr : &fallback)};
-            if (fail > 0 and not use_householder)
-            {
-                if ((fail & 2) != 0)
-                {
-                    qn::set_backend_err(
-                        QNPEPS_ELOC_ERR_CUDA, "rangefinder_householder", fail, __FILE__, __LINE__
-                    );
-                    return;
-                }
-                bool changed{};
-                if (fallback.empty())
-                {
-                    fallback = worker_failure_log(wt);
-                    changed = qn::err_state() == QNPEPS_ELOC_OK;
-                }
-                else
-                    changed = expand_rangefinder_fallback(wt, fallback);
-                if (changed)
-                {
-                    if (wave_graphs) destroy_transposed_graphs(*wave_graphs);
-                    for (auto attempt = int{0}; attempt < k_rangefinder_recovery_limit; ++attempt)
-                    {
-                        fail = run_orig_recovered();
-                        if (fail != 0) break;
-                        fail = run_transposed(&fallback);
-                        if (fail <= 0 or (fail & 2) != 0) break;
-                        if (not expand_rangefinder_fallback(wt, fallback)) break;
-                        if (wave_graphs) destroy_transposed_graphs(*wave_graphs);
-                    }
-                }
-                if (fail != 0)
-                {
-                    use_householder = true;
-                    fail = run_orig_recovered();
-                    if (fail == 0) fail = run_householder(run_transposed, destroy_transposed);
-                }
-            }
-            if (fail != 0)
-            {
-                qn::set_backend_err(
-                    QNPEPS_ELOC_ERR_CUDA, "rangefinder_recovery", fail, __FILE__, __LINE__
+                const auto active =
+                    int{t.active_slot >= 0
+                            ? tr_active.host_counts[static_cast<usize>(t.active_slot)]
+                            : -1};
+                auto active_indices{
+                    t.active_slot >= 0
+                        ? tr_active.indices + static_cast<i64>(t.active_slot) * tr_active.max_lanes
+                        : nullptr
+                };
+                eval_flip_inst(
+                    wt,
+                    t,
+                    value_buf,
+                    e_loc_out + output_offset,
+                    logpsi_tr,
+                    active_indices,
+                    active,
+                    active_compact_min
                 );
             }
+            report_rangefinder_failure(worker_rangefinder_failed(wt));
         }
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         done += lanes;
-        ++wave_index;
     }
 
     if (want_gram)

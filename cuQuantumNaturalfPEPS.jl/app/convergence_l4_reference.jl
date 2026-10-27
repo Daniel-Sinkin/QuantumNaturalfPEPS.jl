@@ -12,7 +12,7 @@ include(joinpath(@__DIR__, "convergence_l4_reference", "io.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "state.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "ranks.jl"))
 
-const CONVERGENCE_EO_ROUTES = ("cholqr", "householder", "qb_svd", "gesvda_cutoff")
+const CONVERGENCE_EO_ROUTES = ("cholqr", "householder", "gesvda_cutoff")
 const CONVERGENCE_TRAJECTORY_HEADER = join(
     (
         "step",

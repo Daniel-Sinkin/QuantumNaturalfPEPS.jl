@@ -31,8 +31,6 @@ using namespace qnpeps;
 namespace
 {
 
-constexpr int k_rangefinder_recovery_limit{4};
-
 __global__ auto cu_gather(
     cf* out,
     const cf* in,

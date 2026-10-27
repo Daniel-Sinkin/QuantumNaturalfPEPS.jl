@@ -37,7 +37,7 @@
 #include "term_evaluation.hpp"
 #include "outputs.hpp"
 #include "planning.hpp"
-#include "graph_cache.hpp"
+#include "run_cache.hpp"
 #include "execute.hpp"
 
 struct qnpeps_eloc_ctx
@@ -105,8 +105,6 @@ auto qn_eloc_ctx_create_impl(
         delete ctx;
         return;
     }
-    ctx->state.graph_enabled =
-        cfg.truncation_route != 6 and graph_requested_from_env() and n_samples % cfg.meo == 0;
     *out = ctx;
 }
 

@@ -13,7 +13,6 @@ namespace qn_eloc::e0191
 struct CuRecordGesvdaInfoArgs
 {
     const int* info;
-    int* failure_log;
     int* fail_flag;
     int dim_batch;
 };
@@ -29,7 +28,6 @@ struct CuCopyFactorOutputsArgs
     cf* q_out;
     i64 q_stride;
     const int* info;
-    const int* replay_mask;
     int rows;
     int cols;
     int k;
@@ -91,8 +89,6 @@ __global__ auto cu_record_gesvda_info(CuRecordGesvdaInfoArgs args) -> void
 {
     const auto lane = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
     if (lane >= args.dim_batch or args.info[lane] == 0) return;
-    const auto encoded = int{args.info[lane] > 0 ? args.info[lane] : 1000000 - args.info[lane]};
-    if (args.failure_log) atomicCAS(args.failure_log + lane, 0, encoded);
     if (args.fail_flag) atomicOr(args.fail_flag, 1);
 }
 
@@ -108,9 +104,6 @@ __global__ auto cu_copy_factor_outputs(CuCopyFactorOutputsArgs args) -> void
     {
         const auto lane = int{static_cast<int>(index / lane_count)};
         if (args.info[lane] != 0) continue;
-        if (args.replay_mask and args.replay_mask[lane] == 0
-            and args.replay_mask[args.dim_batch + lane] == 0)
-            continue;
         const auto element = i64{index % lane_count};
         if (element < q_count)
         {
