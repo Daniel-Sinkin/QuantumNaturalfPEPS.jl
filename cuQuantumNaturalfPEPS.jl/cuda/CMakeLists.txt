@@ -72,7 +72,10 @@ add_library(qnpeps SHARED
   linalg/qr.cu
   linalg/svd.cu
   linalg/eo_ops.cu
-  linalg/eo_routes.cu
+  linalg/eo_routes/factorization_kernels.cu
+  linalg/eo_routes/rangefinder.cu
+  linalg/eo_routes/gesvda_scratch.cu
+  linalg/gesvda/kernels.cu
   eo/env_build/active_lists.cu
   eo/env_build/arena.cu
   eo/env_build/context.cu
@@ -115,7 +118,10 @@ set_source_files_properties(
   eo/eloc_kernels.cu
   eo/shards.cu
   linalg/eo_ops.cu
-  linalg/eo_routes.cu
+  linalg/eo_routes/factorization_kernels.cu
+  linalg/eo_routes/rangefinder.cu
+  linalg/eo_routes/gesvda_scratch.cu
+  linalg/gesvda/kernels.cu
   eo/env_build/active_lists.cu
   eo/env_build/arena.cu
   eo/env_build/context.cu

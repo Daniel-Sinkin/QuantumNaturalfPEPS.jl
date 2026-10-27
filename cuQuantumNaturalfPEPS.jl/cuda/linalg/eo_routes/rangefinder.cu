@@ -1,5 +1,3 @@
-#pragma once
-
 #include "../gesvda.cuh"
 #include "../eo.cuh"
 
@@ -10,7 +8,6 @@
 #include <cuda/std/cmath>
 
 #include "core/complex.cuh"
-#include "factorization_kernels.hpp"
 
 namespace qnpeps
 {

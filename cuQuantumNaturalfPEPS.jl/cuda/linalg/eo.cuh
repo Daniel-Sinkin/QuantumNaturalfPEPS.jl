@@ -33,6 +33,9 @@ __global__ auto cu_normalize_log(
 __global__ auto cu_chol_shift(cf* gram, int k, i64 stride, int dim_batch) -> void;
 __global__ auto cu_or_info_bit(const int* info, int n, int bit, int* flag) -> void;
 __global__ auto cu_fill_first_one(cf* x, i64 stride, int n, int dim_batch) -> void;
+__global__ auto cu_fill_identity(
+    cf* matrix, i64 stride, int n, int dim_batch, const f32* diagonal_scale
+) -> void;
 
 struct EoDeviceBuffer
 {

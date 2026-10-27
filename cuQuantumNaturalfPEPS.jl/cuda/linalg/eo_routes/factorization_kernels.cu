@@ -1,6 +1,3 @@
-#pragma once
-
-#include "../gesvda.cuh"
 #include "../eo.cuh"
 
 #include <algorithm>
