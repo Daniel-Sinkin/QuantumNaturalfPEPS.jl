@@ -72,7 +72,6 @@ auto run_cache_setup(
         (pass == 0 ? state.orig_terms : state.tr_terms).push_back(fi);
     }
     state.active_compact = true;
-    state.active_compact_min = 2;
     const auto orig_active_slots = int{assign_active_slots(state.orig_terms, state.active_compact)};
     const auto tr_active_slots = int{assign_active_slots(state.tr_terms, state.active_compact)};
     active_lists_setup(

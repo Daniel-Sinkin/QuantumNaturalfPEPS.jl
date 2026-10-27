@@ -105,7 +105,6 @@ auto run_cache_execute(
     const auto& ok_slice{state.ok_slice};
     const auto& orig_terms{state.orig_terms};
     const auto& tr_terms{state.tr_terms};
-    const auto active_compact_min = int{state.active_compact_min};
     auto peps_t{state.peps_t};
     auto samples_t{state.samples_t};
     auto d_a{state.d_a};
@@ -198,8 +197,7 @@ auto run_cache_execute(
                 e_loc_out + output_offset,
                 logpsi_out + output_offset,
                 active_indices,
-                active,
-                active_compact_min
+                active
             );
         }
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
@@ -248,14 +246,7 @@ auto run_cache_execute(
                         : nullptr
                 };
                 eval_flip_inst(
-                    wt,
-                    t,
-                    value_buf,
-                    e_loc_out + output_offset,
-                    logpsi_tr,
-                    active_indices,
-                    active,
-                    active_compact_min
+                    wt, t, value_buf, e_loc_out + output_offset, logpsi_tr, active_indices, active
                 );
             }
             report_rangefinder_failure(worker_rangefinder_failed(wt));

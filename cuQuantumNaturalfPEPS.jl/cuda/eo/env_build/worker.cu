@@ -68,6 +68,7 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     w.sketch_ptrs = cv.take<cf*>(lanes);
     w.info = cv.take<int>(lanes);
     w.fail_flag = cv.take<int>(1);
+    w.all_lanes = cv.take<int>(lanes);
     if (sh.rangefinder != RangefinderRoute::gesvda)
     {
         w.qr_scratch_bytes = qnpeps::qr_scratch_bytes(w.la, chi_bond, sh.chi);
@@ -220,6 +221,11 @@ auto worker_setup(
     for (auto lane = usize{0}; lane < lanes; ++lane)
         hp[lane] = w.sketch.p + static_cast<i64>(lane) * w.sketch.stride;
     CUDA_CHECK(cudaMemcpy(w.sketch_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
+    auto lane_indices = std::vector<int>(lanes);
+    std::iota(lane_indices.begin(), lane_indices.end(), 0);
+    CUDA_CHECK(
+        cudaMemcpy(w.all_lanes, lane_indices.data(), sizeof(int) * lanes, cudaMemcpyHostToDevice)
+    );
     CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
 
     int site_count_int{};

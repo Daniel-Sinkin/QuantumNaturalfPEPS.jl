@@ -3,37 +3,6 @@
 namespace qn_eloc::env
 {
 
-__global__ auto cu_project_site_val(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    cf* out,
-    i64 out_stride,
-    int lanes
-) -> void
-{
-    const auto total = i64{slab * lanes};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
-         tid += grid_stride)
-    {
-        const auto lane = i64{tid / slab};
-        const auto elem = i64{tid % slab};
-        const auto spin_raw = int{static_cast<int>(samples[lane * lane_stride + site_idx])};
-        auto val = int{fixed_val};
-        if (value_mode == -2)
-            val = spin_raw;
-        else if (value_mode < 0)
-            val = dim_phys - 1 - spin_raw;
-        out[lane * out_stride + elem] = site[static_cast<i64>(val) * slab + elem];
-    }
-}
-
 __global__ auto cu_project_site_val_indexed(
     const cf* site,
     const u8* samples,
@@ -119,49 +88,6 @@ __global__ auto cu_diagonal(
     e_loc[2 * lane] += e;
 }
 
-__global__ auto cu_reduce_term(
-    f64* e_loc,
-    const cf* value,
-    const f64* f_top,
-    const f64* f_down,
-    const f64* f_rail_l,
-    const f64* f_rail_r,
-    const f64* f_chain,
-    const f64* logpsi,
-    const u8* samples,
-    i64 lane_stride,
-    int mask_a,
-    int mask_b,
-    f64 coeff_re,
-    f64 coeff_im,
-    int lanes
-) -> void
-{
-    const auto lane = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    if (lane >= lanes) return;
-    if (mask_a >= 0)
-    {
-        const auto base = i64{static_cast<i64>(lane) * lane_stride};
-        if (samples[base + mask_a] == samples[base + mask_b]) return;
-    }
-    const auto v = cf{value[lane]};
-    const auto re = f64{static_cast<f64>(v.re)};
-    const auto im = f64{static_cast<f64>(v.im)};
-    const auto logmag = f64{0.5 * log(norm2(re, im))};
-    const auto phase = f64{atan2(im, re)};
-    const auto fsum =
-        f64{(f_top ? f_top[lane] : 0.0) + (f_down ? f_down[lane] : 0.0)
-            + (f_rail_l ? f_rail_l[lane] : 0.0) + (f_rail_r ? f_rail_r[lane] : 0.0)
-            + (f_chain ? f_chain[lane] : 0.0)};
-    const auto dre = f64{logmag + fsum - logpsi[2 * lane]};
-    const auto dim = f64{phase - logpsi[2 * lane + 1]};
-    const auto mag = f64{exp(dre)};
-    const auto rr = f64{mag * cos(dim)};
-    const auto ri = f64{mag * sin(dim)};
-    e_loc[2 * lane] += coeff_re * rr - coeff_im * ri;
-    e_loc[2 * lane + 1] += coeff_re * ri + coeff_im * rr;
-}
-
 __global__ auto cu_reduce_term_indexed(
     f64* e_loc,
     const cf* value,
@@ -196,43 +122,6 @@ __global__ auto cu_reduce_term_indexed(
     const auto ri = f64{mag * sin(dim)};
     e_loc[2 * lane] += coeff_re * rr - coeff_im * ri;
     e_loc[2 * lane + 1] += coeff_re * ri + coeff_im * rr;
-}
-
-auto reduce_term(
-    Worker& w,
-    int mask_a,
-    int mask_b,
-    f64 coeff_re,
-    f64 coeff_im,
-    const cf* value,
-    f64* f_top,
-    f64* f_down,
-    f64* f_rail_l,
-    f64* f_rail_r,
-    f64* e_loc,
-    const f64* logpsi
-) -> void
-{
-    const auto lanes = int{w.sh.lanes};
-    const auto blocks = int{(lanes + 255) / 256};
-    cu_reduce_term<<<blocks, 256, 0, w.la.stream()>>>(
-        e_loc,
-        value,
-        f_top,
-        f_down,
-        f_rail_l,
-        f_rail_r,
-        w.f_chain,
-        logpsi,
-        w.samples,
-        static_cast<i64>(w.sh.lx) * w.sh.ly,
-        mask_a,
-        mask_b,
-        coeff_re,
-        coeff_im,
-        lanes
-    );
-    CUDA_CHECK(cudaGetLastError());
 }
 
 auto reduce_term_indexed(

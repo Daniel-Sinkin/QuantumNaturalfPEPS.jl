@@ -20,6 +20,7 @@
 #include <limits>
 #include <map>
 #include <new>
+#include <numeric>
 #include <random>
 #include <string>
 #include <utility>
@@ -150,6 +151,7 @@ struct Worker
     cf** sketch_ptrs{};
     int* info{};
     int* fail_flag{};
+    int* all_lanes{};
     char* qr_scratch{};
     usize qr_scratch_bytes{};
     f64* f_down{};
@@ -522,20 +524,6 @@ auto prepare_active_lists(
     ActiveLists& lists, const u8* samples, i64 lane_stride, int lanes, cudaStream_t stream
 ) -> void;
 
-__global__ auto cu_project_site_val(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    cf* out,
-    i64 out_stride,
-    int lanes
-) -> void;
-
 __global__ auto cu_project_site_val_indexed(
     const cf* site,
     const u8* samples,
@@ -569,24 +557,6 @@ __global__ auto cu_diagonal(
     const int* site_b,
     const f64* coeff,
     int n_diag,
-    int lanes
-) -> void;
-
-__global__ auto cu_reduce_term(
-    f64* e_loc,
-    const cf* value,
-    const f64* f_top,
-    const f64* f_down,
-    const f64* f_rail_l,
-    const f64* f_rail_r,
-    const f64* f_chain,
-    const f64* logpsi,
-    const u8* samples,
-    i64 lane_stride,
-    int mask_a,
-    int mask_b,
-    f64 coeff_re,
-    f64 coeff_im,
     int lanes
 ) -> void;
 
@@ -641,21 +611,6 @@ inline auto hr_o_dims(Worker& w, int i, int c) -> std::vector<int>
                 : 1};
     return {tb, bd(w.sh.ly, c + 1, w.sh.dim_bond), bb};
 }
-
-auto reduce_term(
-    Worker& w,
-    int mask_a,
-    int mask_b,
-    f64 coeff_re,
-    f64 coeff_im,
-    const cf* value,
-    f64* f_top,
-    f64* f_down,
-    f64* f_rail_l,
-    f64* f_rail_r,
-    f64* e_loc,
-    const f64* logpsi
-) -> void;
 
 auto reduce_term_indexed(
     Worker& w,
@@ -715,8 +670,6 @@ inline auto fb_right_dims(Worker& w, int upper, int k) -> std::vector<int>
 
 auto corner_mode(const FlipInst& t, int r, int c, int ly) -> int;
 
-auto project_corner(Worker& w, int r, int c, int mode, cf* out, i64 out_stride) -> BT;
-
 auto project_corner_indexed(
     Worker& w,
     int r,
@@ -730,18 +683,12 @@ auto project_corner_indexed(
 
 auto compact_tensor(Worker& w, const BT& src, const int* active_indices, int active, cf* out) -> BT;
 
-auto chain_normalize(Worker& w, cf* x, i64 n, i64 stride) -> void;
-
 auto chain_normalize_batch(Worker& w, cf* x, i64 n, i64 stride, f64* f_chain, int dim_batch)
     -> void;
-
-auto eval_horizontal(Worker& w, const FlipInst& t, cf* value_out) -> void;
 
 auto eval_horizontal_compact(
     Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
 ) -> f64*;
-
-auto eval_fourbody(Worker& w, const FlipInst& t, cf* value_out) -> void;
 
 auto eval_fourbody_compact(
     Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
@@ -753,9 +700,8 @@ auto eval_flip_inst(
     cf* value_buf,
     f64* e_loc,
     const f64* logpsi,
-    const int* active_indices = nullptr,
-    int active = -1,
-    int compact_min = 2
+    const int* active_indices,
+    int active
 ) -> void;
 
 __global__ auto cu_gscale(
@@ -824,7 +770,6 @@ struct RunCache
     std::vector<FlipInst> orig_terms{};
     std::vector<FlipInst> tr_terms{};
     bool active_compact{};
-    int active_compact_min{};
     ActiveLists orig_active{};
     ActiveLists tr_active{};
     cf* peps_t{};
