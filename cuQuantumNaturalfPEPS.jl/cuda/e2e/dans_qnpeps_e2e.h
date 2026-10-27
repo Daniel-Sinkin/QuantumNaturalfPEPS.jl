@@ -191,15 +191,6 @@ extern "C"
         QnpepsE2eDistTimings* timings_out
     );
 
-    qnpeps_e2e_status qnpeps_e2e_step_multigpu_dist_scratch_bytes(
-        const QnpepsE2eConfig* cfg,
-        int64_t n_samples,
-        const void* terms,
-        int gpus,
-        int64_t peer_tile_bytes,
-        uint64_t* out_bytes
-    );
-
     typedef struct qnpeps_e2e_node qnpeps_e2e_node;
 
     typedef enum qnpeps_e2e_update_precision

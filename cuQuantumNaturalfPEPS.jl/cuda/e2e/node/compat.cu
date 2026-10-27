@@ -197,26 +197,3 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_step_multigpu_scratch_bytes(
     *out_bytes = static_cast<u64>(reservation);
     return QNPEPS_E2E_OK;
 }
-
-extern "C" qnpeps_e2e_status qnpeps_e2e_step_multigpu_dist_scratch_bytes(
-    const QnpepsE2eConfig* cfg,
-    int64_t n_samples,
-    const void* terms,
-    int gpus,
-    int64_t peer_tile_bytes,
-    uint64_t* out_bytes
-)
-{
-    const qnpeps_e2e_status status{qn_e2e::mg::_config_check(cfg)};
-    if (status != QNPEPS_E2E_OK) return status;
-    if (not out_bytes) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (gpus < 1) return QNPEPS_E2E_ERR_BAD_CONFIG;
-    if (const auto term_status = qn_e2e::mg::_term_check(*cfg, terms); term_status != QNPEPS_E2E_OK)
-        return term_status;
-    (void) n_samples;
-    (void) peer_tile_bytes;
-    const auto reservation = qnpeps::arena_reservation_bytes();
-    if (err_state() != QNPEPS_E2E_OK) return err_state();
-    *out_bytes = static_cast<u64>(reservation);
-    return QNPEPS_E2E_OK;
-}

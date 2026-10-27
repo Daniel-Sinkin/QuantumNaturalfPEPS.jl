@@ -265,15 +265,6 @@ extern "C" qnpeps_status qnpeps_ctx_sample_host(qnpeps_ctx* ctx, const QnpepsCtx
     return ctx_sample_impl(ctx, args, qnpeps::sampler::SampleOutputLocation::host);
 }
 
-extern "C" qnpeps_status qnpeps_sampler_host_upload_pointers(
-    qnpeps_ctx* ctx, const void* const* pointers, uint64_t pointer_count
-)
-{
-    qnpeps::reset_err();
-    if (not ctx) return qnpeps::set_err(QNPEPS_ERR_NULL_ARG);
-    return sampler_host_upload_pointers(*ctx, pointers, pointer_count);
-}
-
 extern "C" qnpeps_status qnpeps_sampler_host_refresh(
     qnpeps_ctx* ctx, const QnpepsSamplerHostRefreshArgs* args
 )

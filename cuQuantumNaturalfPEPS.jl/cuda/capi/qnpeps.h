@@ -434,10 +434,6 @@ extern "C"
     qnpeps_status qnpeps_sampler_host_refresh(
         qnpeps_ctx* ctx, const QnpepsSamplerHostRefreshArgs* args
     );
-    qnpeps_status qnpeps_sampler_host_upload_pointers(
-        qnpeps_ctx* ctx, const void* const* pointers, uint64_t pointer_count
-    );
-
     qnpeps_status qnpeps_build_dlenv(
         const QnpepsConfig* config,
         const qnpeps_device_peps* device_peps,
