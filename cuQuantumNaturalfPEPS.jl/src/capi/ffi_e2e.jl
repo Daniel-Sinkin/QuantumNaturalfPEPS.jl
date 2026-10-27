@@ -52,29 +52,6 @@ e2e_minsr_scratch_bytes(config, n_samples, host_tile_bytes, out)::Cint = ccall(
     out,
 )
 
-e2e_step_scratch_bytes(config, n_samples, terms, host_tile_bytes, out)::Cint = ccall(
-    (:qnpeps_e2e_step_scratch_bytes, _ffi_library()),
-    Cint,
-    (Ref{QnpepsE2eConfig}, Int64, Ptr{Cvoid}, Int64, Ref{UInt64}),
-    config,
-    n_samples,
-    terms,
-    host_tile_bytes,
-    out,
-)
-
-e2e_step_multigpu_scratch_bytes(config, n_samples, terms, gpus, host_tile_bytes, out)::Cint = ccall(
-    (:qnpeps_e2e_step_multigpu_scratch_bytes, _ffi_library()),
-    Cint,
-    (Ref{QnpepsE2eConfig}, Int64, Ptr{Cvoid}, Cint, Int64, Ref{UInt64}),
-    config,
-    n_samples,
-    terms,
-    gpus,
-    host_tile_bytes,
-    out,
-)
-
 function e2e_minsr(arguments::_E2eMinsrArguments{QnpepsE2eConfig})::Cint
     inputs = arguments.inputs
     cuts = arguments.cuts
@@ -163,55 +140,6 @@ function e2e_minsr_ptr(arguments::_E2eMinsrArguments{Ptr{QnpepsE2eConfig}})::Cin
         outputs.e_mean,
         outputs.e_var,
         outputs.ess,
-        arguments.stream,
-    )
-end
-
-function e2e_step(arguments::_E2eStepArguments)::Cint
-    inputs = arguments.inputs
-    cuts = arguments.cuts
-    minsr_outputs = arguments.minsr_outputs
-    sample_outputs = arguments.sample_outputs
-    return ccall(
-        (:qnpeps_e2e_step, _ffi_library()),
-        Cint,
-        (
-            Ref{QnpepsE2eConfig},
-            CUDA.CuPtr{Cvoid},
-            Int64,
-            Ptr{Cvoid},
-            Int64,
-            Float64,
-            Float64,
-            CUDA.CuPtr{Cvoid},
-            Ptr{Float64},
-            Ptr{Float64},
-            Ptr{Float64},
-            CUDA.CuPtr{UInt8},
-            CUDA.CuPtr{Float64},
-            CUDA.CuPtr{Float64},
-            CUDA.CuPtr{Float64},
-            CUDA.CuPtr{Float64},
-            Ptr{Cvoid},
-            Ptr{Cvoid},
-        ),
-        arguments.config,
-        inputs.device_peps,
-        arguments.n_samples,
-        inputs.terms,
-        arguments.host_tile_bytes,
-        cuts.relative_cut,
-        cuts.absolute_cut,
-        minsr_outputs.theta_dot,
-        minsr_outputs.e_mean,
-        minsr_outputs.e_var,
-        minsr_outputs.ess,
-        sample_outputs.samples,
-        sample_outputs.logq,
-        sample_outputs.log_gauge,
-        sample_outputs.logpsi,
-        sample_outputs.e_loc,
-        sample_outputs.o_rows_host,
         arguments.stream,
     )
 end

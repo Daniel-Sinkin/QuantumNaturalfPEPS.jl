@@ -93,13 +93,11 @@ add_library(qnpeps SHARED
   e2e/capi.cu
   e2e/kernels.cu
   e2e/update.cu
-  e2e/step.cu
   e2e/node.cu
   e2e/node/workers.cu
   e2e/node/solve.cu
   e2e/node/lifecycle.cu
   e2e/node/step_api.cu
-  e2e/node/compat.cu
   dlenv/build/execute.cu
   dlenv/build/zipup_context.cu
   dlenv/kernels.cu
@@ -141,13 +139,11 @@ set_source_files_properties(
   minsr/composition.cu
   minsr/distributed.cu
   e2e/update.cu
-  e2e/step.cu
   e2e/node.cu
   e2e/node/workers.cu
   e2e/node/solve.cu
   e2e/node/lifecycle.cu
   e2e/node/step_api.cu
-  e2e/node/compat.cu
   PROPERTIES COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-error>"
 )
 target_include_directories(qnpeps PRIVATE
@@ -286,7 +282,7 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_eo_l16_gate PRIVATE qnpeps CUDA::cudart)
   add_test(NAME qnpeps_eo_l16_gate COMMAND qnpeps_eo_l16_gate)
 
-  foreach(gate_name minsr node step step_mg update)
+  foreach(gate_name minsr node update)
     add_executable(qnpeps_e2e_${gate_name}_gate test/e2e/gate_${gate_name}.cu)
     target_include_directories(qnpeps_e2e_${gate_name}_gate PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}

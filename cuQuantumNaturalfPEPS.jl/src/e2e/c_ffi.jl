@@ -60,65 +60,9 @@ function minsr_scratch_bytes(
     return UInt64(out[])
 end
 
-function step_scratch_bytes(
-    config::QnpepsE2eConfig,
-    n_samples::Integer,
-    terms::HeisenbergTerms,
-    host_tile_bytes::Integer=0,
-)
-    out = Ref{UInt64}(0)
-    diag = terms.diag
-    flip = terms.flip
-    st = GC.@preserve diag flip begin
-        table = _eloc_term_table(terms)
-        table_ref = Ref(table)
-        GC.@preserve table_ref FFI.e2e_step_scratch_bytes(
-            config,
-            Int64(n_samples),
-            Base.unsafe_convert(Ptr{Cvoid}, table_ref),
-            Int64(host_tile_bytes),
-            out,
-        )
-    end
-    _check(st, "qnpeps_e2e_step_scratch_bytes")
-    return UInt64(out[])
-end
-
-function step_multigpu_scratch_bytes(
-    config::QnpepsE2eConfig,
-    n_samples::Integer,
-    terms::HeisenbergTerms,
-    gpus::Integer,
-    host_tile_bytes::Integer=0,
-)
-    out = Ref{UInt64}(0)
-    diag = terms.diag
-    flip = terms.flip
-    st = GC.@preserve diag flip begin
-        table = _eloc_term_table(terms)
-        table_ref = Ref(table)
-        GC.@preserve table_ref FFI.e2e_step_multigpu_scratch_bytes(
-            config,
-            Int64(n_samples),
-            Base.unsafe_convert(Ptr{Cvoid}, table_ref),
-            Cint(gpus),
-            Int64(host_tile_bytes),
-            out,
-        )
-    end
-    _check(st, "qnpeps_e2e_step_multigpu_scratch_bytes")
-    return UInt64(out[])
-end
-
 function _ffi_minsr(arguments)
     status = FFI.e2e_minsr(arguments)
     _check(status, "qnpeps_e2e_minsr")
-    return nothing
-end
-
-function _ffi_step(arguments)
-    status = FFI.e2e_step(arguments)
-    _check(status, "qnpeps_e2e_step")
     return nothing
 end
 

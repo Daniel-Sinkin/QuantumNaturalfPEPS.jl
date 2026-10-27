@@ -141,7 +141,7 @@ function _node_result(buffers; include_theta::Bool)
     return result
 end
 
-function _vmc_step_multigpu_composed!(
+function _vmc_step_node!(
     data::CuArray{ComplexF32},
     config::QnpepsE2eConfig,
     terms::HeisenbergTerms,

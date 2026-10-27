@@ -65,7 +65,7 @@ export MinsrHost, MinsrHostInputs, MinsrHostStats, MinsrHostError
 export MinsrHostTopology, MINSR_HOST_TOPOLOGY_JURECA, MINSR_HOST_TOPOLOGY_JUPITER
 export minsr_host_run!, minsr_host_try_run!
 export dense_count, compact_count, eloc_compact_count
-export minsr_scratch_bytes, step_scratch_bytes, step_multigpu_scratch_bytes
+export minsr_scratch_bytes
 export node_footprint_bytes
 export e2e_version, e2e_strerror, eloc_version, sampler_version
 export AbstractRunAdapter, IterationResult, RunNotice
