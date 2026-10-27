@@ -6,7 +6,6 @@
 #include "core/defer.cuh"
 #include "core/session.cuh"
 #include "density.cuh"
-#include "dtensor.cuh"
 #include "eloc_kernels.cuh"
 #include "../linalg/eo.cuh"
 #include "capi/qnpeps.h"
@@ -298,8 +297,6 @@ auto worker_setup(
 
 auto worker_teardown(Worker& w) -> void;
 
-auto worker_rearm_constants(Worker& w, cudaStream_t stream) -> void;
-
 auto worker_begin_rangefinders(Worker& w) -> void;
 
 auto worker_rangefinder_failed(Worker& w) -> int;
@@ -565,9 +562,6 @@ auto active_lists_setup(
 ) -> void;
 
 auto active_lists_teardown(ActiveLists& lists) -> void;
-
-auto active_lists_rearm(ActiveLists& lists, const std::vector<FlipInst>& terms, cudaStream_t stream)
-    -> void;
 
 auto prepare_active_lists(
     ActiveLists& lists, const u8* samples, i64 lane_stride, int lanes, cudaStream_t stream

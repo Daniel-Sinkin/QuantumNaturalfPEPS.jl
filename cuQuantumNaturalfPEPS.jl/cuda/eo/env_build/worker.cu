@@ -272,35 +272,6 @@ auto worker_teardown(Worker& w) -> void
     w.arena = nullptr;
 }
 
-auto worker_rearm_constants(Worker& w, cudaStream_t stream) -> void
-{
-    if (not w.fail_flag)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return;
-    }
-    const auto lanes = usize{static_cast<usize>(w.sh.lanes)};
-    auto pointers = std::vector<cf*>(lanes);
-    usize pointer_bytes{};
-    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)) return;
-    for (auto lane = usize{0}; lane < lanes; ++lane)
-        pointers[lane] = w.gram.p + static_cast<i64>(lane) * w.gram.stride;
-    CUDA_CHECK(
-        cudaMemcpyAsync(w.gram_ptrs, pointers.data(), pointer_bytes, cudaMemcpyHostToDevice, stream)
-    );
-    for (auto lane = usize{0}; lane < lanes; ++lane)
-        pointers[lane] = w.sketch.p + static_cast<i64>(lane) * w.sketch.stride;
-    CUDA_CHECK(cudaMemcpyAsync(
-        w.sketch_ptrs, pointers.data(), pointer_bytes, cudaMemcpyHostToDevice, stream
-    ));
-    CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
-    if (w.want_h or w.want_fb)
-    {
-        cu_fill_first_one<<<1, 256, 0, stream>>>(w.unit, 1, 1, w.sh.lanes);
-        CUDA_CHECK(cudaGetLastError());
-    }
-}
-
 auto worker_begin_rangefinders(Worker& w) -> void
 {
     CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), w.la.stream()));

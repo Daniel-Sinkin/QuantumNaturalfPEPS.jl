@@ -24,8 +24,6 @@
 namespace qnpeps
 {
 
-using chost = std::complex<f32>;
-
 static_assert(sizeof(cf) == sizeof(cuFloatComplex));
 static_assert(alignof(cf) == alignof(f32));
 
@@ -52,31 +50,6 @@ inline auto checked_tensor_elements(const std::vector<int>& dims, i64 limit, i64
     result = total;
     return true;
 }
-
-struct HostTensor
-{
-    std::vector<int> dim{};
-    std::vector<chost> v{};
-    auto n() const -> i64
-    {
-        i64 total{};
-        checked_tensor_elements(dim, std::numeric_limits<i64>::max(), total);
-        assert(total >= 0);
-        return total;
-    }
-    auto alloc() -> void
-    {
-        const auto count = static_cast<usize>(n());
-        const auto is_positive = count >= 1;
-        const auto prod_fits = count <= std::numeric_limits<usize>::max() / sizeof(chost);
-        if (not is_positive or not prod_fits)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return;
-        }
-        v.assign(count, chost{});
-    }
-};
 
 struct EoDeviceBuffer
 {

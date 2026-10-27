@@ -1,4 +1,5 @@
 #include "parts.cuh"
+#include "tensor/permutation.cuh"
 
 namespace qn_eloc::env
 {
@@ -231,7 +232,6 @@ auto build_transposed_peps(
     const auto off = std::vector<i64>{site_offsets(lx, ly, D, dp)};
     const auto offt = std::vector<i64>{site_offsets(ly, lx, D, dp)};
     if (qn::err_state() != QNPEPS_ELOC_OK or off.empty() or offt.empty()) return;
-    dt::set_stream(stream);
     for (auto r = int{0}; r < ly; ++r)
     {
         for (auto c = int{0}; c < lx; ++c)
@@ -239,16 +239,17 @@ auto build_transposed_peps(
             const auto src_dim = std::vector<int>{
                 bd(ly, r, D), bd(lx, c + 1, D), bd(ly, r + 1, D), bd(lx, c, D), dp
             };
-            const auto src = dt::DeviceTensor{dt::view(
+            const auto src = qnpeps::DeviceTensor{
+                qnpeps::Shape{src_dim},
                 reinterpret_cast<cuFloatComplex*>(const_cast<cf*>(peps))
-                    + off[static_cast<usize>(c) * ly + r],
-                src_dim
-            )};
-            dt::permute_axes(
+                    + off[static_cast<usize>(c) * ly + r]
+            };
+            qnpeps::permute_axes(
                 src,
-                {3, 2, 1, 0, 4},
+                qnpeps::Permutation{3, 2, 1, 0, 4},
                 false,
-                reinterpret_cast<cuFloatComplex*>(peps_t) + offt[static_cast<usize>(r) * lx + c]
+                reinterpret_cast<cuFloatComplex*>(peps_t) + offt[static_cast<usize>(r) * lx + c],
+                stream
             );
         }
     }

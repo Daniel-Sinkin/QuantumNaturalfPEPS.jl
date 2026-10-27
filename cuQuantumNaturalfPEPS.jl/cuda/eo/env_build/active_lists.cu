@@ -87,29 +87,6 @@ auto active_lists_teardown(ActiveLists& lists) -> void
     lists = ActiveLists{};
 }
 
-auto active_lists_rearm(ActiveLists& lists, const std::vector<FlipInst>& terms, cudaStream_t stream)
-    -> void
-{
-    if (lists.slots == 0) return;
-    usize mask_count{};
-    usize mask_bytes{};
-    if (not arena_product({2u, static_cast<std::uint64_t>(lists.slots)}, mask_count)
-        or not arena_product({sizeof(int), mask_count}, mask_bytes))
-        return;
-    auto masks = std::vector<int>(mask_count);
-    for (const FlipInst& term : terms)
-    {
-        if (term.active_slot >= 0)
-        {
-            masks[static_cast<usize>(term.active_slot)] = term.mask_a;
-            masks[static_cast<usize>(lists.slots + term.active_slot)] = term.mask_b;
-        }
-    }
-    CUDA_CHECK(
-        cudaMemcpyAsync(lists.masks, masks.data(), mask_bytes, cudaMemcpyHostToDevice, stream)
-    );
-}
-
 auto prepare_active_lists(
     ActiveLists& lists, const u8* samples, i64 lane_stride, int lanes, cudaStream_t stream
 ) -> void
