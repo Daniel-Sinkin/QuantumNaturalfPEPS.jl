@@ -36,54 +36,6 @@ end
     return nothing
 end
 
-function _pack_dlenv_reordered!(host::DlenvHost, lane::Int)::Nothing
-    destination = host.lane_buffer_pointers[lane]
-    num_rows = length(host.row_value_pointers)
-    for target_row in 1:num_rows
-        source_row = num_rows - target_row + 1
-        CUDA.cuMemcpyDtoDAsync_v2(
-            destination + host.value_offsets[target_row],
-            host.row_value_pointers[source_row],
-            min(host.row_bytes[target_row], host.row_bytes[source_row]),
-            host.stream,
-        )
-    end
-    return nothing
-end
-
-function _pack_dlenv_columns_reordered!(host::DlenvHost, lane::Int)::Nothing
-    destination = host.lane_buffer_pointers[lane]
-    num_cols = Int(host.config.ly)
-    for env_row in eachindex(host.row_values)
-        dims = host.row_dims[env_row]
-        source_offsets = Vector{Int}(undef, num_cols)
-        cursor = 0
-        for col in 1:num_cols
-            source_offsets[col] = cursor
-            base = 3 * (col - 1)
-            cursor += Int(dims[base+1]) * Int(dims[base+2]) * Int(dims[base+3]) * sizeof(ComplexF32)
-        end
-        target_offset = host.value_offsets[env_row]
-        for target_col in 1:num_cols
-            source_col = num_cols - target_col + 1
-            source_base = 3 * (source_col - 1)
-            bytes =
-                Int(dims[source_base+1]) *
-                Int(dims[source_base+2]) *
-                Int(dims[source_base+3]) *
-                sizeof(ComplexF32)
-            CUDA.cuMemcpyDtoDAsync_v2(
-                destination + target_offset,
-                host.row_value_pointers[env_row] + source_offsets[source_col],
-                bytes,
-                host.stream,
-            )
-            target_offset += bytes
-        end
-    end
-    return nothing
-end
-
 function _pack_dlenv_with_policy!(host::DlenvHost, lane::Int)::Nothing
     if !host.capture_enabled || host.capture_state === :fallback_eager
         _pack_dlenv_lane!(host, lane)

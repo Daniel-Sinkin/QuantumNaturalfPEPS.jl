@@ -1,6 +1,5 @@
 import ..QnpepsE2eConfig
 import ..QnpepsE2eEulerStepArgs
-import ..QnpepsE2eUpdateArgs
 import ..QnpepsElocConfig
 
 include("ffi_e2e/arguments.jl")
@@ -241,25 +240,6 @@ function e2e_node_create(
         out,
     )
 end
-
-e2e_update_ctx_create(config, out)::Cint = ccall(
-    (:qnpeps_e2e_update_ctx_create, _ffi_library()),
-    Cint,
-    (Ref{QnpepsE2eConfig}, Ref{Ptr{Cvoid}}),
-    config,
-    out,
-)
-
-e2e_update_ctx_run(ctx, arguments)::Cint = ccall(
-    (:qnpeps_e2e_update_ctx_run, _ffi_library()),
-    Cint,
-    (Ptr{Cvoid}, Ref{QnpepsE2eUpdateArgs}),
-    ctx,
-    arguments,
-)
-
-e2e_update_ctx_destroy(ctx)::Cint =
-    ccall((:qnpeps_e2e_update_ctx_destroy, _ffi_library()), Cint, (Ptr{Cvoid},), ctx)
 
 e2e_node_submit_theta(node, device_peps)::Cint = ccall(
     (:qnpeps_e2e_node_submit_theta, _ffi_library()),

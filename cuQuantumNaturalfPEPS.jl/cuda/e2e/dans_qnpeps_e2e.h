@@ -45,7 +45,6 @@ extern "C"
 
     typedef struct qnpeps_e2e_cbuf qnpeps_e2e_cbuf;
     typedef struct qnpeps_e2e_minsr_ctx qnpeps_e2e_minsr_ctx;
-    typedef struct qnpeps_e2e_update_ctx qnpeps_e2e_update_ctx;
 
     qnpeps_e2e_status qnpeps_e2e_minsr_ctx_create(
         const QnpepsE2eConfig* cfg,
@@ -234,30 +233,6 @@ extern "C"
         qnpeps_e2e_cbuf* host_rows;
         int64_t* epoch_out;
     } QnpepsE2eEulerStepArgs;
-
-    typedef struct QnpepsE2eUpdateArgs
-    {
-        uint32_t struct_size;
-        uint32_t reserved;
-        void* state_f64_io;
-        uint64_t state_f64_bytes;
-        const qnpeps_e2e_cbuf* theta_dot;
-        uint64_t theta_dot_bytes;
-        qnpeps_e2e_cbuf* peps_f32_out;
-        uint64_t peps_f32_bytes;
-        double learning_rate;
-        void* stream;
-    } QnpepsE2eUpdateArgs;
-
-    qnpeps_e2e_status qnpeps_e2e_update_ctx_create(
-        const QnpepsE2eConfig* cfg, qnpeps_e2e_update_ctx** out
-    );
-
-    qnpeps_e2e_status qnpeps_e2e_update_ctx_run(
-        qnpeps_e2e_update_ctx* ctx, const QnpepsE2eUpdateArgs* args
-    );
-
-    qnpeps_e2e_status qnpeps_e2e_update_ctx_destroy(qnpeps_e2e_update_ctx* ctx);
 
     qnpeps_e2e_status qnpeps_e2e_node_create(
         const QnpepsE2eConfig* cfg,

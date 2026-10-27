@@ -152,9 +152,3 @@ function _node_step_stage_samples!(host::NodeStepHost)::Nothing
     _minsr_host_stream_synchronize!(host.minsr.lanes[1].stream)
     return nothing
 end
-
-function _node_step_sampling!(host::NodeStepHost)::Nothing
-    _node_step_draw!(host)
-    _node_step_stage_samples!(host)
-    return nothing
-end

@@ -27,7 +27,6 @@ end
 
 Base.copy(::DensityMatrixPlan) = throw(ArgumentError("DensityMatrixPlan cannot be copied"))
 
-is_destroyed(plan::DensityMatrixPlan)::Bool = !isopen(plan)
 
 function destroy!(plan::DensityMatrixPlan)::Nothing
     close(plan)

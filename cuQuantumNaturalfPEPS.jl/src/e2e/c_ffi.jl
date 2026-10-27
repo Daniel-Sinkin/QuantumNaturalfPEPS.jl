@@ -1,18 +1,5 @@
 using CUDA
 
-struct QnpepsE2eUpdateArgs
-    struct_size::UInt32
-    reserved::UInt32
-    state_f64_io::CuPtr{Cvoid}
-    state_f64_bytes::UInt64
-    theta_dot::CuPtr{Cvoid}
-    theta_dot_bytes::UInt64
-    peps_f32_out::CuPtr{Cvoid}
-    peps_f32_bytes::UInt64
-    learning_rate::Float64
-    stream::Ptr{Cvoid}
-end
-
 e2e_version() = unsafe_string(FFI.e2e_version())
 e2e_strerror(status::Integer) = unsafe_string(FFI.e2e_strerror(Cint(status)))
 eloc_version() = unsafe_string(FFI.eloc_version())
@@ -158,26 +145,6 @@ function _ffi_node_create(
     _check(status, "qnpeps_e2e_node_create")
     out[] == C_NULL && error("[cuQuantumNaturalfPEPS] node create returned a null handle")
     return out[]
-end
-
-function _ffi_update_ctx_create(config::QnpepsE2eConfig)
-    out = Ref{Ptr{Cvoid}}(C_NULL)
-    status = FFI.e2e_update_ctx_create(config, out)
-    _check(status, "qnpeps_e2e_update_ctx_create")
-    out[] == C_NULL && error("[cuQuantumNaturalfPEPS] update context create returned a null handle")
-    return out[]
-end
-
-function _ffi_update_ctx_run(ctx::Ptr{Cvoid}, arguments::Ref{QnpepsE2eUpdateArgs})
-    status = FFI.e2e_update_ctx_run(ctx, arguments)
-    _check(status, "qnpeps_e2e_update_ctx_run")
-    return nothing
-end
-
-function _ffi_update_ctx_destroy(ctx::Ptr{Cvoid})
-    status = FFI.e2e_update_ctx_destroy(ctx)
-    _check(status, "qnpeps_e2e_update_ctx_destroy")
-    return nothing
 end
 
 function _ffi_node_submit_theta(node::Ptr{Cvoid}, device_peps::CuPtr)
