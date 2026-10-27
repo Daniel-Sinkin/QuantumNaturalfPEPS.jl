@@ -1,48 +1,7 @@
-#pragma once
-
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-#include "projection_kernels.hpp"
+#include "parts.cuh"
 
 namespace qn_eloc::env
 {
-
-struct Shape
-{
-    int lx{};
-    int ly{};
-    int dim_phys{};
-    int dim_bond{};
-    int chi{};
-    int lanes{};
-    bool density{};
-    f64 density_cutoff{};
-};
 
 auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> bool
 {
@@ -134,8 +93,5 @@ auto arena_i64_sum(i64 left, i64 right, i64& result) -> bool
     result = left + right;
     return true;
 }
-
-using Carver = qnpeps::ArenaCursor;
-using ContextArena = qnpeps::ArenaCursor;
 
 }

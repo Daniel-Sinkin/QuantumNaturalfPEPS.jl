@@ -1,34 +1,6 @@
-#pragma once
+#include "parts.cuh"
 
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-using namespace qnpeps;
-
-namespace
+namespace qn_eloc::env
 {
 
 __global__ auto cu_gather(
@@ -69,48 +41,6 @@ auto perm_key(const std::vector<int>& dims, const std::vector<int>& perm) -> std
         result += "_" + std::to_string(axis);
     return result;
 }
-
-struct PermutationCache
-{
-    std::map<std::string, int*> cache;
-    auto get(const std::vector<int>& dims, const std::vector<int>& perm) -> int*
-    {
-        const auto key = perm_key(dims, perm);
-        auto it = cache.find(key);
-        if (it != cache.end()) return it->second;
-        const auto gather_indices = permutation_index_map(dims, perm);
-        if (gather_indices.size() > std::numeric_limits<usize>::max() / sizeof(int))
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return nullptr;
-        }
-        const auto bytes = usize{sizeof(int) * gather_indices.size()};
-        int* device_ptr{};
-        CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
-        CUDA_CHECK(cudaMemcpy(device_ptr, gather_indices.data(), bytes, cudaMemcpyHostToDevice));
-        cache.emplace(key, device_ptr);
-        return device_ptr;
-    }
-    auto release() -> void
-    {
-        for (auto& entry : cache)
-            maybe_free_device(entry.second);
-        cache.clear();
-    }
-};
-
-struct PermuteOp
-{
-    EoDeviceBuffer dst{};
-    EoDeviceBuffer src{};
-    std::vector<int> dims_in{};
-    std::vector<int> perm{};
-    int batch{};
-    const char* kind{"perm"};
-    int m{};
-    int n{};
-    int k{};
-};
 
 auto device_permute(Linalg& linalg, PermutationCache& lookup_tables, const PermuteOp& op) -> void
 {

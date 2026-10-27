@@ -1,93 +1,7 @@
-#pragma once
-
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-#include "projection_kernels.hpp"
-#include "arena.hpp"
-#include "worker.hpp"
-#include "environment_rows.hpp"
-#include "tensor_network.hpp"
-#include "active_lists.hpp"
-#include "term_kernels.hpp"
-#include "term_evaluation.hpp"
-#include "outputs.hpp"
-#include "planning.hpp"
+#include "parts.cuh"
 
 namespace qn_eloc::env
 {
-
-struct RunCache
-{
-    explicit RunCache(Linalg& linalg) : w(linalg), wt(linalg) {}
-
-    QnpepsElocConfig cfg{};
-    i64 n_samples{};
-    uint32_t flags{};
-    cudaStream_t stream{};
-    std::vector<QnpepsElocDiagBond> diag_terms{};
-    std::vector<QnpepsElocFlipTerm> flip_terms{};
-    QnpepsElocTermTable term_table{};
-    std::vector<i64> ok_off{};
-    std::vector<int> ok_slice{};
-    i64 compact_count{};
-    std::vector<FlipInst> orig_terms{};
-    std::vector<FlipInst> tr_terms{};
-    bool active_compact{};
-    int active_compact_min{};
-    ActiveLists orig_active{};
-    ActiveLists tr_active{};
-    cf* peps_t{};
-    u8* samples_t{};
-    int* d_a{};
-    int* d_b{};
-    f64* d_j{};
-    cf* value_buf{};
-    f64* logpsi_tr{};
-    cf* gscratch{};
-    int* d_boff{};
-    int* d_bslice{};
-    int* spins_i32{};
-    bool orig_fb{};
-    bool orig_hterms{};
-    bool tr_fb{};
-    bool orig_h{};
-    Worker w;
-    Worker wt;
-    std::vector<std::pair<i64, int>> wave_ranges{};
-    ContextArena* context_arena{};
-    bool ready{};
-};
-
-template <typename T>
-auto cache_alloc(RunCache& state, T*& pointer, usize count) -> void
-{
-    pointer = state.context_arena->take<T>(count);
-}
 
 auto run_cache_teardown(RunCache& state) -> void
 {
@@ -267,4 +181,5 @@ auto run_cache_setup(
     }
     state.ready = true;
 }
+
 }

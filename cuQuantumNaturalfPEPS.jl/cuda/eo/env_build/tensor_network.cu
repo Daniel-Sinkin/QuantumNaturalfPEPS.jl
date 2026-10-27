@@ -1,58 +1,7 @@
-#pragma once
-
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-#include "projection_kernels.hpp"
-#include "arena.hpp"
-#include "worker.hpp"
-#include "environment_rows.hpp"
+#include "parts.cuh"
 
 namespace qn_eloc::env
 {
-
-struct BT
-{
-    cf* p{};
-    i64 stride{};
-    std::vector<int> dim{};
-};
-
-inline auto bt_elems(const std::vector<int>& dim) -> i64
-{
-    auto n = i64{1};
-    for (const int d : dim)
-    {
-        if (d < 0
-            or not arena_slot({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(d)}, n))
-            return 0;
-    }
-    return n;
-}
 
 auto bcontract(
     Worker& w,
@@ -63,7 +12,7 @@ auto bcontract(
     const std::vector<int>& cb,
     cf* out_p,
     i64 out_stride,
-    int dim_batch = 0
+    int dim_batch
 ) -> BT
 {
     const auto lanes = int{dim_batch > 0 ? dim_batch : w.sh.lanes};
@@ -278,7 +227,7 @@ auto fold_left(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0
+    int dim_batch
 ) -> std::vector<int>
 {
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {0}, nullptr, 0, dim_batch)};
@@ -312,7 +261,7 @@ auto fold_left4(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0
+    int dim_batch
 ) -> std::vector<int>
 {
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {0}, nullptr, 0, dim_batch)};
@@ -331,7 +280,7 @@ auto fold_right4(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0
+    int dim_batch
 ) -> std::vector<int>
 {
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {2}, nullptr, 0, dim_batch)};
@@ -377,67 +326,6 @@ auto project_row_into(Worker& w, int row, cf* base, i64 slot) -> void
         project_column_into(w, row, col, base + static_cast<i64>(col) * slot * w.sh.lanes, slot);
 }
 
-inline auto hl_site(Worker& w, int row, int k) -> cf*
-{
-    return w.hl.p + (static_cast<i64>(row) * (w.sh.ly - 1) + k) * w.slot_h * w.sh.lanes;
-}
-inline auto hr_site(Worker& w, int row, int k) -> cf*
-{
-    return w.hr.p + (static_cast<i64>(row) * (w.sh.ly - 1) + k) * w.slot_h * w.sh.lanes;
-}
-inline auto fbl_site(Worker& w, int row, int k) -> cf*
-{
-    return w.fbl.p + (static_cast<i64>(row) * (w.sh.ly - 1) + k) * w.slot_fb * w.sh.lanes;
-}
-inline auto fbr_site(Worker& w, int row, int k) -> cf*
-{
-    return w.fbr.p + (static_cast<i64>(row) * (w.sh.ly - 1) + k) * w.slot_fb * w.sh.lanes;
-}
-
-inline auto top_dims(Worker& w, int i, int c) -> std::vector<int>
-{
-    return {
-        w.ks_full[static_cast<usize>(i - 1)][static_cast<usize>(c)],
-        bd(w.sh.lx, i, w.sh.dim_bond),
-        w.ks_full[static_cast<usize>(i - 1)][static_cast<usize>(c) + 1]
-    };
-}
-inline auto bot_dims_h(Worker& w, int i, int c) -> std::vector<int>
-{
-    const auto k = int{w.sh.lx - i - 2};
-    return {
-        w.ks_down[static_cast<usize>(k)][static_cast<usize>(c)],
-        bd(w.sh.lx, i + 1, w.sh.dim_bond),
-        w.ks_down[static_cast<usize>(k)][static_cast<usize>(c) + 1]
-    };
-}
-inline auto bot_dims_fb(Worker& w, int i, int c) -> std::vector<int>
-{
-    const auto k = int{w.sh.lx - i - 3};
-    return {
-        w.ks_down[static_cast<usize>(k)][static_cast<usize>(c)],
-        bd(w.sh.lx, i + 2, w.sh.dim_bond),
-        w.ks_down[static_cast<usize>(k)][static_cast<usize>(c) + 1]
-    };
-}
-inline auto proj_dims(Worker& w, int i, int c) -> std::vector<int>
-{
-    return {
-        bd(w.sh.ly, c, w.sh.dim_bond),
-        bd(w.sh.lx, i + 1, w.sh.dim_bond),
-        bd(w.sh.ly, c + 1, w.sh.dim_bond),
-        bd(w.sh.lx, i, w.sh.dim_bond)
-    };
-}
-inline auto unit3(Worker& w) -> BT
-{
-    return {w.unit, 1, {1, 1, 1}};
-}
-inline auto unit4(Worker& w) -> BT
-{
-    return {w.unit, 1, {1, 1, 1, 1}};
-}
-
 auto rail_normalize(Worker& w, cf* rail, i64 n, i64 slot, f64* f_cut, const f64* f_prev) -> void
 {
     const auto lanes = int{w.sh.lanes};
@@ -456,23 +344,6 @@ auto rail_normalize(Worker& w, cf* rail, i64 n, i64 slot, f64* f_cut, const f64*
         CUDA_CHECK(cudaMemsetAsync(f_cut, 0, lane_bytes, w.la.stream()));
     cu_normalize_log<<<lanes, 256, 0, w.la.stream()>>>(rail, elements, slot, f_cut, lanes, nullptr);
     CUDA_CHECK(cudaGetLastError());
-}
-
-inline auto f_hl_cut(Worker& w, int row, int cut) -> f64*
-{
-    return w.f_hl + (static_cast<i64>(row) * (w.sh.ly - 1) + cut) * w.sh.lanes;
-}
-inline auto f_hr_cut(Worker& w, int row, int cut) -> f64*
-{
-    return w.f_hr + (static_cast<i64>(row) * (w.sh.ly - 1) + cut) * w.sh.lanes;
-}
-inline auto f_fbl_cut(Worker& w, int row, int cut) -> f64*
-{
-    return w.f_fbl + (static_cast<i64>(row) * (w.sh.ly - 1) + cut) * w.sh.lanes;
-}
-inline auto f_fbr_cut(Worker& w, int row, int cut) -> f64*
-{
-    return w.f_fbr + (static_cast<i64>(row) * (w.sh.ly - 1) + cut) * w.sh.lanes;
 }
 
 auto build_h_rails(Worker& w, int i) -> void

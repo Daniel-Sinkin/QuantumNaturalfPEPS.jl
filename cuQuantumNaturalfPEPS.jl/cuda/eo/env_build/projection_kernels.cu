@@ -1,34 +1,6 @@
-#pragma once
+#include "parts.cuh"
 
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-
-namespace
+namespace qn_eloc::env
 {
 
 __global__ auto cu_project_slab(
@@ -88,4 +60,5 @@ __global__ auto cu_log_finish(
     out[2 * lane] = 0.5 * log(norm2(re, im)) + f_top[lane] + f_down[lane] + f_ov[lane];
     out[2 * lane + 1] = atan2(im, re);
 }
+
 }

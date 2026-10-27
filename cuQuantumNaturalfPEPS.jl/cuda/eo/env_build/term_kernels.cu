@@ -1,38 +1,4 @@
-#pragma once
-
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-#include "projection_kernels.hpp"
-#include "arena.hpp"
-#include "worker.hpp"
-#include "environment_rows.hpp"
-#include "tensor_network.hpp"
-#include "active_lists.hpp"
+#include "parts.cuh"
 
 namespace qn_eloc::env
 {
@@ -232,41 +198,6 @@ __global__ auto cu_reduce_term_indexed(
     e_loc[2 * lane + 1] += coeff_re * ri + coeff_im * rr;
 }
 
-inline auto top_bt(Worker& w, int i, int c) -> BT
-{
-    return (i > 0) ? BT{etf_site(w, i - 1, c), w.slot_env, top_dims(w, i, c)} : unit3(w);
-}
-inline auto bot_bt_h(Worker& w, int i, int c) -> BT
-{
-    return (i < w.sh.lx - 1) ? BT{eb_site(w, w.sh.lx - i - 2, c), w.slot_env, bot_dims_h(w, i, c)}
-                             : unit3(w);
-}
-inline auto bot_bt_fb(Worker& w, int i, int c) -> BT
-{
-    return (i < w.sh.lx - 2) ? BT{eb_site(w, w.sh.lx - i - 3, c), w.slot_env, bot_dims_fb(w, i, c)}
-                             : unit3(w);
-}
-
-inline auto hl_o_dims(Worker& w, int i, int c) -> std::vector<int>
-{
-    const auto tb = int{i > 0 ? w.ks_full[static_cast<usize>(i - 1)][static_cast<usize>(c)] : 1};
-    const auto bb =
-        int{i < w.sh.lx - 1 ? w.ks_down[static_cast<usize>(w.sh.lx - i - 2)][static_cast<usize>(c)]
-                            : 1};
-    return {tb, bd(w.sh.ly, c, w.sh.dim_bond), bb};
-}
-
-inline auto hr_o_dims(Worker& w, int i, int c) -> std::vector<int>
-{
-    const auto tb =
-        int{i > 0 ? w.ks_full[static_cast<usize>(i - 1)][static_cast<usize>(c + 1)] : 1};
-    const auto bb =
-        int{i < w.sh.lx - 1
-                ? w.ks_down[static_cast<usize>(w.sh.lx - i - 2)][static_cast<usize>(c + 1)]
-                : 1};
-    return {tb, bd(w.sh.ly, c + 1, w.sh.dim_bond), bb};
-}
-
 auto reduce_term(
     Worker& w,
     int mask_a,
@@ -385,7 +316,7 @@ auto launch_dot(
     const cf* cr,
     i64 stride_r,
     cf* out,
-    int dim_batch = 0
+    int dim_batch
 ) -> void
 {
     const auto lanes = int{dim_batch > 0 ? dim_batch : w.sh.lanes};

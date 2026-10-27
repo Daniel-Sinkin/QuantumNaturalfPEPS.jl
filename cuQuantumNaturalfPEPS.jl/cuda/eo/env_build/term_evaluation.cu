@@ -1,65 +1,11 @@
-#pragma once
-
-#include "common.cuh"
-#include "core/arena_cursor.cuh"
-#include "core/complex.cuh"
-#include "core/defer.cuh"
-#include "core/session.cuh"
-#include "density.cuh"
-#include "dtensor.cuh"
-#include "eloc_kernels.cuh"
-#include "env_build.cuh"
-#include "../linalg/eo.cuh"
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <map>
-#include <new>
-#include <random>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "permutation.hpp"
-#include "projection_kernels.hpp"
-#include "arena.hpp"
-#include "worker.hpp"
-#include "environment_rows.hpp"
-#include "tensor_network.hpp"
-#include "active_lists.hpp"
-#include "term_kernels.hpp"
+#include "parts.cuh"
 
 namespace qn_eloc::env
 {
 
-auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, int dim_batch = 0)
-    -> void
+auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, int dim_batch) -> void
 {
     launch_dot(w, mid, cl, mid, cr, mid, out, dim_batch);
-}
-
-inline auto fb_left_dims(Worker& w, int upper, int k) -> std::vector<int>
-{
-    const auto t = BT{top_bt(w, upper, k)};
-    const auto b = BT{bot_bt_fb(w, upper, k)};
-    const auto pi = std::vector<int>{proj_dims(w, upper, k)};
-    const auto pj = std::vector<int>{proj_dims(w, upper + 1, k)};
-    return {t.dim[2], pi[2], pj[2], b.dim[2]};
-}
-inline auto fb_right_dims(Worker& w, int upper, int k) -> std::vector<int>
-{
-    const auto c = int{k + 1};
-    const auto t = BT{top_bt(w, upper, c)};
-    const auto b = BT{bot_bt_fb(w, upper, c)};
-    const auto pi = std::vector<int>{proj_dims(w, upper, c)};
-    const auto pj = std::vector<int>{proj_dims(w, upper + 1, c)};
-    return {t.dim[0], pi[0], pj[0], b.dim[0]};
 }
 
 auto corner_mode(const FlipInst& t, int r, int c, int ly) -> int
@@ -525,9 +471,9 @@ auto eval_flip_inst(
     cf* value_buf,
     f64* e_loc,
     const f64* logpsi,
-    const int* active_indices = nullptr,
-    int active = -1,
-    int compact_min = 2
+    const int* active_indices,
+    int active,
+    int compact_min
 ) -> void
 {
     const auto& sh = w.sh;

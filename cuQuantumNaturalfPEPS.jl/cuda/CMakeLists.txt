@@ -74,7 +74,20 @@ add_library(qnpeps SHARED
   linalg/eo_ops.cu
   linalg/eo_routes.cu
   eo/dtensor.cu
-  eo/env_build.cu
+  eo/env_build/active_lists.cu
+  eo/env_build/arena.cu
+  eo/env_build/context.cu
+  eo/env_build/environment_rows.cu
+  eo/env_build/execute.cu
+  eo/env_build/outputs.cu
+  eo/env_build/permutation.cu
+  eo/env_build/planning.cu
+  eo/env_build/projection_kernels.cu
+  eo/env_build/run_cache.cu
+  eo/env_build/tensor_network.cu
+  eo/env_build/term_evaluation.cu
+  eo/env_build/term_kernels.cu
+  eo/env_build/worker.cu
   e2e/capi.cu
   e2e/kernels.cu
   e2e/update.cu
@@ -105,7 +118,20 @@ set_source_files_properties(
   linalg/eo_ops.cu
   linalg/eo_routes.cu
   eo/dtensor.cu
-  eo/env_build.cu
+  eo/env_build/active_lists.cu
+  eo/env_build/arena.cu
+  eo/env_build/context.cu
+  eo/env_build/environment_rows.cu
+  eo/env_build/execute.cu
+  eo/env_build/outputs.cu
+  eo/env_build/permutation.cu
+  eo/env_build/planning.cu
+  eo/env_build/projection_kernels.cu
+  eo/env_build/run_cache.cu
+  eo/env_build/tensor_network.cu
+  eo/env_build/term_evaluation.cu
+  eo/env_build/term_kernels.cu
+  eo/env_build/worker.cu
   e2e/capi.cu
   minsr/solve.cu
   minsr/composition.cu
