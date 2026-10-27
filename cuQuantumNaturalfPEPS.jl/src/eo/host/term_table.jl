@@ -2,13 +2,6 @@ const EO_HOST_LANES = 4
 const _EO_HOST_ALIGNMENT = UInt64(256)
 const _EO_HOST_ROWS = UInt32(1)
 const _EO_HOST_OK = Int32(0)
-const EO_SELECTOR_EXACT = UInt32(0)
-const EO_SELECTOR_HALF_ROW = UInt32(1)
-const EO_SELECTOR_HALF_COLUMN = UInt32(2)
-const EO_SELECTOR_BALANCED = UInt32(0)
-const EO_SELECTOR_FORCE_GROUP_0 = UInt32(1)
-const EO_SELECTOR_FORCE_GROUP_1 = UInt32(2)
-const EO_SELECTOR_FORCE_ALL = UInt32(3)
 const _EO_TERM_HORIZONTAL = UInt32(0)
 const _EO_TERM_FOURBODY = UInt32(1)
 const _EO_TERM_LONGER_HORIZONTAL = UInt32(2)
@@ -19,8 +12,6 @@ Base.@kwdef struct EoFlipClassification
     pass::Int32
     bucket::UInt32
     active_slot::Int32
-    j2_row_group::Int32
-    j2_column_group::Int32
     n_flips::Int32
     flip_site::NTuple{4,Int32}
     flip_value::NTuple{4,Int32}
@@ -33,12 +24,6 @@ end
 Base.@kwdef struct EoTermClassification
     original::Vector{EoFlipClassification}
     transposed::Vector{EoFlipClassification}
-    j2_row_groups::NTuple{2,UInt64}
-    j2_column_groups::NTuple{2,UInt64}
-    j2_row_diag::NTuple{2,UInt64}
-    j2_column_diag::NTuple{2,UInt64}
-    j2_row_flip::NTuple{2,UInt64}
-    j2_column_flip::NTuple{2,UInt64}
     original_active_slots::Int32
     transposed_active_slots::Int32
 end
@@ -80,89 +65,6 @@ Base.@kwdef struct EoTermTable
     flip_pointer::Ptr{_EoAbiFlipTerm}
     abi::_EoAbiTermTable
     abi_ref::Base.RefValue{_EoAbiTermTable}
-end
-
-struct EoSelector
-    mode::UInt32
-    draw::UInt32
-    seed::UInt64
-    epoch::UInt64
-    function EoSelector(mode::UInt32, draw::UInt32, seed::UInt64, epoch::UInt64)
-        mode <= EO_SELECTOR_HALF_COLUMN || throw(ArgumentError("unknown E/O selector mode"))
-        draw <= EO_SELECTOR_FORCE_ALL || throw(ArgumentError("unknown E/O selector draw"))
-        mode == EO_SELECTOR_EXACT &&
-            draw != EO_SELECTOR_BALANCED &&
-            throw(ArgumentError("exact E/O selection requires the balanced draw code"))
-        return new(mode, draw, seed, epoch)
-    end
-end
-
-struct EoSelectorDecision
-    group::Int32
-    weight::Float64
-end
-
-Base.@kwdef struct EoSelectorAccounting
-    mode::UInt32
-    draw::UInt32
-    seed::UInt64
-    epoch::UInt64
-    waves::UInt64
-    group0_waves::UInt64
-    group1_waves::UInt64
-    row_groups_total::UInt64
-    row_groups_retained::UInt64
-    column_groups_total::UInt64
-    column_groups_retained::UInt64
-    diag_terms_total::UInt64
-    diag_terms_retained::UInt64
-    flip_terms_total::UInt64
-    flip_terms_retained::UInt64
-end
-
-const _EO_SELECTOR_DEFAULT =
-    EoSelector(EO_SELECTOR_EXACT, EO_SELECTOR_BALANCED, UInt64(0), UInt64(0))
-
-function eo_selector(mode::Symbol, draw::Symbol, seed::Integer, epoch::Integer)::EoSelector
-    seed >= 0 || throw(ArgumentError("selector seed must be nonnegative"))
-    epoch >= 0 || throw(ArgumentError("selector epoch must be nonnegative"))
-    mode_code =
-        mode === :exact ? EO_SELECTOR_EXACT :
-        mode === :half_row ? EO_SELECTOR_HALF_ROW :
-        mode === :half_column ? EO_SELECTOR_HALF_COLUMN :
-        throw(ArgumentError("unknown E/O selector mode"))
-    draw_code =
-        draw === :balanced ? EO_SELECTOR_BALANCED :
-        draw === :group0 ? EO_SELECTOR_FORCE_GROUP_0 :
-        draw === :group1 ? EO_SELECTOR_FORCE_GROUP_1 :
-        draw === :all ? EO_SELECTOR_FORCE_ALL : throw(ArgumentError("unknown E/O selector draw"))
-    return EoSelector(mode_code, draw_code, UInt64(seed), UInt64(epoch))
-end
-
-@inline function _eo_selector_splitmix64(value::UInt64)::UInt64
-    value += UInt64(0x9e3779b97f4a7c15)
-    value = xor(value, value >> 30) * UInt64(0xbf58476d1ce4e5b9)
-    value = xor(value, value >> 27) * UInt64(0x94d049bb133111eb)
-    return xor(value, value >> 31)
-end
-
-@inline function eo_selector_decision(selector::EoSelector, wave_index::Int64)::EoSelectorDecision
-    wave_index >= 0 || throw(ArgumentError("wave index must be nonnegative"))
-    group = if selector.mode == EO_SELECTOR_EXACT
-        Int32(-1)
-    elseif selector.draw == EO_SELECTOR_FORCE_ALL
-        Int32(-2)
-    elseif selector.draw == EO_SELECTOR_FORCE_GROUP_0
-        Int32(0)
-    elseif selector.draw == EO_SELECTOR_FORCE_GROUP_1
-        Int32(1)
-    else
-        first = Int32(
-            _eo_selector_splitmix64(xor(selector.seed, _eo_selector_splitmix64(selector.epoch))) & UInt64(1),
-        )
-        xor(first, Int32(wave_index & 1))
-    end
-    return EoSelectorDecision(group, group >= 0 ? 2.0 : 1.0)
 end
 
 @inline function _eo_term_transpose_site(site::Int32, lx::Int32, ly::Int32)::Int32
@@ -207,8 +109,6 @@ function _eo_term_classify_flip(
     dy = max_column - min_column
     pass = Int32(0)
     bucket = _EO_TERM_HORIZONTAL
-    row_group = Int32(-1)
-    column_group = Int32(-1)
     if n_flips == 1
         bucket = _EO_TERM_HORIZONTAL
     elseif dx == 0
@@ -218,8 +118,6 @@ function _eo_term_classify_flip(
         bucket = dx <= 1 ? _EO_TERM_HORIZONTAL : _EO_TERM_LONGER_HORIZONTAL
     elseif dx == 1 && dy == 1 && n_flips == 2
         bucket = _EO_TERM_FOURBODY
-        row_group = min_row & Int32(1)
-        column_group = min_column & Int32(1)
     else
         throw(ArgumentError("unsupported E/O flip geometry"))
     end
@@ -247,8 +145,6 @@ function _eo_term_classify_flip(
         pass,
         bucket,
         active_slot,
-        j2_row_group=row_group,
-        j2_column_group=column_group,
         n_flips,
         flip_site=sites_tuple,
         flip_value=term.flip_value,
@@ -275,33 +171,19 @@ function eo_term_table(
     source_diag = terms.diag
     source_flip = terms.flip
     _require_eloc_term_capabilities(terms)
-    row_diag = UInt64[0, 0]
-    column_diag = UInt64[0, 0]
     for term in source_diag
         0 <= term.site_a < sites || throw(ArgumentError("E/O diagonal site is outside the lattice"))
         term.site_b == ELOC_DIAG_ONE_SITE_Z ||
             0 <= term.site_b < sites ||
             throw(ArgumentError("E/O diagonal site is outside the lattice"))
         isfinite(term.coeff) || throw(ArgumentError("E/O diagonal coefficient must be finite"))
-        term.site_b == ELOC_DIAG_ONE_SITE_Z && continue
-        row_a = term.site_a ÷ config.ly
-        row_b = term.site_b ÷ config.ly
-        column_a = term.site_a % config.ly
-        column_b = term.site_b % config.ly
-        if abs(row_a - row_b) == 1 && abs(column_a - column_b) == 1
-            row_diag[Int((min(row_a, row_b) & Int32(1)) + 1)] += UInt64(1)
-            column_diag[Int((min(column_a, column_b) & Int32(1)) + 1)] += UInt64(1)
-        end
     end
     original = EoFlipClassification[]
     transposed = EoFlipClassification[]
     sizehint!(original, length(source_flip))
     sizehint!(transposed, length(source_flip))
-    row_flip = UInt64[0, 0]
-    column_flip = UInt64[0, 0]
     original_slot = Int32(0)
     transposed_slot = Int32(0)
-    original_fb = false
     for (source_index, term) in pairs(source_flip)
         classified, original_slot, transposed_slot = _eo_term_classify_flip(
             config,
@@ -311,32 +193,11 @@ function eo_term_table(
             original_slot,
             transposed_slot,
         )
-        if classified.bucket == _EO_TERM_FOURBODY
-            row_flip[Int(classified.j2_row_group + 1)] += UInt64(1)
-            column_flip[Int(classified.j2_column_group + 1)] += UInt64(1)
-            original_fb = true
-        end
         push!(classified.pass == 0 ? original : transposed, classified)
-    end
-    row_groups = UInt64[0, 0]
-    column_groups = UInt64[0, 0]
-    if original_fb
-        for upper_row in Int32(0):(config.lx-Int32(2))
-            row_groups[Int((upper_row & Int32(1)) + 1)] += UInt64(1)
-            for left_column in Int32(0):(config.ly-Int32(2))
-                column_groups[Int((left_column & Int32(1)) + 1)] += UInt64(1)
-            end
-        end
     end
     classification = EoTermClassification(;
         original,
         transposed,
-        j2_row_groups=(row_groups[1], row_groups[2]),
-        j2_column_groups=(column_groups[1], column_groups[2]),
-        j2_row_diag=(row_diag[1], row_diag[2]),
-        j2_column_diag=(column_diag[1], column_diag[2]),
-        j2_row_flip=(row_flip[1], row_flip[2]),
-        j2_column_flip=(column_flip[1], column_flip[2]),
         original_active_slots=original_slot,
         transposed_active_slots=transposed_slot,
     )
@@ -410,73 +271,4 @@ function _eo_term_table_validate_pointers(table::EoTermTable)::Nothing
     table.active_compact == _eo_term_active_compact_from_env() ||
         throw(ArgumentError("E/O active-compaction policy changed after table construction"))
     return nothing
-end
-
-function eo_selector_accounting(
-    table::EoTermTable,
-    selector::EoSelector,
-    waves::Int64,
-)::EoSelectorAccounting
-    waves >= 0 || throw(ArgumentError("wave count must be nonnegative"))
-    classification = table.classification
-    column = selector.mode == EO_SELECTOR_HALF_COLUMN
-    diag = column ? classification.j2_column_diag : classification.j2_row_diag
-    flip = column ? classification.j2_column_flip : classification.j2_row_flip
-    row_total = classification.j2_row_groups[1] + classification.j2_row_groups[2]
-    column_total = classification.j2_column_groups[1] + classification.j2_column_groups[2]
-    diag_total = diag[1] + diag[2]
-    flip_total = flip[1] + flip[2]
-    group0_waves = UInt64(0)
-    group1_waves = UInt64(0)
-    row_retained = UInt64(0)
-    column_retained = UInt64(0)
-    diag_retained = UInt64(0)
-    flip_retained = UInt64(0)
-    for wave_index in Int64(0):(waves-Int64(1))
-        group = eo_selector_decision(selector, wave_index).group
-        if group < 0
-            row_retained += row_total
-            column && (column_retained += column_total)
-            diag_retained += diag_total
-            flip_retained += flip_total
-        elseif group == 0
-            group0_waves += UInt64(1)
-            if column
-                row_retained += row_total
-                column_retained += classification.j2_column_groups[1]
-            else
-                row_retained += classification.j2_row_groups[1]
-            end
-            diag_retained += diag[1]
-            flip_retained += flip[1]
-        else
-            group1_waves += UInt64(1)
-            if column
-                row_retained += row_total
-                column_retained += classification.j2_column_groups[2]
-            else
-                row_retained += classification.j2_row_groups[2]
-            end
-            diag_retained += diag[2]
-            flip_retained += flip[2]
-        end
-    end
-    wave_count = UInt64(waves)
-    return EoSelectorAccounting(;
-        mode=selector.mode,
-        draw=selector.draw,
-        seed=selector.seed,
-        epoch=selector.epoch,
-        waves=wave_count,
-        group0_waves,
-        group1_waves,
-        row_groups_total=row_total * wave_count,
-        row_groups_retained=row_retained,
-        column_groups_total=column ? column_total * wave_count : UInt64(0),
-        column_groups_retained=column_retained,
-        diag_terms_total=diag_total * wave_count,
-        diag_terms_retained=diag_retained,
-        flip_terms_total=flip_total * wave_count,
-        flip_terms_retained=flip_retained,
-    )
 end

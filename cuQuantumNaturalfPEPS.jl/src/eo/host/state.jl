@@ -79,7 +79,6 @@ Base.@kwdef struct _EoHostLaneArguments
     table::EoTermTable
     geometry::_EoHostLaneGeometry
     destinations::_EoHostLaneDestinations
-    selector::EoSelector
 end
 
 Base.@kwdef struct EoHostArguments
@@ -98,7 +97,6 @@ Base.@kwdef mutable struct EoHost
     config::QnpepsElocConfig
     config_ref::Base.RefValue{QnpepsElocConfig}
     term_table::Union{Nothing,EoTermTable}
-    selector::EoSelector
     source_peps::Union{Nothing,CuVector{ComplexF32}}
     source_samples::Union{Nothing,CuVector{UInt8}}
     destination_logpsi::Union{Nothing,CuVector{Float64}}

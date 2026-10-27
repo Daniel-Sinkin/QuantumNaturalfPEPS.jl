@@ -50,7 +50,7 @@ sampler_host_refresh(context, args)::Cint = ccall(
     args,
 )
 
-function eloc_ctx_create(config, rows, terms, selector_mode, stream, out)::Cint
+function eloc_ctx_create(config, rows, terms, flags, stream, out)::Cint
     return ccall(
         (:qnpeps_eloc_ctx_create, _ffi_library()),
         Cint,
@@ -58,7 +58,7 @@ function eloc_ctx_create(config, rows, terms, selector_mode, stream, out)::Cint
         config,
         rows,
         terms,
-        selector_mode,
+        flags,
         stream,
         out,
     )
@@ -106,8 +106,6 @@ eloc_ctx_run(context, args)::Cint =
 eloc_ctx_destroy(context)::Nothing =
     ccall((:qnpeps_eloc_ctx_destroy, _ffi_library()), Cvoid, (Ptr{Cvoid},), context)
 
-eloc_ctx_stats(context, output)::Cint =
-    ccall((:qnpeps_eloc_ctx_stats, _ffi_library()), Cint, (Ptr{Cvoid}, Ptr{Cvoid}), context, output)
 
 function eloc_gram_tile(arguments::_ElocGramTileArguments)::Cint
     source = arguments.source

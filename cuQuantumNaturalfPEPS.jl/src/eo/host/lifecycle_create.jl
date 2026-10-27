@@ -5,7 +5,6 @@ function _eo_host_create_lane(arguments::_EoHostLaneArguments)
     table = arguments.table
     geometry = arguments.geometry
     destinations = arguments.destinations
-    selector = arguments.selector
     peps_elements = geometry.peps_elements
     sites = geometry.sites
     compact = geometry.compact
@@ -30,7 +29,6 @@ function _eo_host_create_lane(arguments::_EoHostLaneArguments)
             row_count,
             destination_rows,
             UInt64(1),
-            selector,
         )
         handle = _eo_host_create_handle(config_ref, table, row_count, stream)
         sample_offset = UInt(row_base * sites)
@@ -131,7 +129,6 @@ function EoHost(input::EoHostArguments)
     e_loc = input.e_loc
     rows = input.rows
     config_ref = Ref(config)
-    selector = _EO_SELECTOR_DEFAULT
     n_samples_i64 = Int64(n_samples)
     sites = Int64(config.lx) * Int64(config.ly)
     compact_i64 = Int64(compact)
@@ -169,7 +166,6 @@ function EoHost(input::EoHostArguments)
                 table,
                 geometry,
                 destinations,
-                selector,
             )
             push!(lanes, _eo_host_create_lane(arguments))
         end
@@ -183,7 +179,6 @@ function EoHost(input::EoHostArguments)
         config,
         config_ref,
         term_table=table,
-        selector,
         source_peps=peps,
         source_samples=samples,
         destination_logpsi=logpsi,
@@ -217,7 +212,6 @@ function EoHost(input::EoHostArguments)
         sealed=false,
         closed=false,
     )
-    advance_eo_selector!(host, selector.epoch)
     finalizer(close, host)
     return host
 end

@@ -156,8 +156,7 @@ auto run_cache_execute(
     cf* o_rows_dev,
     cf* o_rows_host,
     cf* T_dev,
-    f64 lambda,
-    const qn_eloc::env::J2Selection& j2_selection
+    f64 lambda
 ) -> void
 {
     using namespace qn_eloc::env;
@@ -278,8 +277,6 @@ auto run_cache_execute(
                 o_wave_bytes
             ))
             return;
-        const auto j2_group = int{j2_group_for_wave(j2_selection, wave_index)};
-        const auto j2_exact = bool{j2_selection.mode == QNPEPS_ELOC_J2_EXACT};
         auto wave_graphs{graph_binding ? &graph_binding->waves[wave_index] : nullptr};
         auto sh = Shape{
             cfg.lx,
@@ -309,36 +306,14 @@ auto run_cache_execute(
             {
                 run_graph_region(
                     state,
-                    wave_graphs ? &wave_graphs->orig_stage[j2_graph_slot(j2_selection, j2_group)]
-                                : nullptr,
+                    wave_graphs ? &wave_graphs->orig_stage : nullptr,
                     [&]
                     {
-                        if (j2_exact)
-                            emit_stage_c(w, orig_h, orig_fb);
-                        else if (j2_selection.mode == QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS)
-                            emit_stage_c_j2_column_group(w, orig_h, orig_fb, j2_group);
-                        else
-                            emit_stage_c_j2_group(w, orig_h, orig_fb, j2_group);
+                        emit_stage_c(w, orig_h, orig_fb);
                         CUDA_CHECK(
                             cudaMemsetAsync(e_loc_out + output_offset, 0, energy_bytes, stream)
                         );
-                        if (j2_exact)
-                        {
-                            launch_diagonal(
-                                w, e_loc_out + output_offset, d_a, d_b, d_j, tt->n_diag
-                            );
-                        }
-                        else
-                            launch_diagonal_j2_half(
-                                w,
-                                e_loc_out + output_offset,
-                                d_a,
-                                d_b,
-                                d_j,
-                                tt->n_diag,
-                                j2_selection.mode,
-                                j2_group
-                            );
+                        launch_diagonal(w, e_loc_out + output_offset, d_a, d_b, d_j, tt->n_diag);
                     },
                     &w.rangefinder_call
                 );
@@ -347,9 +322,6 @@ auto run_cache_execute(
             {
                 for (const FlipInst& t : orig_terms)
                 {
-                    if (not j2_exact and j2_group >= 0 and t.bucket == Bucket::fourbody
-                        and j2_flip_group(t, j2_selection.mode) != j2_group)
-                        continue;
                     const auto active =
                         int{t.active_slot >= 0
                                 ? orig_active.host_counts[static_cast<usize>(t.active_slot)]
@@ -360,15 +332,9 @@ auto run_cache_execute(
                                   + static_cast<i64>(t.active_slot) * orig_active.max_lanes
                             : nullptr
                     };
-                    auto selected = FlipInst{t};
-                    if (not j2_exact and j2_group >= 0 and selected.bucket == Bucket::fourbody)
-                    {
-                        selected.coeff_re *= 2.0;
-                        selected.coeff_im *= 2.0;
-                    }
                     eval_flip_inst(
                         w,
-                        selected,
+                        t,
                         value_buf,
                         e_loc_out + output_offset,
                         logpsi_out + output_offset,

@@ -280,14 +280,11 @@ auto fold_left(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0,
-    bool projected_packed = false
+    int dim_batch = 0
 ) -> std::vector<int>
 {
-    const auto projected_axes =
-        std::vector<int>{projected_packed ? std::vector<int>{0, 1} : std::vector<int>{0, 3}};
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {0}, nullptr, 0, dim_batch)};
-    const auto t2 = BT{bcontract(w, frame, t1, {0, 2}, pr, projected_axes, nullptr, 0, dim_batch)};
+    const auto t2 = BT{bcontract(w, frame, t1, {0, 2}, pr, {0, 3}, nullptr, 0, dim_batch)};
     return bcontract(w, frame, t2, {0, 2}, bot, {0, 1}, out, out_stride, dim_batch).dim;
 }
 
@@ -317,15 +314,12 @@ auto fold_left4(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0,
-    bool projected_packed = false
+    int dim_batch = 0
 ) -> std::vector<int>
 {
-    const auto projected_axes =
-        std::vector<int>{projected_packed ? std::vector<int>{0, 1} : std::vector<int>{0, 3}};
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {0}, nullptr, 0, dim_batch)};
-    const auto t2 = BT{bcontract(w, frame, t1, {0, 3}, pri, projected_axes, nullptr, 0, dim_batch)};
-    const auto t3 = BT{bcontract(w, frame, t2, {0, 3}, prj, projected_axes, nullptr, 0, dim_batch)};
+    const auto t2 = BT{bcontract(w, frame, t1, {0, 3}, pri, {0, 3}, nullptr, 0, dim_batch)};
+    const auto t3 = BT{bcontract(w, frame, t2, {0, 3}, prj, {0, 3}, nullptr, 0, dim_batch)};
     return bcontract(w, frame, t3, {0, 3}, bot, {0, 1}, out, out_stride, dim_batch).dim;
 }
 
@@ -339,16 +333,13 @@ auto fold_right4(
     const BT& bot,
     cf* out,
     i64 out_stride,
-    int dim_batch = 0,
-    bool bottom_packed = false
+    int dim_batch = 0
 ) -> std::vector<int>
 {
-    const auto bottom_axes =
-        std::vector<int>{bottom_packed ? std::vector<int>{0, 1} : std::vector<int>{2, 1}};
     const auto t1 = BT{bcontract(w, frame, h, {0}, top, {2}, nullptr, 0, dim_batch)};
     const auto t2 = BT{bcontract(w, frame, t1, {0, 4}, pri, {2, 3}, nullptr, 0, dim_batch)};
     const auto t3 = BT{bcontract(w, frame, t2, {0, 4}, prj, {2, 3}, nullptr, 0, dim_batch)};
-    return bcontract(w, frame, t3, {0, 4}, bot, bottom_axes, out, out_stride, dim_batch).dim;
+    return bcontract(w, frame, t3, {0, 4}, bot, {2, 1}, out, out_stride, dim_batch).dim;
 }
 
 auto project_column_into(Worker& w, int row, int col, cf* out, i64 out_stride) -> void
@@ -380,51 +371,6 @@ auto project_column_into(Worker& w, int row, int col, cf* out, i64 out_stride) -
         sh.lanes
     );
     CUDA_CHECK(cudaGetLastError());
-}
-
-auto project_column_dual_packed(
-    Worker& w,
-    int row,
-    int col,
-    cf* native_out,
-    i64 native_stride,
-    cf* packed_out,
-    i64 packed_stride
-) -> BT
-{
-    const auto& sh = w.sh;
-    const auto dims = std::vector<int>{
-        bd(sh.ly, col, sh.dim_bond),
-        bd(sh.lx, row + 1, sh.dim_bond),
-        bd(sh.ly, col + 1, sh.dim_bond),
-        bd(sh.lx, row, sh.dim_bond)
-    };
-    const auto perm = std::vector<int>{0, 3, 1, 2};
-    const auto slab = i64{bt_elems(dims)};
-    auto destination_indices{w.permutation_index_maps.get_inverse(dims, perm)};
-    i64 total{};
-    if (qn::err_state() != QNPEPS_ELOC_OK or slab < 1 or not destination_indices
-        or not arena_slot(
-            {static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(sh.lanes)}, total
-        ))
-        return {};
-    const auto threads = int{256};
-    const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-    cu_project_slab_dual_packed<<<blocks, threads, 0, w.la.stream()>>>(
-        w.peps + w.site_off[static_cast<usize>(row) * sh.ly + col],
-        w.samples,
-        static_cast<i64>(sh.lx) * sh.ly,
-        row * sh.ly + col,
-        slab,
-        destination_indices,
-        native_out,
-        native_stride,
-        packed_out,
-        packed_stride,
-        sh.lanes
-    );
-    CUDA_CHECK(cudaGetLastError());
-    return BT{packed_out, packed_stride, permuted_dims(dims, perm)};
 }
 
 auto project_row_into(Worker& w, int row, cf* base, i64 slot) -> void
@@ -531,7 +477,7 @@ inline auto f_fbr_cut(Worker& w, int row, int cut) -> f64*
     return w.f_fbr + (static_cast<i64>(row) * (w.sh.ly - 1) + cut) * w.sh.lanes;
 }
 
-auto build_h_rails(Worker& w, int i, bool dual_projected = false) -> void
+auto build_h_rails(Worker& w, int i) -> void
 {
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
@@ -548,21 +494,9 @@ auto build_h_rails(Worker& w, int i, bool dual_projected = false) -> void
     for (auto c = int{0}; c <= ly - 2; ++c)
     {
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        auto frame = Carver{w.scratch};
-        auto projected = BT{pr(c)};
-        if (dual_projected)
-        {
-            auto packed{frame.take_product<cf>(
-                {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(sh.lanes)}
-            )};
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            projected = project_column_dual_packed(
-                w, i, c, proj_site(w, c), w.slot_proj, packed, w.slot_proj
-            );
-        }
-        const auto d = std::vector<int>{fold_left(
-            w, frame, h, top(c), projected, bot(c), hl_site(w, i, c), w.slot_h, 0, dual_projected
-        )};
+        const auto d = std::vector<int>{
+            fold_left(w, w.scratch, h, top(c), pr(c), bot(c), hl_site(w, i, c), w.slot_h)
+        };
         h = BT{hl_site(w, i, c), w.slot_h, d};
         rail_normalize(
             w,
@@ -573,7 +507,6 @@ auto build_h_rails(Worker& w, int i, bool dual_projected = false) -> void
             c > 0 ? f_hl_cut(w, i, c - 1) : nullptr
         );
     }
-    if (dual_projected) project_column_into(w, i, ly - 1, proj_site(w, ly - 1), w.slot_proj);
     auto r = BT{unit3(w)};
     for (auto c = int{ly - 1}; c >= 1; --c)
     {
@@ -593,7 +526,7 @@ auto build_h_rails(Worker& w, int i, bool dual_projected = false) -> void
     }
 }
 
-auto build_fb_rails(Worker& w, int i, bool dual_projected = false) -> void
+auto build_fb_rails(Worker& w, int i) -> void
 {
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
@@ -619,43 +552,8 @@ auto build_fb_rails(Worker& w, int i, bool dual_projected = false) -> void
     for (auto c = int{0}; c <= ly - 2; ++c)
     {
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        auto frame = Carver{w.scratch};
-        auto projected_i = BT{pri(c)};
-        auto projected_j = BT{prj(c)};
-        if (dual_projected)
-        {
-            auto packed_i{frame.take_product<cf>(
-                {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(sh.lanes)}
-            )};
-            auto packed_j{frame.take_product<cf>(
-                {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(sh.lanes)}
-            )};
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            projected_i = project_column_dual_packed(
-                w, i, c, proj_site(w, c), w.slot_proj, packed_i, w.slot_proj
-            );
-            projected_j = project_column_dual_packed(
-                w,
-                i + 1,
-                c,
-                w.proj2.p + static_cast<i64>(c) * w.slot_proj * sh.lanes,
-                w.slot_proj,
-                packed_j,
-                w.slot_proj
-            );
-        }
         const auto d = std::vector<int>{fold_left4(
-            w,
-            frame,
-            h,
-            top(c),
-            projected_i,
-            projected_j,
-            bot(c),
-            fbl_site(w, i, c),
-            w.slot_fb,
-            0,
-            dual_projected
+            w, w.scratch, h, top(c), pri(c), prj(c), bot(c), fbl_site(w, i, c), w.slot_fb
         )};
         h = BT{fbl_site(w, i, c), w.slot_fb, d};
         rail_normalize(
@@ -665,17 +563,6 @@ auto build_fb_rails(Worker& w, int i, bool dual_projected = false) -> void
             w.slot_fb,
             f_fbl_cut(w, i, c),
             c > 0 ? f_fbl_cut(w, i, c - 1) : nullptr
-        );
-    }
-    if (dual_projected)
-    {
-        project_column_into(w, i, ly - 1, proj_site(w, ly - 1), w.slot_proj);
-        project_column_into(
-            w,
-            i + 1,
-            ly - 1,
-            w.proj2.p + static_cast<i64>(ly - 1) * w.slot_proj * sh.lanes,
-            w.slot_proj
         );
     }
     auto r = BT{unit4(w)};
@@ -700,7 +587,6 @@ auto build_fb_rails(Worker& w, int i, bool dual_projected = false) -> void
 auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
 {
     const auto& sh = w.sh;
-    const auto dual_projected = bool{(packed_producers_from_env() & 4u) != 0u};
     if (not want_h and not want_fb) return;
     w.ks_full = w.ks_top;
     if (want_h)
@@ -708,8 +594,8 @@ auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
         for (auto i = int{0}; i < sh.lx; ++i)
         {
             if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            if (not dual_projected) project_row_into(w, i, w.proj.p, w.slot_proj);
-            build_h_rails(w, i, dual_projected);
+            project_row_into(w, i, w.proj.p, w.slot_proj);
+            build_h_rails(w, i);
         }
     }
     if (want_fb)
@@ -717,53 +603,11 @@ auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
         for (auto i = int{0}; i < sh.lx - 1; ++i)
         {
             if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            if (not dual_projected)
-            {
-                project_row_into(w, i, w.proj.p, w.slot_proj);
-                project_row_into(w, i + 1, w.proj2.p, w.slot_proj);
-            }
-            build_fb_rails(w, i, dual_projected);
+            project_row_into(w, i, w.proj.p, w.slot_proj);
+            project_row_into(w, i + 1, w.proj2.p, w.slot_proj);
+            build_fb_rails(w, i);
         }
     }
-}
-
-auto emit_stage_c_j2_group(Worker& w, bool want_h, bool want_fb, int j2_group) -> void
-{
-    const auto& sh = w.sh;
-    const auto dual_projected = bool{(packed_producers_from_env() & 4u) != 0u};
-    if (not want_h and not want_fb) return;
-    w.ks_full = w.ks_top;
-    if (want_h)
-    {
-        for (auto i = int{0}; i < sh.lx; ++i)
-        {
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            if (not dual_projected) project_row_into(w, i, w.proj.p, w.slot_proj);
-            build_h_rails(w, i, dual_projected);
-        }
-    }
-    if (want_fb)
-    {
-        for (auto i = int{0}; i < sh.lx - 1; ++i)
-        {
-            if (j2_group < 0 or (i & 1) == j2_group)
-            {
-                if (qn::err_state() != QNPEPS_ELOC_OK) return;
-                if (not dual_projected)
-                {
-                    project_row_into(w, i, w.proj.p, w.slot_proj);
-                    project_row_into(w, i + 1, w.proj2.p, w.slot_proj);
-                }
-                build_fb_rails(w, i, dual_projected);
-            }
-        }
-    }
-}
-
-auto emit_stage_c_j2_column_group(Worker& w, bool want_h, bool want_fb, int j2_group) -> void
-{
-    static_cast<void>(j2_group);
-    emit_stage_c(w, want_h, want_fb);
 }
 
 }

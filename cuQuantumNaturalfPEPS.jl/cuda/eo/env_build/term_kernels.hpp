@@ -105,76 +105,6 @@ __global__ auto cu_project_site_val_indexed(
     }
 }
 
-__global__ auto cu_project_site_val_packed(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    const int* source_indices,
-    cf* out,
-    i64 out_stride,
-    int lanes
-) -> void
-{
-    const auto total = i64{slab * lanes};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
-         tid += grid_stride)
-    {
-        const auto lane = i64{tid / slab};
-        const auto out_elem = int{static_cast<int>(tid % slab)};
-        const auto source_elem = int{source_indices[out_elem]};
-        const auto spin_raw = int{static_cast<int>(samples[lane * lane_stride + site_idx])};
-        auto val = int{fixed_val};
-        if (value_mode == -2)
-            val = spin_raw;
-        else if (value_mode < 0)
-            val = dim_phys - 1 - spin_raw;
-        out[lane * out_stride + out_elem] = site[static_cast<i64>(val) * slab + source_elem];
-    }
-}
-
-__global__ auto cu_project_site_val_indexed_packed(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    const int* active_indices,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    const int* source_indices,
-    cf* out,
-    i64 out_stride,
-    int active
-) -> void
-{
-    const auto total = i64{slab * active};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
-         tid += grid_stride)
-    {
-        const auto compact_lane = int{static_cast<int>(tid / slab)};
-        const auto out_elem = int{static_cast<int>(tid % slab)};
-        const auto source_elem = int{source_indices[out_elem]};
-        const auto lane = int{active_indices[compact_lane]};
-        const auto spin_raw =
-            int{static_cast<int>(samples[static_cast<i64>(lane) * lane_stride + site_idx])};
-        auto val = int{fixed_val};
-        if (value_mode == -2)
-            val = spin_raw;
-        else if (value_mode < 0)
-            val = dim_phys - 1 - spin_raw;
-        out[static_cast<i64>(compact_lane) * out_stride + out_elem] =
-            site[static_cast<i64>(val) * slab + source_elem];
-    }
-}
-
 __global__ auto cu_compact_lanes(
     cf* out,
     i64 out_stride,
@@ -195,30 +125,6 @@ __global__ auto cu_compact_lanes(
         const auto lane = int{active_indices[compact_lane]};
         out[static_cast<i64>(compact_lane) * out_stride + elem] =
             in[static_cast<i64>(lane) * in_stride + elem];
-    }
-}
-
-__global__ auto cu_compact_lanes_packed(
-    cf* out,
-    i64 out_stride,
-    const cf* in,
-    i64 in_stride,
-    const int* active_indices,
-    const int* source_indices,
-    i64 elems,
-    int active
-) -> void
-{
-    const auto total = i64{elems * active};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
-         tid += grid_stride)
-    {
-        const auto compact_lane = int{static_cast<int>(tid / elems)};
-        const auto out_elem = int{static_cast<int>(tid % elems)};
-        const auto lane = int{active_indices[compact_lane]};
-        out[static_cast<i64>(compact_lane) * out_stride + out_elem] =
-            in[static_cast<i64>(lane) * in_stride + source_indices[out_elem]];
     }
 }
 
@@ -245,55 +151,6 @@ __global__ auto cu_diagonal(
                     ? 1
                     : 1 - 2 * static_cast<int>(samples[base + site_b[t]])};
         e += coeff[t] * sa * sb;
-    }
-    e_loc[2 * lane] += e;
-}
-
-__global__ auto cu_diagonal_j2_half(
-    f64* e_loc,
-    const u8* samples,
-    i64 lane_stride,
-    const int* site_a,
-    const int* site_b,
-    const f64* coeff,
-    int n_diag,
-    int ly,
-    int j2_mode,
-    int j2_group,
-    int lanes
-) -> void
-{
-    const auto lane = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    if (lane >= lanes) return;
-    const auto base = i64{static_cast<i64>(lane) * lane_stride};
-    auto e = f64{0.0};
-    for (auto t = int{0}; t < n_diag; ++t)
-    {
-        const auto a = int{site_a[t]};
-        const auto b = int{site_b[t]};
-        const auto sa = int{1 - 2 * static_cast<int>(samples[base + a])};
-        if (b == QNPEPS_ELOC_DIAG_ONE_SITE_Z)
-        {
-            e += coeff[t] * sa;
-            continue;
-        }
-        const auto row_a = int{a / ly};
-        const auto row_b = int{b / ly};
-        const auto col_a = int{a % ly};
-        const auto col_b = int{b % ly};
-        const auto drow = int{row_a > row_b ? row_a - row_b : row_b - row_a};
-        const auto dcol = int{col_a > col_b ? col_a - col_b : col_b - col_a};
-        auto weight = f64{1.0};
-        if (drow == 1 and dcol == 1)
-        {
-            const auto selector =
-                int{j2_mode == QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS ? (col_a < col_b ? col_a : col_b)
-                                                                : (row_a < row_b ? row_a : row_b)};
-            if (j2_group >= 0 and (selector & 1) != j2_group) continue;
-            if (j2_group >= 0) weight = 2.0;
-        }
-        const auto sb = int{1 - 2 * static_cast<int>(samples[base + b])};
-        e += weight * coeff[t] * sa * sb;
     }
     e_loc[2 * lane] += e;
 }
@@ -491,36 +348,6 @@ auto launch_diagonal(
     const auto blocks = int{(lanes + 255) / 256};
     cu_diagonal<<<blocks, 256, 0, w.la.stream()>>>(
         e_loc, w.samples, static_cast<i64>(w.sh.lx) * w.sh.ly, site_a, site_b, coeff, n_diag, lanes
-    );
-    CUDA_CHECK(cudaGetLastError());
-}
-
-auto launch_diagonal_j2_half(
-    Worker& w,
-    f64* e_loc,
-    const int* site_a,
-    const int* site_b,
-    const f64* coeff,
-    int n_diag,
-    int j2_mode,
-    int j2_group
-) -> void
-{
-    if (n_diag < 1) return;
-    const auto lanes = int{w.sh.lanes};
-    const auto blocks = int{(lanes + 255) / 256};
-    cu_diagonal_j2_half<<<blocks, 256, 0, w.la.stream()>>>(
-        e_loc,
-        w.samples,
-        static_cast<i64>(w.sh.lx) * w.sh.ly,
-        site_a,
-        site_b,
-        coeff,
-        n_diag,
-        w.sh.ly,
-        j2_mode,
-        j2_group,
-        lanes
     );
     CUDA_CHECK(cudaGetLastError());
 }

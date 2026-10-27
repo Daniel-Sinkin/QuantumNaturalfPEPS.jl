@@ -116,47 +116,6 @@ function bind_eo_host!(host::EoHost, peps::CuVector{ComplexF32})::EoHost
     return host
 end
 
-@inline function _eo_host_run_args_with_selector(
-    arguments::_EoHostRunArgs,
-    selector::EoSelector,
-)::_EoHostRunArgs
-    return _EoHostRunArgs(;
-        struct_size=arguments.struct_size,
-        padding=arguments.padding,
-        device_peps=arguments.device_peps,
-        device_samples=arguments.device_samples,
-        logpsi_out=arguments.logpsi_out,
-        e_loc_out=arguments.e_loc_out,
-        o_rows_dev=arguments.o_rows_dev,
-        o_rows_host=arguments.o_rows_host,
-        gram=arguments.gram,
-        lambda=arguments.lambda,
-        j2_mode=selector.mode,
-        j2_draw=selector.draw,
-        j2_seed=selector.seed,
-        j2_epoch=selector.epoch,
-    )
-end
-
-function set_eo_selector!(host::EoHost, selector::EoSelector)::EoHost
-    isopen(host) || throw(ArgumentError("EoHost is closed"))
-    for lane in host.lanes
-        lane.binding.args[] = _eo_host_run_args_with_selector(lane.binding.args[], selector)
-    end
-    host.selector = selector
-    return host
-end
-
-function advance_eo_selector!(host::EoHost, epoch::UInt64)::EoHost
-    selector = host.selector
-    return set_eo_selector!(host, EoSelector(selector.mode, selector.draw, selector.seed, epoch))
-end
-
-function eo_host_selector(host::EoHost)::EoSelector
-    isopen(host) || throw(ArgumentError("EoHost is closed"))
-    return host.selector
-end
-
 function eo_host_term_table(host::EoHost)::EoTermTable
     isopen(host) || throw(ArgumentError("EoHost is closed"))
     table = host.term_table
@@ -187,7 +146,6 @@ function eo_host_replace_buffers!(host::EoHost, lane_index::Int)::EoHost
         lane.row_count,
         host.destination_rows_pointer,
         next_epoch,
-        host.selector,
     )
     next_handle = Ptr{Cvoid}(C_NULL)
     try
@@ -212,46 +170,6 @@ function eo_host_replace_buffers!(host::EoHost, lane_index::Int)::EoHost
     host.arenas_freed += 1
     host.replacements += 1
     return host
-end
-
-function eo_host_stats(host::EoHost, lane_index::Int)::EoHostStats
-    isopen(host) || throw(ArgumentError("EoHost is closed"))
-    1 <= lane_index <= EO_HOST_LANES || throw(BoundsError(host.lanes, lane_index))
-    output = Ref(
-        EoHostStats(;
-            struct_size=UInt32(sizeof(EoHostStats)),
-            graph_enabled=UInt32(0),
-            runs=UInt64(0),
-            bindings=UInt64(0),
-            graph_captures=UInt64(0),
-            graph_replays=UInt64(0),
-            graph_capture_failures=UInt64(0),
-            graph_nodes=UInt64(0),
-            graph_edges=UInt64(0),
-            graph_introspection_failures=UInt64(0),
-            j2_mode_last=UInt32(0),
-            j2_draw_last=UInt32(0),
-            j2_seed_last=UInt64(0),
-            j2_epoch_last=UInt64(0),
-            j2_waves=UInt64(0),
-            j2_group0_waves=UInt64(0),
-            j2_group1_waves=UInt64(0),
-            j2_row_groups_total=UInt64(0),
-            j2_row_groups_retained=UInt64(0),
-            j2_column_groups_total=UInt64(0),
-            j2_column_groups_retained=UInt64(0),
-            j2_diag_terms_total=UInt64(0),
-            j2_diag_terms_retained=UInt64(0),
-            j2_flip_terms_total=UInt64(0),
-            j2_flip_terms_retained=UInt64(0),
-        ),
-    )
-    status = GC.@preserve output FFI.eloc_ctx_stats(
-        host.lanes[lane_index].handle,
-        Base.unsafe_convert(Ptr{Cvoid}, output),
-    )
-    status == 0 || error("qnpeps_eloc_ctx_stats failed with status $status")
-    return output[]
 end
 
 function eo_host_binding_state(host::EoHost, lane_index::Int)::EoHostBindingState

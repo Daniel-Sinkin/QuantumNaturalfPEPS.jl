@@ -52,7 +52,7 @@ struct GraphSlot
 struct WaveGraphs
 {
     GraphSlot orig_logpsi{};
-    std::array<GraphSlot, 7> orig_stage{};
+    GraphSlot orig_stage{};
     GraphSlot orig_o{};
     GraphSlot tr_logpsi{};
     GraphSlot tr_stage{};
@@ -69,14 +69,6 @@ struct GraphBinding
     cf* o_rows_dev{};
     GraphSlot preprocess{};
     std::vector<WaveGraphs> waves{};
-};
-
-struct J2Selection
-{
-    uint32_t mode{QNPEPS_ELOC_J2_EXACT};
-    uint32_t draw{QNPEPS_ELOC_J2_BALANCED};
-    u64 seed{};
-    u64 epoch{};
 };
 
 struct RunCache
@@ -135,38 +127,6 @@ auto graph_requested_from_env() -> bool
     return value == nullptr or value[0] == '\0' or value[0] != '0';
 }
 
-auto splitmix64(u64 value) -> u64
-{
-    value += 0x9e3779b97f4a7c15ull;
-    value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
-    value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
-    return value ^ (value >> 31u);
-}
-
-auto j2_group_for_wave(const J2Selection& selection, usize wave_index) -> int
-{
-    if (selection.mode == QNPEPS_ELOC_J2_EXACT) return -1;
-    if (selection.draw == QNPEPS_ELOC_J2_FORCE_ALL) return -2;
-    if (selection.draw == QNPEPS_ELOC_J2_FORCE_GROUP_0) return 0;
-    if (selection.draw == QNPEPS_ELOC_J2_FORCE_GROUP_1) return 1;
-    const auto first =
-        int{static_cast<int>(splitmix64(selection.seed ^ splitmix64(selection.epoch)) & 1ull)};
-    return first ^ static_cast<int>(wave_index & 1u);
-}
-
-auto j2_graph_slot(const J2Selection& selection, int group) -> usize
-{
-    if (selection.mode == QNPEPS_ELOC_J2_EXACT) return 0;
-    const auto orientation = usize{selection.mode == QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS ? 1u : 0u};
-    if (group < 0) return 3u + 3u * orientation;
-    return 1u + 3u * orientation + static_cast<usize>(group);
-}
-
-auto j2_flip_group(const FlipInst& term, uint32_t mode) -> int
-{
-    return mode == QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS ? term.j2_column_group : term.j2_group;
-}
-
 auto destroy_graph_slot(GraphSlot& slot) -> void
 {
     if (slot.exec) CUDA_NOCHECK(cudaGraphExecDestroy(slot.exec));
@@ -176,8 +136,7 @@ auto destroy_graph_slot(GraphSlot& slot) -> void
 auto destroy_orig_graphs(WaveGraphs& wave) -> void
 {
     destroy_graph_slot(wave.orig_logpsi);
-    for (GraphSlot& slot : wave.orig_stage)
-        destroy_graph_slot(slot);
+    destroy_graph_slot(wave.orig_stage);
     destroy_graph_slot(wave.orig_o);
 }
 

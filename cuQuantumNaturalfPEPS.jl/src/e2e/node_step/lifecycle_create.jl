@@ -43,7 +43,6 @@ function NodeStepHost(
     projected_density_cutoff::Real=1.0e-4,
     capture::Symbol=:auto,
     eo_backend::Symbol=:c_abi,
-    eo_selector::EoSelector=_EO_SELECTOR_DEFAULT,
     minsr_topology::MinsrHostTopology=MINSR_HOST_TOPOLOGY_JURECA,
 )
     _node_step_validate(config, peps, n_samples, dim_batch)
@@ -157,7 +156,6 @@ function NodeStepHost(
                 rows=o_rows_host,
             )
             julia_eo = EoHost(eo_arguments)
-            set_eo_selector!(julia_eo, eo_selector)
             _node_step_precompile_eo_host!(dlenv, sampler)
         catch
             CUDA.context!(o_rows_registration.ctx)
@@ -208,7 +206,6 @@ function NodeStepHost(
                     context=minsr.lanes[lane_index].context,
                     config=lconfig,
                     terms,
-                    selector=eo_selector,
                     geometry,
                     outputs,
                 )

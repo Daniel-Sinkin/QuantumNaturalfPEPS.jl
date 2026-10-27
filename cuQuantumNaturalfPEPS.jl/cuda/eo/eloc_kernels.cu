@@ -81,40 +81,6 @@ __global__ void cu_build_o(
     }
 }
 
-__global__ void cu_gram_scalar(
-    cf* t,
-    int out_ld,
-    int compact_np,
-    int n_blocks,
-    const cf* __restrict__ rows_a,
-    const cf* __restrict__ rows_b,
-    const int* __restrict__ spins_a,
-    const int* __restrict__ spins_b,
-    const int* __restrict__ block_offset,
-    const int* __restrict__ block_slice,
-    int s0,
-    int s_len,
-    int u0,
-    int u_len
-)
-{
-    const auto si = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-    const auto ui = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (si >= s_len or ui >= u_len) return;
-    const auto s = s0 + si;
-    const auto u = u0 + ui;
-    const auto acc = gram_pair_compact(
-        rows_a + static_cast<i64>(s) * compact_np,
-        rows_b + static_cast<i64>(u) * compact_np,
-        spins_a + static_cast<i64>(s) * n_blocks,
-        spins_b + static_cast<i64>(u) * n_blocks,
-        block_offset,
-        block_slice,
-        n_blocks
-    );
-    t[static_cast<i64>(s) * out_ld + u] = acc;
-}
-
 template <int tile_y, int tile_x>
 __global__ void cu_gram_tiled(
     cf* t,
@@ -214,28 +180,6 @@ __global__ void cu_gram_tiled(
     if (active) t[static_cast<i64>(s) * out_ld + u] = acc;
 }
 
-enum class GramTileMode
-{
-    tile_16x16,
-    tile_8x16,
-    tile_16x8,
-    tile_8x8
-};
-
-static auto gram_tile_mode() -> GramTileMode
-{
-    static const auto mode = []
-    {
-        auto value = static_cast<const char*>(std::getenv("QNPEPS_ELOC_GRAM_TILE"));
-        if (value == nullptr or std::strcmp(value, "16x16") == 0) return GramTileMode::tile_16x16;
-        if (std::strcmp(value, "8x16") == 0) return GramTileMode::tile_8x16;
-        if (std::strcmp(value, "16x8") == 0) return GramTileMode::tile_16x8;
-        if (std::strcmp(value, "8x8") == 0) return GramTileMode::tile_8x8;
-        return GramTileMode::tile_16x16;
-    }();
-    return mode;
-}
-
 static unsigned grid_for(i64 n)
 {
     const auto cap = static_cast<i64>(65535);
@@ -327,76 +271,28 @@ void launch_gram_tile(
 )
 {
     if (s_len < 1 or u_len < 1) return;
-    static const auto scalar = []
-    {
-        auto value = static_cast<const char*>(std::getenv("QNPEPS_ELOC_GRAM_SCALAR"));
-        return value != nullptr and *value != '\0' and *value != '0';
-    }();
-    if (scalar)
-    {
-        const auto block = dim3(16, 16);
-        const auto grid = dim3(
-            static_cast<unsigned>((u_len + 15) / 16), static_cast<unsigned>((s_len + 15) / 16)
-        );
-        cu_gram_scalar<<<grid, block, 0, stream>>>(
-            out,
-            out_ld,
-            compact_np,
-            n_blocks,
-            rows_a,
-            rows_b,
-            spins_a,
-            spins_b,
-            block_offset,
-            block_slice,
-            s0,
-            s_len,
-            u0,
-            u_len
-        );
-        return;
-    }
-
-    const auto launch_tiled = [&]<int tile_y, int tile_x>()
-    {
-        const auto block = dim3(tile_x, tile_y);
-        const auto grid = dim3(
-            static_cast<unsigned>((u_len + tile_x - 1) / tile_x),
-            static_cast<unsigned>((s_len + tile_y - 1) / tile_y)
-        );
-        cu_gram_tiled<tile_y, tile_x><<<grid, block, 0, stream>>>(
-            out,
-            out_ld,
-            compact_np,
-            n_blocks,
-            rows_a,
-            rows_b,
-            spins_a,
-            spins_b,
-            block_offset,
-            block_slice,
-            s0,
-            s_len,
-            u0,
-            u_len
-        );
-    };
-
-    switch (gram_tile_mode())
-    {
-        case GramTileMode::tile_8x16:
-            launch_tiled.template operator()<8, 16>();
-            break;
-        case GramTileMode::tile_16x8:
-            launch_tiled.template operator()<16, 8>();
-            break;
-        case GramTileMode::tile_8x8:
-            launch_tiled.template operator()<8, 8>();
-            break;
-        case GramTileMode::tile_16x16:
-            launch_tiled.template operator()<16, 16>();
-            break;
-    }
+    constexpr auto tile = 16;
+    const auto block = dim3(tile, tile);
+    const auto grid = dim3(
+        static_cast<unsigned>((u_len + tile - 1) / tile),
+        static_cast<unsigned>((s_len + tile - 1) / tile)
+    );
+    cu_gram_tiled<tile, tile><<<grid, block, 0, stream>>>(
+        out,
+        out_ld,
+        compact_np,
+        n_blocks,
+        rows_a,
+        rows_b,
+        spins_a,
+        spins_b,
+        block_offset,
+        block_slice,
+        s0,
+        s_len,
+        u0,
+        u_len
+    );
 }
 
 }

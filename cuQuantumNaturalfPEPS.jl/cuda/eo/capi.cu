@@ -315,9 +315,6 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_ctx_run(
         return QNPEPS_ELOC_ERR_NULL_ARG;
     if ((args->o_rows_host or args->T_dev) and not args->o_rows_dev)
         return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (args->j2_mode > QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS or args->j2_draw > QNPEPS_ELOC_J2_FORCE_ALL
-        or (args->j2_mode == QNPEPS_ELOC_J2_EXACT and args->j2_draw != QNPEPS_ELOC_J2_BALANCED))
-        return QNPEPS_ELOC_ERR_BAD_CONFIG;
     qn::clear_err();
     qn_eloc_ctx_run_impl(
         *ctx,
@@ -328,23 +325,9 @@ extern "C" qnpeps_eloc_status qnpeps_eloc_ctx_run(
         as_cf(args->o_rows_dev),
         as_cf(args->o_rows_host),
         as_cf(args->T_dev),
-        args->lambda,
-        args->j2_mode,
-        args->j2_draw,
-        args->j2_seed,
-        args->j2_epoch
+        args->lambda
     );
     return qn::err_state();
-}
-
-extern "C" qnpeps_eloc_status qnpeps_eloc_ctx_stats(
-    const qnpeps_eloc_ctx* ctx, QnpepsElocCtxStats* out
-)
-{
-    if (not ctx or not out) return QNPEPS_ELOC_ERR_NULL_ARG;
-    if (out->struct_size != sizeof(QnpepsElocCtxStats)) return QNPEPS_ELOC_ERR_BAD_VERSION;
-    qn_eloc_ctx_stats_impl(*ctx, *out);
-    return QNPEPS_ELOC_OK;
 }
 
 extern "C" qnpeps_eloc_status qnpeps_eloc_gram_tile(

@@ -196,7 +196,6 @@ enum class RangefinderRoute
 {
     cholqr,
     householder,
-    qb_svd,
     gesvda
 };
 
@@ -226,19 +225,9 @@ inline auto rangefinder_route_from_env() -> RangefinderRoute
     if (not value or value[0] == '\0' or std::strcmp(value, "cholqr") == 0)
         return RangefinderRoute::cholqr;
     if (std::strcmp(value, "householder") == 0) return RangefinderRoute::householder;
-    if (std::strcmp(value, "qb_svd") == 0) return RangefinderRoute::qb_svd;
     if (std::strcmp(value, "gesvda_cutoff") == 0) return RangefinderRoute::gesvda;
     qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
     return RangefinderRoute::cholqr;
-}
-
-inline auto rangefinder_force_nonexact_from_env() -> bool
-{
-    auto value{std::getenv("QNPEPS_E0218_FORCE_NONEXACT")};
-    if (not value or value[0] == '\0' or std::strcmp(value, "0") == 0) return false;
-    if (std::strcmp(value, "1") == 0) return true;
-    qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-    return false;
 }
 
 inline auto rangefinder_route_uses_householder_scratch() -> bool
@@ -250,29 +239,7 @@ inline auto rangefinder_route_uses_householder_scratch() -> bool
 inline auto rangefinder_route_uses_experimental_scratch() -> bool
 {
     const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    return route == RangefinderRoute::qb_svd or route == RangefinderRoute::gesvda;
-}
-
-inline auto rangefinder_oversampling_from_env() -> int
-{
-    auto value{std::getenv("QNPEPS_E0191_OVERSAMPLE")};
-    if (not value or value[0] == '\0') return 8;
-    char* end{};
-    const auto parsed = long{std::strtol(value, &end, 10)};
-    if (not end or end == value or end[0] != '\0' or parsed < 0 or parsed > 64)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return 0;
-    }
-    return static_cast<int>(parsed);
-}
-
-inline auto rangefinder_sketch_width(int rows, int cols, int k) -> int
-{
-    const auto route = RangefinderRoute{rangefinder_route_from_env()};
-    if (route != RangefinderRoute::qb_svd) return k;
-    const auto oversampling = int{rangefinder_oversampling_from_env()};
-    return std::min(std::min(rows, cols), k + oversampling);
+    return route == RangefinderRoute::gesvda;
 }
 
 inline auto rangefinder_gesvda_cutoff_from_env() -> f64

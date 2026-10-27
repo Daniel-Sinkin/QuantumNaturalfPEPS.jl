@@ -47,21 +47,6 @@ extern "C"
         QNPEPS_ELOC_CTX_GRAM = 2
     } qnpeps_eloc_ctx_flags;
 
-    typedef enum qnpeps_eloc_j2_mode
-    {
-        QNPEPS_ELOC_J2_EXACT = 0,
-        QNPEPS_ELOC_J2_HALF_ROW_PAIRS = 1,
-        QNPEPS_ELOC_J2_HALF_COLUMN_PAIRS = 2
-    } qnpeps_eloc_j2_mode;
-
-    typedef enum qnpeps_eloc_j2_draw
-    {
-        QNPEPS_ELOC_J2_BALANCED = 0,
-        QNPEPS_ELOC_J2_FORCE_GROUP_0 = 1,
-        QNPEPS_ELOC_J2_FORCE_GROUP_1 = 2,
-        QNPEPS_ELOC_J2_FORCE_ALL = 3
-    } qnpeps_eloc_j2_draw;
-
     typedef struct QnpepsElocCtxRunArgs
     {
         uint32_t struct_size;
@@ -73,40 +58,7 @@ extern "C"
         qnpeps_eloc_cbuf* o_rows_host;
         qnpeps_eloc_cbuf* T_dev;
         double lambda;
-        uint32_t j2_mode;
-        uint32_t j2_draw;
-        uint64_t j2_seed;
-        uint64_t j2_epoch;
     } QnpepsElocCtxRunArgs;
-
-    typedef struct QnpepsElocCtxStats
-    {
-        uint32_t struct_size;
-        uint32_t graph_enabled;
-        uint64_t runs;
-        uint64_t bindings;
-        uint64_t graph_captures;
-        uint64_t graph_replays;
-        uint64_t graph_capture_failures;
-        uint64_t graph_nodes;
-        uint64_t graph_edges;
-        uint64_t graph_introspection_failures;
-        uint32_t j2_mode_last;
-        uint32_t j2_draw_last;
-        uint64_t j2_seed_last;
-        uint64_t j2_epoch_last;
-        uint64_t j2_waves;
-        uint64_t j2_group0_waves;
-        uint64_t j2_group1_waves;
-        uint64_t j2_row_groups_total;
-        uint64_t j2_row_groups_retained;
-        uint64_t j2_column_groups_total;
-        uint64_t j2_column_groups_retained;
-        uint64_t j2_diag_terms_total;
-        uint64_t j2_diag_terms_retained;
-        uint64_t j2_flip_terms_total;
-        uint64_t j2_flip_terms_retained;
-    } QnpepsElocCtxStats;
 
     typedef struct QnpepsElocDiagBond
     {
@@ -205,8 +157,6 @@ extern "C"
     void qnpeps_eloc_ctx_destroy(qnpeps_eloc_ctx* ctx);
 
     qnpeps_eloc_status qnpeps_eloc_ctx_run(qnpeps_eloc_ctx* ctx, const QnpepsElocCtxRunArgs* args);
-
-    qnpeps_eloc_status qnpeps_eloc_ctx_stats(const qnpeps_eloc_ctx* ctx, QnpepsElocCtxStats* out);
 
     qnpeps_eloc_status qnpeps_eloc_compact_count(const QnpepsElocConfig* cfg, int64_t* out_count);
 

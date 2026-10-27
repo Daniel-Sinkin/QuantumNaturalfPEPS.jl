@@ -141,7 +141,6 @@ auto build_env_row(
         exact_rank *= sh.dim_bond;
     }
     exact_factorization = exact_factorization and exact_rank <= sh.chi;
-    if (rangefinder_force_nonexact_from_env()) exact_factorization = false;
     const auto lanes = int{sh.lanes};
     project_row(w, row);
 
@@ -327,13 +326,12 @@ auto build_env_row(
             return;
         const auto robust_scratch_bytes =
             usize{w.qr_scratch ? w.qr_scratch_bytes : fallback_scratch_bytes};
-        const auto sketch_width = int{rangefinder_sketch_width(rangefinder_rows, b_dim, next_rank)};
         batched_rangefinder(
             w.la,
             {w.tmp_b.p, w.tmp_b.stride, rangefinder_rows, b_dim},
             next_rank,
             exact_factorization,
-            omega_for(w, b_dim, sketch_width),
+            omega_for(w, b_dim, next_rank),
             {out_site(col), w.slot_env, rangefinder_rows, next_rank},
             {w.rnext.p, w.rnext.stride, next_rank, b_dim},
             lanes,

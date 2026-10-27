@@ -50,14 +50,11 @@ export sample_peps, sample_peps!, sample_peps_host, batched_rangefinder, sampler
 export plan_sampler_host, refresh_sampler!, sample_multigpu!
 export FFI
 export heisenberg_terms, truncated_rydberg_terms, local_energies
-export EoHost, EoHostArguments, EoHostStats, EoHostBindingState, EoHostLifecycleState
+export EoHost, EoHostArguments, EoHostBindingState, EoHostLifecycleState
 export EoFlipClassification, EoTermClassification, EoTermTable
-export EoSelector, EoSelectorDecision, EoSelectorAccounting
-export eo_selector, eo_selector_decision, eo_selector_accounting
-export eo_term_table, set_eo_selector!, advance_eo_selector!
-export eo_host_selector, eo_host_term_table
+export eo_term_table, eo_host_term_table
 export eo_host_execute!, eo_host_warm!, bind_eo_host!, seal_eo_host!
-export eo_host_replace_buffers!, eo_host_stats, eo_host_binding_state
+export eo_host_replace_buffers!, eo_host_binding_state
 export eo_host_row_pointers, eo_host_lifecycle_state
 export QnpepsE2eConfig
 export vmc_step!

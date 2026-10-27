@@ -15,10 +15,6 @@ Base.@kwdef struct _NodeStepElocArgs
     o_rows_host::Ptr{Cvoid}
     gram::CUDA.CuPtr{Cvoid}
     lambda::Float64
-    j2_mode::UInt32
-    j2_draw::UInt32
-    j2_seed::UInt64
-    j2_epoch::UInt64
 end
 
 Base.@kwdef struct _NodeStepEoGeometry
@@ -40,7 +36,6 @@ Base.@kwdef struct _NodeStepEoLaneArguments
     context::CUDA.CuContext
     config::QnpepsElocConfig
     terms::HeisenbergTerms
-    selector::EoSelector
     geometry::_NodeStepEoGeometry
     outputs::_NodeStepEoOutputs
 end

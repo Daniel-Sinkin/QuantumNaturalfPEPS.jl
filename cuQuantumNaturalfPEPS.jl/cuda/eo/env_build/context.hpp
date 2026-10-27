@@ -77,16 +77,7 @@ auto qn_eloc_run_impl(
     run_cache_setup(state, cfg, n_samples, *tt, flags, context_arena);
     if (qn::err_state() != QNPEPS_ELOC_OK) return;
     run_cache_execute(
-        state,
-        peps,
-        samples,
-        logpsi_out,
-        e_loc_out,
-        o_rows_dev,
-        o_rows_host,
-        T_dev,
-        lambda,
-        J2Selection{}
+        state, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
 }
 
@@ -135,11 +126,7 @@ auto qn_eloc_ctx_run_async_impl(
     cf* o_rows_dev,
     cf* o_rows_host,
     cf* T_dev,
-    f64 lambda,
-    uint32_t j2_mode,
-    uint32_t j2_draw,
-    u64 j2_seed,
-    u64 j2_epoch
+    f64 lambda
 ) -> void
 {
     using namespace qn_eloc::env;
@@ -158,16 +145,7 @@ auto qn_eloc_ctx_run_async_impl(
         return;
     }
     run_cache_execute(
-        state,
-        peps,
-        samples,
-        logpsi_out,
-        e_loc_out,
-        o_rows_dev,
-        o_rows_host,
-        T_dev,
-        lambda,
-        J2Selection{j2_mode, j2_draw, j2_seed, j2_epoch}
+        state, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
 }
 
@@ -180,38 +158,15 @@ auto qn_eloc_ctx_run_impl(
     cf* o_rows_dev,
     cf* o_rows_host,
     cf* T_dev,
-    f64 lambda,
-    uint32_t j2_mode,
-    uint32_t j2_draw,
-    u64 j2_seed,
-    u64 j2_epoch
+    f64 lambda
 ) -> void
 {
     qn_eloc_ctx_run_async_impl(
-        ctx,
-        peps,
-        samples,
-        logpsi_out,
-        e_loc_out,
-        o_rows_dev,
-        o_rows_host,
-        T_dev,
-        lambda,
-        j2_mode,
-        j2_draw,
-        j2_seed,
-        j2_epoch
+        ctx, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
     if (qn::err_state() != QNPEPS_ELOC_OK) return;
     auto& state{ctx.state};
     CUDA_CHECK(cudaStreamSynchronize(state.stream));
-}
-
-auto qn_eloc_ctx_stats_impl(const qnpeps_eloc_ctx&, QnpepsElocCtxStats& out) -> void
-{
-    const auto struct_size = uint32_t{out.struct_size};
-    out = {};
-    out.struct_size = struct_size;
 }
 
 auto qn_eloc_gram_tile_impl(

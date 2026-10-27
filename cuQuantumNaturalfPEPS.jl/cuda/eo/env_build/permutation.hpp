@@ -93,29 +93,6 @@ struct PermutationCache
         cache.emplace(key, device_ptr);
         return device_ptr;
     }
-    auto get_inverse(const std::vector<int>& dims, const std::vector<int>& perm) -> int*
-    {
-        const auto key = "i" + perm_key(dims, perm);
-        auto it = cache.find(key);
-        if (it != cache.end()) return it->second;
-        const auto source_indices = permutation_index_map(dims, perm);
-        auto destination_indices = std::vector<int>(source_indices.size());
-        for (auto out = usize{0}; out < source_indices.size(); ++out)
-            destination_indices[static_cast<usize>(source_indices[out])] = static_cast<int>(out);
-        if (destination_indices.size() > std::numeric_limits<usize>::max() / sizeof(int))
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return nullptr;
-        }
-        const auto bytes = usize{sizeof(int) * destination_indices.size()};
-        int* device_ptr{};
-        CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
-        CUDA_CHECK(
-            cudaMemcpy(device_ptr, destination_indices.data(), bytes, cudaMemcpyHostToDevice)
-        );
-        cache.emplace(key, device_ptr);
-        return device_ptr;
-    }
     auto release() -> void
     {
         for (auto& entry : cache)
@@ -123,26 +100,6 @@ struct PermutationCache
         cache.clear();
     }
 };
-
-inline auto packed_producers_from_env() -> unsigned
-{
-    static thread_local const auto mask = []
-    {
-        auto value{std::getenv("QNPEPS_ELOC_PACKED_PRODUCERS")};
-        if (not value or value[0] == '\0') return 0u;
-        return static_cast<unsigned>(std::strtoul(value, nullptr, 0)) & 7u;
-    }();
-    return mask;
-}
-
-auto permuted_dims(const std::vector<int>& dims, const std::vector<int>& perm) -> std::vector<int>
-{
-    std::vector<int> result{};
-    result.reserve(perm.size());
-    for (const int axis : perm)
-        result.push_back(dims[static_cast<usize>(axis)]);
-    return result;
-}
 
 struct PermuteOp
 {

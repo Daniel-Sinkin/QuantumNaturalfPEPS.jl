@@ -92,8 +92,6 @@ auto classify_route(
     {
         pass = 0;
         out.bucket = Bucket::fourbody;
-        out.j2_group = minr & 1;
-        out.j2_column_group = minc & 1;
     }
     else
     {

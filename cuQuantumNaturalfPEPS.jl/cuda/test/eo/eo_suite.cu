@@ -473,10 +473,6 @@ auto negative_endpoints() -> bool
         qnpeps_eloc_ctx_run(nullptr, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
     );
     record(
-        "endpoint_ctx_stats_negative",
-        qnpeps_eloc_ctx_stats(nullptr, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
-    );
-    record(
         "endpoint_compact_count_negative",
         qnpeps_eloc_compact_count(&bad, &count) == QNPEPS_ELOC_ERR_BAD_VERSION
     );

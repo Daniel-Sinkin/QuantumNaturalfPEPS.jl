@@ -81,24 +81,6 @@ auto batched_rangefinder(
         CUDA_CHECK(cudaGetLastError());
         return;
     }
-    if (route == RangefinderRoute::qb_svd)
-    {
-        qn_eloc::e0191::run_qb_gesvda(
-            la,
-            panel,
-            k,
-            omega,
-            q_out,
-            r_out,
-            dim_batch,
-            fail_flag,
-            failure_log,
-            fallback_info,
-            robust_scratch,
-            robust_scratch_bytes
-        );
-        return;
-    }
     if (route == RangefinderRoute::gesvda)
     {
         qn_eloc::e0191::run_direct_gesvda_cutoff(

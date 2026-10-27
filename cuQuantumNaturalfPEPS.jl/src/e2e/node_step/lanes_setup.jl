@@ -3,7 +3,6 @@ function _node_step_create_eo_lane(arguments::_NodeStepEoLaneArguments)
     context = arguments.context
     config = arguments.config
     terms = arguments.terms
-    selector = arguments.selector
     geometry = arguments.geometry
     outputs = arguments.outputs
     peps_elements = geometry.peps_elements
@@ -61,10 +60,6 @@ function _node_step_create_eo_lane(arguments::_NodeStepEoLaneArguments)
             o_rows_host=Ptr{Cvoid}(UInt(global_rows_host) + row_offset),
             gram=CUDA.CuPtr{Cvoid}(0),
             lambda=0.0,
-            j2_mode=selector.mode,
-            j2_draw=selector.draw,
-            j2_seed=selector.seed,
-            j2_epoch=selector.epoch,
         )
         return _NodeStepEoLane(;
             context,

@@ -72,8 +72,7 @@ auto corner_mode(const FlipInst& t, int r, int c, int ly) -> int
     return -2;
 }
 
-auto project_corner(Worker& w, int r, int c, int mode, cf* out, i64 out_stride, bool packed = false)
-    -> BT
+auto project_corner(Worker& w, int r, int c, int mode, cf* out, i64 out_stride) -> BT
 {
     const auto& sh = w.sh;
     const auto pd = std::vector<int>{proj_dims(w, r, c)};
@@ -86,44 +85,21 @@ auto project_corner(Worker& w, int r, int c, int mode, cf* out, i64 out_stride, 
         return {};
     const auto threads = int{256};
     const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-    auto out_dims = std::vector<int>{pd};
-    if (packed)
-    {
-        const auto perm = std::vector<int>{0, 3, 1, 2};
-        auto source_indices{w.permutation_index_maps.get(pd, perm)};
-        if (qn::err_state() != QNPEPS_ELOC_OK or not source_indices) return {};
-        cu_project_site_val_packed<<<blocks, threads, 0, w.la.stream()>>>(
-            w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
-            w.samples,
-            static_cast<i64>(sh.lx) * sh.ly,
-            r * sh.ly + c,
-            slab,
-            mode,
-            mode,
-            sh.dim_phys,
-            source_indices,
-            out,
-            out_stride,
-            sh.lanes
-        );
-        out_dims = permuted_dims(pd, perm);
-    }
-    else
-        cu_project_site_val<<<blocks, threads, 0, w.la.stream()>>>(
-            w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
-            w.samples,
-            static_cast<i64>(sh.lx) * sh.ly,
-            r * sh.ly + c,
-            slab,
-            mode,
-            mode,
-            sh.dim_phys,
-            out,
-            out_stride,
-            sh.lanes
-        );
+    cu_project_site_val<<<blocks, threads, 0, w.la.stream()>>>(
+        w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
+        w.samples,
+        static_cast<i64>(sh.lx) * sh.ly,
+        r * sh.ly + c,
+        slab,
+        mode,
+        mode,
+        sh.dim_phys,
+        out,
+        out_stride,
+        sh.lanes
+    );
     CUDA_CHECK(cudaGetLastError());
-    return BT{out, out_stride, std::move(out_dims)};
+    return BT{out, out_stride, pd};
 }
 
 auto project_corner_indexed(
@@ -134,8 +110,7 @@ auto project_corner_indexed(
     const int* active_indices,
     int active,
     cf* out,
-    i64 out_stride,
-    bool packed = false
+    i64 out_stride
 ) -> BT
 {
     const auto& sh = w.sh;
@@ -149,46 +124,22 @@ auto project_corner_indexed(
         return {};
     const auto threads = int{256};
     const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-    auto out_dims = std::vector<int>{pd};
-    if (packed)
-    {
-        const auto perm = std::vector<int>{0, 3, 1, 2};
-        auto source_indices{w.permutation_index_maps.get(pd, perm)};
-        if (qn::err_state() != QNPEPS_ELOC_OK or not source_indices) return {};
-        cu_project_site_val_indexed_packed<<<blocks, threads, 0, w.la.stream()>>>(
-            w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
-            w.samples,
-            static_cast<i64>(sh.lx) * sh.ly,
-            active_indices,
-            r * sh.ly + c,
-            slab,
-            mode,
-            mode,
-            sh.dim_phys,
-            source_indices,
-            out,
-            out_stride,
-            active
-        );
-        out_dims = permuted_dims(pd, perm);
-    }
-    else
-        cu_project_site_val_indexed<<<blocks, threads, 0, w.la.stream()>>>(
-            w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
-            w.samples,
-            static_cast<i64>(sh.lx) * sh.ly,
-            active_indices,
-            r * sh.ly + c,
-            slab,
-            mode,
-            mode,
-            sh.dim_phys,
-            out,
-            out_stride,
-            active
-        );
+    cu_project_site_val_indexed<<<blocks, threads, 0, w.la.stream()>>>(
+        w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
+        w.samples,
+        static_cast<i64>(sh.lx) * sh.ly,
+        active_indices,
+        r * sh.ly + c,
+        slab,
+        mode,
+        mode,
+        sh.dim_phys,
+        out,
+        out_stride,
+        active
+    );
     CUDA_CHECK(cudaGetLastError());
-    return BT{out, out_stride, std::move(out_dims)};
+    return BT{out, out_stride, pd};
 }
 
 auto compact_tensor(Worker& w, const BT& src, const int* active_indices, int active, cf* out) -> BT
@@ -207,33 +158,6 @@ auto compact_tensor(Worker& w, const BT& src, const int* active_indices, int act
     );
     CUDA_CHECK(cudaGetLastError());
     return BT{out, elems, src.dim};
-}
-
-auto compact_tensor_packed(
-    Worker& w,
-    const BT& src,
-    const int* active_indices,
-    int active,
-    cf* out,
-    const std::vector<int>& perm
-) -> BT
-{
-    const auto elems = i64{bt_elems(src.dim)};
-    i64 total{};
-    if (qn::err_state() != QNPEPS_ELOC_OK or elems < 1 or active < 1
-        or not arena_slot(
-            {static_cast<std::uint64_t>(elems), static_cast<std::uint64_t>(active)}, total
-        ))
-        return {};
-    const auto threads = int{256};
-    const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-    auto source_indices{w.permutation_index_maps.get(src.dim, perm)};
-    if (qn::err_state() != QNPEPS_ELOC_OK or not source_indices) return {};
-    cu_compact_lanes_packed<<<blocks, threads, 0, w.la.stream()>>>(
-        out, elems, src.p, src.stride, active_indices, source_indices, elems, active
-    );
-    CUDA_CHECK(cudaGetLastError());
-    return BT{out, elems, permuted_dims(src.dim, perm)};
 }
 
 auto chain_normalize(Worker& w, cf* x, i64 n, i64 stride) -> void
@@ -262,7 +186,6 @@ auto eval_horizontal(Worker& w, const FlipInst& t, cf* value_out) -> void
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
     const auto lanes = int{sh.lanes};
-    const auto packed_projected = bool{(packed_producers_from_env() & 1u) != 0u};
     const auto i = int{t.site[0] / ly};
     auto c0 = int{ly};
     auto cend = int{-1};
@@ -291,20 +214,10 @@ auto eval_horizontal(Worker& w, const FlipInst& t, cf* value_out) -> void
         )};
         if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto mode = int{val_at(c)};
-        const auto projected =
-            BT{project_corner(w, i, c, mode, flip, w.slot_proj, packed_projected)};
-        const auto d = std::vector<int>{fold_left(
-            w,
-            frame,
-            v,
-            top_bt(w, i, c),
-            projected,
-            bot_bt_h(w, i, c),
-            nxt,
-            w.slot_h,
-            0,
-            packed_projected
-        )};
+        const auto projected = BT{project_corner(w, i, c, mode, flip, w.slot_proj)};
+        const auto d = std::vector<int>{
+            fold_left(w, frame, v, top_bt(w, i, c), projected, bot_bt_h(w, i, c), nxt, w.slot_h)
+        };
         v = BT{nxt, w.slot_h, d};
         chain_normalize(w, v.p, bt_elems(d), w.slot_h);
     }
@@ -320,7 +233,6 @@ auto eval_horizontal_compact(
 {
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
-    const auto packed_projected = bool{(packed_producers_from_env() & 1u) != 0u};
     const auto i = int{t.site[0] / ly};
     auto c0 = int{ly};
     auto cend = int{-1};
@@ -374,16 +286,15 @@ auto eval_horizontal_compact(
     {
         if (qn::err_state() != QNPEPS_ELOC_OK) return nullptr;
         const auto proj_elems = i64{bt_elems(proj_dims(w, i, c))};
-        const auto projected = BT{project_corner_indexed(
-            w, i, c, val_at(c), active_indices, active, flip, proj_elems, packed_projected
-        )};
+        const auto projected = BT{
+            project_corner_indexed(w, i, c, val_at(c), active_indices, active, flip, proj_elems)
+        };
         const auto top =
             BT{compact_tensor(w, top_bt(w, i, c), active_indices, active, compact_top)};
         const auto bot =
             BT{compact_tensor(w, bot_bt_h(w, i, c), active_indices, active, compact_bot)};
-        const auto d = std::vector<int>{
-            fold_left(w, frame, v, top, projected, bot, next, w.slot_h, active, packed_projected)
-        };
+        const auto d =
+            std::vector<int>{fold_left(w, frame, v, top, projected, bot, next, w.slot_h, active)};
         v = BT{next, w.slot_h, d};
         chain_normalize_batch(w, v.p, bt_elems(d), w.slot_h, f_chain, active);
         next = next == chain_a ? chain_b : chain_a;
@@ -401,7 +312,6 @@ auto eval_fourbody(Worker& w, const FlipInst& t, cf* value_out) -> void
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
     const auto lanes = int{sh.lanes};
-    const auto packed_projected = bool{(packed_producers_from_env() & 1u) != 0u};
     const auto r0 = int{t.site[0] / ly};
     const auto c0 = int{t.site[0] % ly};
     const auto r1 = int{t.site[1] / ly};
@@ -426,12 +336,10 @@ auto eval_fourbody(Worker& w, const FlipInst& t, cf* value_out) -> void
         {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(lanes)}
     )};
     if (qn::err_state() != QNPEPS_ELOC_OK) return;
-    const auto projected_pi_l = BT{project_corner(
-        w, minr, miny, corner_mode(t, minr, miny, ly), piL, w.slot_proj, packed_projected
-    )};
-    const auto projected_pj_l = BT{project_corner(
-        w, maxr, miny, corner_mode(t, maxr, miny, ly), pjL, w.slot_proj, packed_projected
-    )};
+    const auto projected_pi_l =
+        BT{project_corner(w, minr, miny, corner_mode(t, minr, miny, ly), piL, w.slot_proj)};
+    const auto projected_pj_l =
+        BT{project_corner(w, maxr, miny, corner_mode(t, maxr, miny, ly), pjL, w.slot_proj)};
     const auto projected_pi_r =
         BT{project_corner(w, minr, maxy, corner_mode(t, minr, maxy, ly), piR, w.slot_proj)};
     const auto projected_pj_r =
@@ -470,17 +378,7 @@ auto eval_fourbody(Worker& w, const FlipInst& t, cf* value_out) -> void
         BT{maxy < ly - 1 ? BT{fbr_site(w, upper, maxy), w.slot_fb, fb_right_dims(w, upper, maxy)}
                          : unit4(w)};
     fold_left4(
-        w,
-        frame,
-        fbL,
-        topL,
-        projected_pi_l,
-        projected_pj_l,
-        botL,
-        cl,
-        static_cast<i64>(mid),
-        0,
-        packed_projected
+        w, frame, fbL, topL, projected_pi_l, projected_pj_l, botL, cl, static_cast<i64>(mid)
     );
     fold_right4(
         w, frame, fbR, topR, projected_pi_r, projected_pj_r, botR, cr, static_cast<i64>(mid)
@@ -496,9 +394,6 @@ auto eval_fourbody_compact(
 {
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
-    const auto packed_mask = unsigned{packed_producers_from_env()};
-    const auto packed_projected = bool{(packed_mask & 1u) != 0u};
-    const auto packed_bottom = bool{(packed_mask & 2u) != 0u};
     const auto r0 = int{t.site[0] / ly};
     const auto c0 = int{t.site[0] % ly};
     const auto r1 = int{t.site[1] / ly};
@@ -573,26 +468,10 @@ auto eval_fourbody_compact(
     if (qn::err_state() != QNPEPS_ELOC_OK) return nullptr;
 
     const auto projected_pi_l = BT{project_corner_indexed(
-        w,
-        minr,
-        miny,
-        corner_mode(t, minr, miny, ly),
-        active_indices,
-        active,
-        piL,
-        piL_elems,
-        packed_projected
+        w, minr, miny, corner_mode(t, minr, miny, ly), active_indices, active, piL, piL_elems
     )};
     const auto projected_pj_l = BT{project_corner_indexed(
-        w,
-        maxr,
-        miny,
-        corner_mode(t, maxr, miny, ly),
-        active_indices,
-        active,
-        pjL,
-        pjL_elems,
-        packed_projected
+        w, maxr, miny, corner_mode(t, maxr, miny, ly), active_indices, active, pjL, pjL_elems
     )};
     const auto projected_pi_r = BT{project_corner_indexed(
         w, minr, maxy, corner_mode(t, minr, maxy, ly), active_indices, active, piR, piR_elems
@@ -618,16 +497,12 @@ auto eval_fourbody_compact(
         compact_bot_l,
         cl,
         static_cast<i64>(mid),
-        active,
-        packed_projected
+        active
     );
 
     const auto compact_fb_r = BT{compact_tensor(w, fbR, active_indices, active, compact_fb)};
     const auto compact_top_r = BT{compact_tensor(w, topR, active_indices, active, compact_top)};
-    const auto compact_bot_r =
-        BT{packed_bottom
-               ? compact_tensor_packed(w, botR, active_indices, active, compact_bot, {2, 1, 0})
-               : compact_tensor(w, botR, active_indices, active, compact_bot)};
+    const auto compact_bot_r = BT{compact_tensor(w, botR, active_indices, active, compact_bot)};
     fold_right4(
         w,
         frame,
@@ -638,8 +513,7 @@ auto eval_fourbody_compact(
         compact_bot_r,
         cr,
         static_cast<i64>(mid),
-        active,
-        packed_bottom
+        active
     );
     chain_normalize_batch(w, cl, mid, mid, f_chain, active);
     chain_normalize_batch(w, cr, mid, mid, f_chain, active);

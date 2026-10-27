@@ -104,7 +104,6 @@ function _eo_host_create_binding(
     row_count::Int64,
     destination_rows::Ptr{Cvoid},
     epoch::UInt64,
-    selector::EoSelector,
 )
     sizes = (
         UInt64(peps_elements) * UInt64(sizeof(ComplexF32)),
@@ -137,10 +136,6 @@ function _eo_host_create_binding(
         o_rows_host=Ptr{Cvoid}(UInt(destination_rows) + row_offset),
         gram=CUDA.CuPtr{Cvoid}(0),
         lambda=0.0,
-        j2_mode=selector.mode,
-        j2_draw=selector.draw,
-        j2_seed=selector.seed,
-        j2_epoch=selector.epoch,
     )
     return _EoHostBinding(;
         arena,

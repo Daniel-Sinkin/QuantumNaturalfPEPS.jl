@@ -47,8 +47,6 @@ struct FlipInst
 {
     Bucket bucket{};
     int active_slot{-1};
-    int j2_group{-1};
-    int j2_column_group{-1};
     int n_flips{};
     qnpeps::CuArray<int, 4> site{};
     qnpeps::CuArray<int, 4> value{};

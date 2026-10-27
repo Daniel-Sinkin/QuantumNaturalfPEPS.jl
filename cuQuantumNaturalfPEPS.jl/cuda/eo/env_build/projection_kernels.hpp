@@ -54,34 +54,6 @@ __global__ auto cu_project_slab(
     }
 }
 
-__global__ auto cu_project_slab_dual_packed(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    int site_idx,
-    i64 slab,
-    const int* destination_indices,
-    cf* native_out,
-    i64 native_stride,
-    cf* packed_out,
-    i64 packed_stride,
-    int lanes
-) -> void
-{
-    const auto total = i64{slab * lanes};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
-         tid += grid_stride)
-    {
-        const auto lane = i64{tid / slab};
-        const auto native_elem = int{static_cast<int>(tid % slab)};
-        const auto spin = i64{static_cast<i64>(samples[lane * lane_stride + site_idx])};
-        const auto value = cf{site[spin * slab + native_elem]};
-        native_out[lane * native_stride + native_elem] = value;
-        packed_out[lane * packed_stride + destination_indices[native_elem]] = value;
-    }
-}
-
 __global__ auto cu_scale_last(cf* site, i64 stride, i64 n, const cf* r, i64 rstride, int lanes)
     -> void
 {

@@ -109,18 +109,7 @@ inline auto bd(int axis_len, int pos, int dim_bond) -> int
 
 inline auto omega_host(int n, int k) -> std::vector<cf>
 {
-    auto seed = u64{0x777ull ^ (static_cast<u64>(n) << 20) ^ static_cast<u64>(k)};
-    if (auto value{std::getenv("QNPEPS_E0194_OMEGA_SEED")}; value and value[0] != '\0')
-    {
-        char* end{};
-        const auto parsed{std::strtoull(value, &end, 0)};
-        if (not end or end == value or end[0] != '\0')
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-            return {};
-        }
-        seed ^= parsed;
-    }
+    const auto seed = u64{0x777ull ^ (static_cast<u64>(n) << 20) ^ static_cast<u64>(k)};
     auto rng = std::mt19937_64(seed);
     auto gauss = std::normal_distribution<f32>(0.0f, 1.0f);
     usize count{};

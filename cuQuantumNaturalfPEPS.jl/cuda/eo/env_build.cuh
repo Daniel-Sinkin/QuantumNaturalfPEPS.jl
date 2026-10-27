@@ -28,11 +28,7 @@ auto qn_eloc_ctx_run_impl(
     cf* o_rows_dev,
     cf* o_rows_host,
     cf* T_dev,
-    f64 lambda,
-    uint32_t j2_mode,
-    uint32_t j2_draw,
-    std::uint64_t j2_seed,
-    std::uint64_t j2_epoch
+    f64 lambda
 ) -> void;
 
 auto qn_eloc_ctx_run_async_impl(
@@ -44,14 +40,8 @@ auto qn_eloc_ctx_run_async_impl(
     cf* o_rows_dev,
     cf* o_rows_host,
     cf* T_dev,
-    f64 lambda,
-    uint32_t j2_mode,
-    uint32_t j2_draw,
-    std::uint64_t j2_seed,
-    std::uint64_t j2_epoch
+    f64 lambda
 ) -> void;
-
-auto qn_eloc_ctx_stats_impl(const qnpeps_eloc_ctx& ctx, QnpepsElocCtxStats& out) -> void;
 
 auto qn_eloc_run_impl(
     const QnpepsElocConfig& cfg,
