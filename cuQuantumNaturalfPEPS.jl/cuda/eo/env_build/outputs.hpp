@@ -39,8 +39,6 @@
 namespace qn_eloc::env
 {
 
-#line 3742 "cuda/eo/env_build.cu"
-
 __global__ auto cu_gscale(
     cf* g,
     const f64* f_top,

@@ -35,8 +35,6 @@
 namespace qn_eloc::env
 {
 
-#line 1593 "cuda/eo/env_build.cu"
-
 struct BT
 {
     cf* p{};

@@ -14,8 +14,6 @@
 namespace qnpeps
 {
 
-#line 971 "cuda/linalg/eo_routes.cu"
-
 auto batched_rangefinder(
     Linalg& la,
     MatrixBatch panel,

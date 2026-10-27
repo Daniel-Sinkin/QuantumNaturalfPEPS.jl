@@ -38,8 +38,6 @@
 namespace qn_eloc::env
 {
 
-#line 3017 "cuda/eo/env_build.cu"
-
 auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, int dim_batch = 0)
     -> void
 {

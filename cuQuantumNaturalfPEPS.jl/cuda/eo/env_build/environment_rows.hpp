@@ -34,8 +34,6 @@
 namespace qn_eloc::env
 {
 
-#line 1124 "cuda/eo/env_build.cu"
-
 auto project_row(Worker& w, int row) -> void
 {
     const auto& sh = w.sh;

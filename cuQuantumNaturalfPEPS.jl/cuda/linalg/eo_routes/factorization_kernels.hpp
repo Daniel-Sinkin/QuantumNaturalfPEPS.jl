@@ -13,8 +13,6 @@
 namespace qnpeps
 {
 
-#line 447 "cuda/linalg/eo_routes.cu"
-
 __global__ auto cu_normalize_log(
     cf* x, int n, i64 stride, f64* lognorm_acc, int dim_batch, f32* scale_out
 ) -> void

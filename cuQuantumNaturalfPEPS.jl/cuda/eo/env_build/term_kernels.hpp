@@ -37,8 +37,6 @@
 namespace qn_eloc::env
 {
 
-#line 2492 "cuda/eo/env_build.cu"
-
 __global__ auto cu_project_site_val(
     const cf* site,
     const u8* samples,

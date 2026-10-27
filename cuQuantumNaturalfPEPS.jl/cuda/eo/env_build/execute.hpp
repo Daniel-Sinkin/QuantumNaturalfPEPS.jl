@@ -39,8 +39,6 @@
 #include "planning.hpp"
 #include "graph_cache.hpp"
 
-#line 4909 "cuda/eo/env_build.cu"
-
 auto qn_eloc_envs_logpsi(
     const QnpepsElocConfig& cfg,
     const cf* peps,
