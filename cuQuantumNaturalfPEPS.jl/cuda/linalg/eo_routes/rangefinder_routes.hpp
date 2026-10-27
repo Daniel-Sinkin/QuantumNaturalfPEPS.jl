@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../experimental_svd.cuh"
+#include "../gesvda.cuh"
 #include "../eo.cuh"
 
 #include <algorithm>
@@ -81,7 +81,7 @@ auto batched_rangefinder(
     }
     if (route == RangefinderRoute::gesvda)
     {
-        qn_eloc::e0191::run_direct_gesvda_cutoff(
+        qn_eloc::gesvda::run_direct_gesvda_cutoff(
             la,
             panel,
             k,

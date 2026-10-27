@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../experimental_svd.cuh"
+#include "../gesvda.cuh"
 #include "../eo.cuh"
 
 #include <algorithm>
@@ -15,7 +15,7 @@
 namespace qnpeps
 {
 
-auto rangefinder_experimental_carve(
+auto rangefinder_gesvda_carve(
     Linalg& la,
     ArenaCursor& arena,
     int max_dim,
@@ -25,7 +25,7 @@ auto rangefinder_experimental_carve(
     usize& scratch_bytes
 ) -> void
 {
-    qn_eloc::e0191::carve_rangefinder_workspace(
+    qn_eloc::gesvda::carve_rangefinder_workspace(
         la, arena, max_dim, rank, batch, scratch, scratch_bytes
     );
 }

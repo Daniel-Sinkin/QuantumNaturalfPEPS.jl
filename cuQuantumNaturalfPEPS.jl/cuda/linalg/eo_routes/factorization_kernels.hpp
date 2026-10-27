@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../experimental_svd.cuh"
+#include "../gesvda.cuh"
 #include "../eo.cuh"
 
 #include <algorithm>

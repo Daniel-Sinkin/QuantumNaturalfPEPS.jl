@@ -83,7 +83,7 @@ enum class RangefinderRoute
     gesvda
 };
 
-auto rangefinder_experimental_carve(
+auto rangefinder_gesvda_carve(
     Linalg& la,
     ArenaCursor& arena,
     int max_dim,

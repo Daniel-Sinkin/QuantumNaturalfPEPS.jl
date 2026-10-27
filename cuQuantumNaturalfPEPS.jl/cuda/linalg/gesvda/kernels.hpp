@@ -7,7 +7,7 @@
 
 #include "workspace.hpp"
 
-namespace qn_eloc::e0191
+namespace qn_eloc::gesvda
 {
 
 struct CuRecordGesvdaInfoArgs

@@ -76,7 +76,7 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     }
     else
     {
-        rangefinder_experimental_carve(
+        rangefinder_gesvda_carve(
             w.la, cv, chi_bond, sh.chi, sh.lanes, w.qr_scratch, w.qr_scratch_bytes
         );
     }
