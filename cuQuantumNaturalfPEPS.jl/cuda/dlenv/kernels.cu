@@ -69,30 +69,6 @@ __global__ auto cu_product(ProductArgs args) -> void
     }
 }
 
-__global__ auto cu_promote(PromoteArgs args) -> void
-{
-    for (auto lane = global_lane(); lane < static_cast<i64>(args.count); lane += grid_stride())
-    {
-        args.output[lane] = make_cuDoubleComplex(
-            static_cast<f64>(args.input[lane].x), static_cast<f64>(args.input[lane].y)
-        );
-    }
-}
-
-__global__ auto cu_pack(PackArgs args) -> void
-{
-    const auto count = args.left * args.physical * args.right;
-    for (auto lane = global_lane(); lane < count; lane += grid_stride())
-    {
-        const auto left = lane % args.left;
-        const auto tail = lane / args.left;
-        const auto physical = tail % args.physical;
-        const auto right = tail / args.physical;
-        const auto value = args.input[physical + args.physical * (right + args.right * left)];
-        args.output[lane] = to_cf<cuFloatComplex>(value);
-    }
-}
-
 __global__ auto cu_scales(ScaleArgs args) -> void
 {
     for (auto lane = global_lane(); lane < static_cast<i64>(args.count); lane += grid_stride())

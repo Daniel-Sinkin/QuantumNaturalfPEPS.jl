@@ -2,6 +2,7 @@
 #include "core/complex.cuh"
 #include "core/cuda_utils.cuh"
 #include "densitymatrix/backend.cuh"
+#include "densitymatrix/kernels.cuh"
 #include "densitymatrix/types.cuh"
 #include "eo/density.cuh"
 
@@ -20,6 +21,10 @@ using qnpeps::f64;
 using qnpeps::i32;
 using qnpeps::i64;
 using qnpeps::usize;
+using qnpeps::densitymatrix::cu_pack;
+using qnpeps::densitymatrix::cu_promote;
+using qnpeps::densitymatrix::PackArgs;
+using qnpeps::densitymatrix::PromoteArgs;
 using namespace qnpeps;
 
 struct ProductContext
@@ -40,22 +45,6 @@ struct ProductArgs
     i64 output_state{};
     bool contract_up{};
     cuDoubleComplex* product{};
-};
-
-struct PromoteArgs
-{
-    const qn_eloc::fx::cf* input{};
-    usize count{};
-    cuDoubleComplex* output{};
-};
-
-struct PackArgs
-{
-    const cuDoubleComplex* input{};
-    i64 physical{};
-    i64 right{};
-    i64 left{};
-    qn_eloc::fx::cf* output{};
 };
 
 struct BoundaryArgs
@@ -105,31 +94,6 @@ __global__ auto cu_product(ProductArgs args) -> void
             );
         }
         args.product[lane] = value;
-    }
-}
-
-__global__ auto cu_promote(PromoteArgs args) -> void
-{
-    for (auto lane = qnpeps::global_lane(); lane < static_cast<i64>(args.count);
-         lane += qnpeps::grid_stride())
-    {
-        const auto input = args.input[lane];
-        args.output[lane] =
-            make_cuDoubleComplex(static_cast<f64>(input.re), static_cast<f64>(input.im));
-    }
-}
-
-__global__ auto cu_pack(PackArgs args) -> void
-{
-    const auto count = args.left * args.physical * args.right;
-    for (auto lane = qnpeps::global_lane(); lane < count; lane += qnpeps::grid_stride())
-    {
-        const auto left = lane % args.left;
-        const auto tail = lane / args.left;
-        const auto physical = tail % args.physical;
-        const auto right = tail / args.physical;
-        const auto value = args.input[physical + args.physical * (right + args.right * left)];
-        args.output[lane] = to_cf(value);
     }
 }
 
@@ -354,7 +318,7 @@ auto contract(Context& context, const RowArgs& args) -> int
             qnpeps::k_threads_per_block,
             0,
             context.linalg->stream()>>>(
-            {.input = args.adjacent[site],
+            {.input = reinterpret_cast<const cuFloatComplex*>(args.adjacent[site]),
              .count = state_size,
              .output = context.state_values + state_offset}
         );
@@ -442,7 +406,7 @@ auto contract(Context& context, const RowArgs& args) -> int
              .physical = physical,
              .right = right,
              .left = left,
-             .output = args.output[site]}
+             .output = reinterpret_cast<cuFloatComplex*>(args.output[site])}
         );
     }
     CUDA_CHECK(cudaGetLastError());

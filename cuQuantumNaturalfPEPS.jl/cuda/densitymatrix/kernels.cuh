@@ -6,6 +6,22 @@
 
 namespace qnpeps::densitymatrix
 {
+struct PromoteArgs
+{
+    const cuFloatComplex* input{};
+    usize count{};
+    cuDoubleComplex* output{};
+};
+
+struct PackArgs
+{
+    const cuDoubleComplex* input{};
+    i64 physical{};
+    i64 right{};
+    i64 left{};
+    cuFloatComplex* output{};
+};
+
 struct LocalProductArgs
 {
     const cuDoubleComplex* state{};
@@ -113,6 +129,8 @@ struct NormalizeArgs
     f64* output_gauge{};
 };
 
+__global__ auto cu_promote(PromoteArgs args) -> void;
+__global__ auto cu_pack(PackArgs args) -> void;
 __global__ auto cu_local_product(LocalProductArgs args) -> void;
 __global__ auto cu_right_block(RightBlockArgs args) -> void;
 __global__ auto cu_right_block_slice(RightBlockSliceArgs args) -> void;

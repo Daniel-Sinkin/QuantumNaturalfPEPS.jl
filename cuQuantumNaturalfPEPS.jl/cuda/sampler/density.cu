@@ -1,5 +1,6 @@
 #include "core/complex.cuh"
 #include "core/cuda_utils.cuh"
+#include "densitymatrix/kernels.cuh"
 #include "densitymatrix/types.cuh"
 #include "linalg/transfer.cuh"
 #include "sampler/density.cuh"
@@ -12,6 +13,10 @@ namespace qnpeps::sampler
 {
 namespace
 {
+using qnpeps::densitymatrix::cu_pack;
+using qnpeps::densitymatrix::cu_promote;
+using qnpeps::densitymatrix::PackArgs;
+using qnpeps::densitymatrix::PromoteArgs;
 struct ProductContext
 {
     Sampler* sampler{};
@@ -35,22 +40,6 @@ struct ProductArgs
     i64 output_state{};
     bool projected{};
     cuDoubleComplex* product{};
-};
-
-struct PromoteArgs
-{
-    const cuFloatComplex* input{};
-    usize count{};
-    cuDoubleComplex* output{};
-};
-
-struct PackArgs
-{
-    const cuDoubleComplex* input{};
-    i64 physical{};
-    i64 right{};
-    i64 left{};
-    cuFloatComplex* output{};
 };
 
 __global__ auto cu_product(ProductArgs args) -> void
@@ -85,30 +74,6 @@ __global__ auto cu_product(ProductArgs args) -> void
             value = cuCadd(value, cuCmul(args.state[state_index], peps));
         }
         args.product[lane] = value;
-    }
-}
-
-__global__ auto cu_promote(PromoteArgs args) -> void
-{
-    for (auto lane = global_lane(); lane < static_cast<i64>(args.count); lane += grid_stride())
-    {
-        args.output[lane] = make_cuDoubleComplex(
-            static_cast<f64>(args.input[lane].x), static_cast<f64>(args.input[lane].y)
-        );
-    }
-}
-
-__global__ auto cu_pack(PackArgs args) -> void
-{
-    const auto count = args.left * args.physical * args.right;
-    for (auto lane = global_lane(); lane < count; lane += grid_stride())
-    {
-        const auto left = lane % args.left;
-        const auto tail = lane / args.left;
-        const auto physical = tail % args.physical;
-        const auto right = tail / args.physical;
-        const auto value = args.input[physical + args.physical * (right + args.right * left)];
-        args.output[lane] = to_cf<cuFloatComplex>(value);
     }
 }
 

@@ -2,9 +2,14 @@
 #define QNPEPS_DLENV_KERNELS_CUH
 
 #include "core/cuda_utils.cuh"
+#include "densitymatrix/kernels.cuh"
 
 namespace qnpeps::dlenv
 {
+using densitymatrix::cu_pack;
+using densitymatrix::cu_promote;
+using densitymatrix::PackArgs;
+using densitymatrix::PromoteArgs;
 
 struct ProductArgs
 {
@@ -21,22 +26,6 @@ struct ProductArgs
     cuDoubleComplex* product{};
 };
 
-struct PromoteArgs
-{
-    const cuFloatComplex* input{};
-    usize count{};
-    cuDoubleComplex* output{};
-};
-
-struct PackArgs
-{
-    const cuDoubleComplex* input{};
-    i64 physical{};
-    i64 right{};
-    i64 left{};
-    cuFloatComplex* output{};
-};
-
 struct ScaleArgs
 {
     const f64* normalization_log{};
@@ -45,8 +34,6 @@ struct ScaleArgs
 };
 
 __global__ auto cu_product(ProductArgs args) -> void;
-__global__ auto cu_promote(PromoteArgs args) -> void;
-__global__ auto cu_pack(PackArgs args) -> void;
 __global__ auto cu_scales(ScaleArgs args) -> void;
 
 }
