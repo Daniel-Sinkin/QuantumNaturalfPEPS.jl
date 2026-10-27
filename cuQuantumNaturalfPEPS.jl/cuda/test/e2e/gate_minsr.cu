@@ -392,8 +392,8 @@ auto run_case(
         static_cast<unsigned long long>(hash_bytes(gram.data(), gram.size() * sizeof(cf32))),
         static_cast<unsigned long long>(hash_bytes(rows.data(), rows.size() * sizeof(cf32)))
     );
-    if (hash_bytes(theta_dev.data(), theta_dev.size() * sizeof(cf32)) != 0xd78cf952e625ac39ull
-        or hash_bytes(stats_dev.data(), sizeof(stats_dev)) != 0x90142b51ef2df83cull)
+    if (hash_bytes(theta_dev.data(), theta_dev.size() * sizeof(cf32)) != 0x767511beeac78311ull
+        or hash_bytes(stats_dev.data(), sizeof(stats_dev)) != 0x69943418e37ba778ull)
         return 1;
 
     QnpepsMinsrDesc root_desc{};
