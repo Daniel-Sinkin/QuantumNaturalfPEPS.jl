@@ -120,8 +120,11 @@ class BuildAllocation
         const auto num_env_rows = static_cast<usize>(lx - 1);
         const auto num_cols = static_cast<usize>(ly);
         const usize scales_count{num_env_rows * num_cols};
-        auto& context_arena = la.persistent_arena();
-        carve(la, dims, chi_c, num_env_rows, density_route, scales_count, context_arena);
+        ctx.dl.leased_arena = LeasedArena{la.device(), la.stream()};
+        if (err_state() != QNPEPS_OK) return;
+        carve(
+            la, dims, chi_c, num_env_rows, density_route, scales_count, ctx.dl.leased_arena.cursor()
+        );
 
         const auto dlenv_bytes = qnpeps_dlenv_bytes(&cfg);
         for (auto& lane : ctx.dlenv.lanes)
@@ -148,6 +151,8 @@ class BuildAllocation
             if (entry.second) CUDA_NOCHECK(cudaFree(entry.second));
         }
         dl_.omegas.clear();
+        dl_.leased_arena = LeasedArena{};
+        dl_.allocated = false;
         if (not ctx_) return;
         for (auto& lane : ctx_->dlenv.lanes)
         {

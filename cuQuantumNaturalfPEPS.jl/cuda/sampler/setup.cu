@@ -234,7 +234,11 @@ static auto carve_sampler_arena(
         active_cursor = &allocation.external_cursor;
     }
     else
-        active_cursor = &ctx.linalg().persistent_arena();
+    {
+        allocation.leased_arena = LeasedArena{ctx.linalg().device(), ctx.linalg().stream()};
+        if (err_state() != QNPEPS_OK) return false;
+        active_cursor = &allocation.leased_arena.cursor();
+    }
 
     allocation.active_cursor = active_cursor;
     ctx.sampler.samp.bind_linalg(ctx.linalg());
@@ -474,6 +478,7 @@ auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
     maybe_free_host(ctx.sampler.staging.h_lognorm);
     if (ctx.sampler.execution.graph)
         CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.execution.graph));
+    if (ctx.sampler.allocation.active_cursor) ctx.linalg().svd_workspace() = DeviceBuffer{};
 
     ctx.sampler.allocation = {};
     ctx.sampler.staging = {};

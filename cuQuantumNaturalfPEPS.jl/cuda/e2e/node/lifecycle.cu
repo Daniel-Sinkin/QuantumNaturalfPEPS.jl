@@ -211,6 +211,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_destroy(qnpeps_e2e_node* node)
     cudaGetDevice(&caller_device);
 
     node->state_.workers_->stop();
+    node->state_.solve_.reset();
 
     for (int gpu{0}; gpu < node->state_.gpus; ++gpu)
     {

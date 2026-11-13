@@ -2,6 +2,7 @@
 #define QNPEPS_DLENV_STATE_CUH
 
 #include "core/arena_cursor.cuh"
+#include "core/leased_arena.cuh"
 #include "linalg/rangefinder_rng.cuh"
 
 #include <cuda_runtime.h>
@@ -16,6 +17,7 @@ struct BuildState
 {
     bool allocated{};
     cuFloatComplex* peps_buf{};
+    LeasedArena leased_arena{};
     ArenaCursor known{};
     ArenaCursor rolling_r{};
     ArenaCursor scratch{};

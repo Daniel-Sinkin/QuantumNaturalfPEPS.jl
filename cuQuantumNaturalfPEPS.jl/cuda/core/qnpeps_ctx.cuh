@@ -2,6 +2,7 @@
 #define QNPEPS_CTX_CUH
 
 #include "capi/qnpeps.h"
+#include "core/leased_arena.cuh"
 #include "core/session.cuh"
 #include "densitymatrix/types.cuh"
 #include "dlenv/state.cuh"
@@ -75,6 +76,7 @@ struct qnpeps_ctx
         struct Allocation
         {
             ArenaCursor external_cursor{};
+            LeasedArena leased_arena{};
             ArenaCursor* active_cursor{};
             cuFloatComplex* unit{};
             cuFloatComplex** ptr_region{};

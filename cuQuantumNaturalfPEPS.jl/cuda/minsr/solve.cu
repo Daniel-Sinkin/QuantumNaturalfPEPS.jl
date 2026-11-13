@@ -1,4 +1,5 @@
 #include "core/defer.cuh"
+#include "core/leased_arena.cuh"
 #include "core/predicates.cuh"
 #include "linalg/transfer.cuh"
 #include "minsr/kernels.cuh"
@@ -30,7 +31,8 @@ struct SolveStatistics
 class MinsrSolveContext
 {
   public:
-    MinsrSolveContext(int samples, Linalg& linalg) : sample_count_{samples}, linalg_{linalg}
+    MinsrSolveContext(int samples, Linalg& linalg)
+        : sample_count_{samples}, linalg_{linalg}, solve_arena_{linalg.device(), linalg.stream()}
     {
         const auto sample_count = static_cast<usize>(sample_count_);
         const auto paired_sample_count = k_complex_components * sample_count;
@@ -46,15 +48,16 @@ class MinsrSolveContext
         weighted_coefficients_.resize(sample_count);
         sample_coefficients_.resize(sample_count);
 
-        auto& persistent_arena = linalg_.persistent_arena();
-        device_importance_weights_ = persistent_arena.take<f64>(sample_count);
-        device_gram_means_ = persistent_arena.take<cd>(sample_count);
-        device_solve_matrix_ = persistent_arena.take<cd>(sample_count * sample_count);
-        device_eigenvalues_ = persistent_arena.take<f64>(sample_count);
-        device_centered_energies_ = persistent_arena.take<cd>(sample_count);
-        device_eigen_coefficients_ = persistent_arena.take<cd>(sample_count);
-        device_raw_coefficients_ = persistent_arena.take<cd>(sample_count);
-        device_solver_info_ = persistent_arena.take<int>(1);
+        if (err_state() != QNPEPS_E2E_OK) return;
+        auto& arena = solve_arena_.cursor();
+        device_importance_weights_ = arena.take<f64>(sample_count);
+        device_gram_means_ = arena.take<cd>(sample_count);
+        device_solve_matrix_ = arena.take<cd>(sample_count * sample_count);
+        device_eigenvalues_ = arena.take<f64>(sample_count);
+        device_centered_energies_ = arena.take<cd>(sample_count);
+        device_eigen_coefficients_ = arena.take<cd>(sample_count);
+        device_raw_coefficients_ = arena.take<cd>(sample_count);
+        device_solver_info_ = arena.take<int>(1);
         if (err_state() != QNPEPS_E2E_OK) return;
 
         workspace_count_ = linalg_.diagonalize_workspace_count(
@@ -62,7 +65,7 @@ class MinsrSolveContext
         );
         if (err_state() != QNPEPS_E2E_OK) return;
         const auto workspace_count = static_cast<usize>(std::max(workspace_count_, 1));
-        device_workspace_ = persistent_arena.take<cd>(workspace_count);
+        device_workspace_ = arena.take<cd>(workspace_count);
     }
 
     MinsrSolveContext(const MinsrSolveContext&) = delete;
@@ -405,6 +408,7 @@ class MinsrSolveContext
 
     int sample_count_{};
     Linalg& linalg_;
+    LeasedArena solve_arena_;
     int workspace_count_{};
     f64* device_importance_weights_{};
     cd* device_gram_means_{};
