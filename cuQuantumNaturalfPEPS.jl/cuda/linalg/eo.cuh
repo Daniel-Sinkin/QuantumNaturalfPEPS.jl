@@ -114,8 +114,8 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    void* robust_scratch,
-    usize robust_scratch_bytes
+    void* recovery_scratch,
+    usize recovery_scratch_bytes
 ) -> void;
 
 inline auto cuda_align(usize bytes) -> usize

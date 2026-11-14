@@ -271,7 +271,7 @@ auto build_env_row(
             ))
             return;
         const auto next_rank = int{std::max(1, std::min({sh.chi, rangefinder_rows, b_dim}))};
-        auto robust_scratch{
+        auto recovery_scratch{
             w.qr_scratch ? static_cast<void*>(w.qr_scratch) : static_cast<void*>(w.tmp_a.p)
         };
         usize fallback_scratch_bytes{};
@@ -283,7 +283,7 @@ auto build_env_row(
                 fallback_scratch_bytes
             ))
             return;
-        const auto robust_scratch_bytes =
+        const auto recovery_scratch_bytes =
             usize{w.qr_scratch ? w.qr_scratch_bytes : fallback_scratch_bytes};
         batched_rangefinder(
             w.la,
@@ -303,8 +303,8 @@ auto build_env_row(
             w.sketch_ptrs,
             w.info,
             w.fail_flag,
-            robust_scratch,
-            robust_scratch_bytes
+            recovery_scratch,
+            recovery_scratch_bytes
         );
         int normalized_elements{};
         if (not arena_int(

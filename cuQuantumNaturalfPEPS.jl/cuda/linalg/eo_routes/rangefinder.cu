@@ -30,8 +30,8 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    void* robust_scratch,
-    usize robust_scratch_bytes
+    void* recovery_scratch,
+    usize recovery_scratch_bytes
 ) -> void
 {
     const auto rows = panel.rows();
@@ -87,8 +87,8 @@ auto batched_rangefinder(
             dim_batch,
             svd_cutoff,
             fail_flag,
-            robust_scratch,
-            robust_scratch_bytes
+            recovery_scratch,
+            recovery_scratch_bytes
         );
         return;
     }
@@ -132,7 +132,7 @@ auto batched_rangefinder(
     const auto householder_orthogonalize = [&](MatrixBatch matrix)
     {
         const auto required_scratch = usize{qr_scratch_bytes(la, matrix.rows(), matrix.cols())};
-        if (required_scratch > robust_scratch_bytes)
+        if (required_scratch > recovery_scratch_bytes)
         {
             qn::set_err(QNPEPS_ELOC_ERR_OOM);
             return false;
@@ -144,7 +144,7 @@ auto batched_rangefinder(
                matrix.cols(),
                matrix.data() + static_cast<i64>(lane) * matrix.stride(),
                matrix.rows(),
-               robust_scratch,
+               recovery_scratch,
                fail_flag,
                2);
         }
@@ -225,7 +225,7 @@ auto batched_rangefinder(
                 );
                 return;
             }
-            if (qr_scratch_bytes(la, rows, k) > robust_scratch_bytes)
+            if (qr_scratch_bytes(la, rows, k) > recovery_scratch_bytes)
             {
                 qn::set_err(QNPEPS_ELOC_ERR_OOM);
                 return;
@@ -235,7 +235,7 @@ auto batched_rangefinder(
                k,
                sketch.p + static_cast<i64>(lane) * sketch.stride,
                rows,
-               robust_scratch,
+               recovery_scratch,
                fail_flag,
                2);
             const auto blocks = int{std::max(1, (k * k + 255) / 256)};

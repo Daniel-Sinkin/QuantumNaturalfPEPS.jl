@@ -1,13 +1,12 @@
-const CONVERGENCE_REFERENCE_ROOT = joinpath(
-    normpath(joinpath(@__DIR__, "..", "..", "..")),
-    "experiments",
-    "E0261_reference_l4_cpu_jureca",
-)
-const CONVERGENCE_REFERENCE_WINDOW = joinpath(
-    CONVERGENCE_REFERENCE_ROOT,
-    "out",
-    "jureca-reference_20260823T160926Z",
-)
+function convergence_reference_directory(name::AbstractString)
+    path = get(ENV, name, "")
+    isempty(path) && error("[reference] set $name to the reference data directory")
+    isdir(path) || error("[reference] $name does not name a directory at $path")
+    return abspath(path)
+end
+
+convergence_reference_root() = convergence_reference_directory("QNPEPS_CONVERGENCE_REFERENCE_ROOT")
+convergence_reference_window() = convergence_reference_directory("QNPEPS_CONVERGENCE_REFERENCE_WINDOW")
 
 read_u32(io) = Int(ltoh(read(io, UInt32)))
 
@@ -82,11 +81,11 @@ function csv_dict_rows(path::AbstractString)
 end
 
 function reference_trajectory()
-    path = joinpath(CONVERGENCE_REFERENCE_WINDOW, "trajectory_reference_J.csv")
+    path = joinpath(convergence_reference_window(), "trajectory_reference_J.csv")
     rows = csv_dict_rows(path)
-    length(rows) == 2000 || error("E0261 J trajectory length differs")
+    length(rows) == 2000 || error("reference trajectory length differs")
     for (index, row) in enumerate(rows)
-        parse(Int, row["iteration"]) == index || error("E0261 iteration order differs")
+        parse(Int, row["iteration"]) == index || error("reference iteration order differs")
     end
     return rows
 end
