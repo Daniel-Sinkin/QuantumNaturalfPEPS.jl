@@ -13,7 +13,7 @@ class MinsrSolveContext;
 class NodeSolve
 {
   public:
-    explicit NodeSolve(NodeState& state) noexcept;
+    explicit NodeSolve(NodeState& state);
     ~NodeSolve();
 
     NodeSolve(const NodeSolve&) = delete;

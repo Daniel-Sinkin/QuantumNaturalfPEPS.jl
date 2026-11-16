@@ -3,7 +3,6 @@
 
 #include <cassert>
 #include <limits>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -11,17 +10,15 @@ namespace qnpeps
 {
 namespace
 {
-auto reject_contract() -> bool
+auto multiply_extent(int& product, int extent) -> void
 {
-    set_err(QNPEPS_ERR_INTERNAL);
-    return false;
-}
-
-[[nodiscard]] auto multiply_extent(int& product, int extent) -> bool
-{
-    if (product > std::numeric_limits<int>::max() / extent) return reject_contract();
+    require(
+        product <= std::numeric_limits<int>::max() / extent,
+        "contraction extent {} times {} exceeds the int range",
+        product,
+        extent
+    );
     product *= extent;
-    return true;
 }
 
 [[nodiscard]] auto is_identity(const std::vector<int>& order) -> bool
@@ -75,16 +72,10 @@ struct PreparedContraction
     const ContractOperand& a,
     const ContractOperand& b,
     int batch_count
-) -> std::optional<PreparedContraction>
+) -> PreparedContraction
 {
-    if (err_state() != QNPEPS_OK) return std::nullopt;
-    if (batch_count <= 0)
-    {
-        reject_contract();
-        return std::nullopt;
-    }
+    require(batch_count > 0, "contraction over {} lanes", batch_count);
     const auto plan = contract_plan(spec);
-    if (not plan.valid or err_state() != QNPEPS_OK) return std::nullopt;
 
     MatmulConfig op{};
     const auto a_materialized = not plan.perm_a.is_identity() or spec.transforms.conj_a;
@@ -108,7 +99,10 @@ struct PreparedContraction
                                  const Permutation& permutation,
                                  bool conjugate)
     {
-        if (not operand.src.p or not operand.scratch.p) return reject_contract();
+        require(
+            operand.src.p != nullptr and operand.scratch.p != nullptr,
+            "contraction operand needs a source and a scratch buffer to permute"
+        );
         permute_batched(
             cache,
             {.dst = operand.scratch,
@@ -119,13 +113,10 @@ struct PreparedContraction
              .conjugate = conjugate},
             la.stream()
         );
-        return err_state() == QNPEPS_OK;
     };
 
-    if (a_materialized and not materialize(a, spec.dims_a, plan.perm_a, spec.transforms.conj_a))
-        return std::nullopt;
-    if (b_materialized and not materialize(b, spec.dims_b, plan.perm_b, spec.transforms.conj_b))
-        return std::nullopt;
+    if (a_materialized) materialize(a, spec.dims_a, plan.perm_a, spec.transforms.conj_a);
+    if (b_materialized) materialize(b, spec.dims_b, plan.perm_b, spec.transforms.conj_b);
 
     auto b_rows = plan.k;
     auto b_cols = plan.n;
@@ -145,31 +136,36 @@ struct PreparedContraction
 
 [[nodiscard]] auto contract_plan(const ContractSpec& spec) -> ContractPlan
 {
-    if (err_state() != QNPEPS_OK) return {};
     const auto& axes_a = spec.contracted_a;
     const auto& dims_a = spec.dims_a;
     const auto& axes_b = spec.contracted_b;
     const auto& dims_b = spec.dims_b;
-    if (axes_a.size() != axes_b.size())
-    {
-        reject_contract();
-        return {};
-    }
-    if (not axes_a.can_apply_to(dims_a) or not axes_b.can_apply_to(dims_b))
-    {
-        reject_contract();
-        return {};
-    }
+    require(
+        axes_a.size() == axes_b.size(),
+        "contraction pairs {} axes with {} axes",
+        axes_a.size(),
+        axes_b.size()
+    );
+    const auto axes_apply = axes_a.can_apply_to(dims_a) and axes_b.can_apply_to(dims_b);
+    require(
+        axes_apply,
+        "contracted axes exceed the operand ranks {} and {}",
+        dims_a.rank(),
+        dims_b.rank()
+    );
 
     for (auto i = 0_uz; i < axes_a.size(); ++i)
     {
         const auto axis_a = static_cast<usize>(axes_a[i]);
         const auto axis_b = static_cast<usize>(axes_b[i]);
-        if (dims_a[axis_a] != dims_b[axis_b])
-        {
-            reject_contract();
-            return {};
-        }
+        require(
+            dims_a[axis_a] == dims_b[axis_b],
+            "contracted axis {} has extent {}, its partner axis {} has extent {}",
+            axis_a,
+            dims_a[axis_a],
+            axis_b,
+            dims_b[axis_b]
+        );
     }
 
     const auto free_a = free_axes_of(dims_a, axes_a);
@@ -187,17 +183,17 @@ struct PreparedContraction
     for (const auto axis : free_a)
     {
         const auto extent = dims_a[static_cast<usize>(axis)];
-        if (not multiply_extent(m, extent)) return {};
+        multiply_extent(m, extent);
         result_dim.push_back(extent);
     }
     for (const auto axis : free_b)
     {
         const auto extent = dims_b[static_cast<usize>(axis)];
-        if (not multiply_extent(n, extent)) return {};
+        multiply_extent(n, extent);
         result_dim.push_back(extent);
     }
     for (const auto axis : axes_a)
-        if (not multiply_extent(k, dims_a[static_cast<usize>(axis)])) return {};
+        multiply_extent(k, dims_a[static_cast<usize>(axis)]);
     if (result_dim.empty()) result_dim.push_back(1);
 
     ContractPlan plan{
@@ -207,7 +203,6 @@ struct PreparedContraction
         .m = m,
         .k = k,
         .n = n,
-        .valid = true,
     };
     assert(plan.perm_a.can_apply_to(spec.dims_a));
     assert(plan.perm_b.can_apply_to(spec.dims_b));
@@ -215,32 +210,31 @@ struct PreparedContraction
     return plan;
 }
 
-[[nodiscard]] auto contract(
+auto contract(
     ArenaCursor& arena,
     Linalg& la,
     const ContractSpec& spec,
     const DeviceTensor& tensor_a,
     const DeviceTensor& tensor_b,
     DeviceTensor& output
-) -> bool
+) -> void
 {
     output = {};
-    if (err_state() != QNPEPS_OK) return false;
     const auto plan = contract_plan(spec);
-    if (not plan.valid)
-    {
-        assert(err_state() != QNPEPS_OK);
-        return false;
-    }
-    if (spec.dims_a != tensor_a.dim or spec.dims_b != tensor_b.dim) return reject_contract();
-    if (not tensor_a.d or not tensor_b.d) return reject_contract();
+    const auto shapes_match = spec.dims_a == tensor_a.dim and spec.dims_b == tensor_b.dim;
+    require(
+        shapes_match,
+        "contraction spec ranks {} and {} disagree with tensor ranks {} and {}",
+        spec.dims_a.rank(),
+        spec.dims_b.rank(),
+        tensor_a.dim.rank(),
+        tensor_b.dim.rank()
+    );
+    require(
+        tensor_a.d != nullptr and tensor_b.d != nullptr, "contraction of an unallocated tensor"
+    );
 
     output = alloc(arena, plan.result_dim);
-    if (not output.d)
-    {
-        if (err_state() == QNPEPS_OK) reject_contract();
-        return false;
-    }
 
     ArenaCursor scratch_frame{arena};
 
@@ -252,24 +246,17 @@ struct PreparedContraction
     const auto b_perm_bytes = device_align(k * n * sizeof(cuFloatComplex));
 
     auto* scratch = scratch_frame.take<char>(a_perm_bytes + b_perm_bytes);
-    if (not scratch)
-    {
-        if (err_state() == QNPEPS_OK) reject_contract();
-        return false;
-    }
 
     auto* a_perm = byte_offset<cuFloatComplex>(scratch, 0);
     auto* b_perm = byte_offset<cuFloatComplex>(scratch, a_perm_bytes);
     permute_axes(tensor_a, plan.perm_a, spec.transforms.conj_a, a_perm, la.stream());
     permute_axes(tensor_b, plan.perm_b, spec.transforms.conj_b, b_perm, la.stream());
-    if (err_state() != QNPEPS_OK) return false;
 
     la.matmul(
         CuMatrixCF32Const{a_perm, plan.m, plan.k},
         CuMatrixCF32Const{b_perm, plan.k, plan.n},
         CuMatrixCF32{output.d, plan.m, plan.n}
     );
-    return err_state() == QNPEPS_OK;
 }
 
 [[nodiscard]] auto contract(
@@ -281,11 +268,11 @@ struct PreparedContraction
 ) -> DeviceTensor
 {
     DeviceTensor output{};
-    const auto succeeded = contract(arena, la, spec, tensor_a, tensor_b, output);
-    return succeeded ? output : DeviceTensor{};
+    contract(arena, la, spec, tensor_a, tensor_b, output);
+    return output;
 }
 
-[[nodiscard]] auto contract_batched(
+auto contract_batched(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -293,37 +280,33 @@ struct PreparedContraction
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> bool
+) -> void
 {
-    if (err_state() != QNPEPS_OK) return false;
-
-    const auto missing_pointer_array = not a.ptrs or not b.ptrs or not out.ptrs;
-    if (missing_pointer_array or batch_count <= 0) return reject_contract();
+    const auto has_pointer_arrays = a.ptrs and b.ptrs and out.ptrs;
+    require(
+        has_pointer_arrays,
+        "pointer-batched contraction over {} lanes misses a pointer array",
+        batch_count
+    );
 
     const auto prepared = prepare_contraction(la, cache, spec, a, b, batch_count);
-    if (not prepared)
-    {
-        assert(err_state() != QNPEPS_OK);
-        return false;
-    }
 
     la.matmul_batched_ptr(
         a.ptrs,
-        prepared->m,
-        prepared->k,
+        prepared.m,
+        prepared.k,
         b.ptrs,
-        prepared->b_rows,
-        prepared->b_cols,
+        prepared.b_rows,
+        prepared.b_cols,
         out.ptrs,
-        prepared->m,
-        prepared->n,
+        prepared.m,
+        prepared.n,
         batch_count,
-        prepared->op
+        prepared.op
     );
-    return err_state() == QNPEPS_OK;
 }
 
-[[nodiscard]] auto contract_strided(
+auto contract_strided(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -331,26 +314,19 @@ struct PreparedContraction
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> bool
+) -> void
 {
-    if (err_state() != QNPEPS_OK) return false;
-    if (batch_count <= 0) return reject_contract();
-    if (not a.src.p or not b.src.p or not out.view.p) return reject_contract();
+    const auto has_buffers = a.src.p and b.src.p and out.view.p;
+    require(has_buffers, "strided contraction over {} lanes misses an operand buffer", batch_count);
     const auto prepared = prepare_contraction(la, cache, spec, a, b, batch_count);
-    if (not prepared)
-    {
-        assert(err_state() != QNPEPS_OK);
-        return false;
-    }
-    const auto a_view = prepared->a_materialized ? CuSpanCF32Const{a.scratch} : a.src;
-    const auto b_view = prepared->b_materialized ? CuSpanCF32Const{b.scratch} : b.src;
+    const auto a_view = prepared.a_materialized ? CuSpanCF32Const{a.scratch} : a.src;
+    const auto b_view = prepared.b_materialized ? CuSpanCF32Const{b.scratch} : b.src;
     la.matmul_batched(
-        {a_view, prepared->m, prepared->k},
-        {b_view, prepared->b_rows, prepared->b_cols},
-        {out.view, prepared->m, prepared->n},
+        {a_view, prepared.m, prepared.k},
+        {b_view, prepared.b_rows, prepared.b_cols},
+        {out.view, prepared.m, prepared.n},
         batch_count,
-        prepared->op
+        prepared.op
     );
-    return err_state() == QNPEPS_OK;
 }
 }

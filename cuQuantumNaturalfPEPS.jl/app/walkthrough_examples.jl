@@ -62,12 +62,12 @@ function section(body, name::String)
     return nothing
 end
 
-deterministic_unitary(n::Int) =
+unitary_basis(n::Int) =
     Matrix(qr([cos((i * j) / 3) + im * sin((i + 2j) / 5) for i in 1:n, j in 1:n]).Q)
 
 function fixed_panel_5x4()
-    u = deterministic_unitary(5)
-    v = deterministic_unitary(4)
+    u = unitary_basis(5)
+    v = unitary_basis(4)
     return ComplexF64.(u[:, 1:4] * Diagonal([1.0, 0.5, 0.05, 0.002]) * v')
 end
 
@@ -267,26 +267,20 @@ section("eo_two_by_two") do io
     e_loc = CUDA.zeros(Float64, 2 * ns)
     rows = CUDA.zeros(ComplexF32, ns * compact)
     terms = heisenberg_terms(lx, ly; J1 = 1.0, J2 = 0.0)
-    emit(io, "[terms] diagonal bonds ", length(terms.diag), " flip terms ", length(terms.flip))
-    for bond in terms.diag
-        emit(io, "[terms] diagonal site_a ", bond.site_a, " site_b ", bond.site_b, " coeff ", bond.coeff)
+    buffers = cuQuantumNaturalfPEPS._eloc_term_buffers(terms, config)
+    emit(io, "[terms] diagonal terms ", length(buffers.diagonal), " pieces ", length(buffers.piece))
+    for term in buffers.diagonal
+        values = buffers.diagonal_values[(term.value_offset+1):(term.value_offset+term.state_count)]
+        emit(io, "[terms] diagonal sites ", term.site[1:term.site_count], " values ", values)
     end
-    for term in terms.flip
-        emit(io, "[terms] flip n_flips ", term.n_flips, " sites ", term.flip_site,
-            " values ", term.flip_value, " mask ", (term.mask_a, term.mask_b),
-            " coeff ", (term.coeff_re, term.coeff_im))
+    for piece in buffers.piece
+        active = buffers.piece_active[(piece.state_offset+1):(piece.state_offset+piece.state_count)]
+        emit(io, "[terms] piece sites ", piece.site[1:piece.site_count], " active ", active)
     end
 
     emit(io, "[eo] loaded through unified package binding")
-    diag = terms.diag
-    flip = terms.flip
-    status = GC.@preserve peps samples logpsi e_loc rows diag flip begin
-        table = QnpepsElocTermTable(
-            Int32(length(diag)),
-            pointer(diag),
-            Int32(length(flip)),
-            pointer(flip),
-        )
+    status = GC.@preserve peps samples logpsi e_loc rows buffers begin
+        table = cuQuantumNaturalfPEPS._eloc_term_table(buffers)
         inputs = FFI._ElocRunInputs(
             ;
             peps=reinterpret(CuPtr{Cvoid}, pointer(peps)),

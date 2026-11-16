@@ -5,7 +5,6 @@
 #include "linalg/scratch.cuh"
 
 #include <algorithm>
-#include <cassert>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cusolverDn.h>
@@ -17,22 +16,23 @@ namespace qnpeps
 
 auto Linalg::approximate_svd_scratch(int rows, int rank, int batch_size) -> GesvdaScratch
 {
-    if (rows <= 0 or rank <= 0 or rank > rows or batch_size <= 0)
-    {
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    const auto valid_shape = rows > 0 and rank > 0 and rank <= rows and batch_size > 0;
+    require(
+        valid_shape, "gesvda scratch rejects rows {}, rank {}, batch {}", rows, rank, batch_size
+    );
     const auto left_stride = static_cast<i64>(rows) * rank;
     const auto right_stride = static_cast<i64>(rank) * rank;
     const auto batched_extents_fit = strided_batch_fits_int(left_stride, batch_size)
                                      and strided_batch_fits_int(right_stride, batch_size)
                                      and strided_batch_fits_int(rank, batch_size);
-    if (not batched_extents_fit)
-    {
-        qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
-        return {};
-    }
+    require(
+        batched_extents_fit,
+        Status::bad_config,
+        "batched SVD extents rows {}, rank {}, batch {} exceed the int range",
+        rows,
+        rank,
+        batch_size
+    );
     const auto rows_count = static_cast<usize>(rows);
     const auto rank_count = static_cast<usize>(rank);
     const auto batch_count = static_cast<usize>(batch_size);
@@ -56,9 +56,8 @@ auto Linalg::approximate_svd_scratch(int rows, int rank, int batch_size) -> Gesv
     }
 
     auto* probe = svd_workspace_.grow(layout.total());
-    if (not probe) return {};
     int workspace_size{};
-    CUSOLVER_CHECK(cusolverDnCgesvdaStridedBatched_bufferSize(
+    check(cusolverDnCgesvdaStridedBatched_bufferSize(
         solver_->get(),
         CUSOLVER_EIG_MODE_VECTOR,
         rank,
@@ -78,7 +77,6 @@ auto Linalg::approximate_svd_scratch(int rows, int rank, int batch_size) -> Gesv
         &workspace_size,
         batch_size
     ));
-    if (err_state() != QNPEPS_OK) return {};
     layout.workspace_count = std::max(workspace_size, 1);
     layout.workspace_bytes =
         device_align(sizeof(cuFloatComplex) * static_cast<usize>(layout.workspace_count));
@@ -101,18 +99,16 @@ auto Linalg::approximate_svd(
     const auto valid_scratch =
         scratch != nullptr and layout.workspace_count > 0 and layout.total() > 0;
     const auto valid = valid_shape and valid_stride and input.data() and status and valid_scratch;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
-    if (not strided_batch_fits_int(input.stride(), batch_size))
-    {
-        qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
-        return;
-    }
-    CUDA_CHECK(cudaMemsetAsync(status, 0, sizeof(int) * static_cast<usize>(batch_size), stream_));
-    CUSOLVER_CHECK(cusolverDnCgesvdaStridedBatched(
+    require(valid, "gesvda rejects input {} over {} lanes", input, batch_size);
+    require(
+        strided_batch_fits_int(input.stride(), batch_size),
+        Status::bad_config,
+        "gesvda stride {} over {} lanes exceeds the int range",
+        input.stride(),
+        batch_size
+    );
+    check(cudaMemsetAsync(status, 0, sizeof(int) * static_cast<usize>(batch_size), stream_));
+    check(cusolverDnCgesvdaStridedBatched(
         solver_->get(),
         CUSOLVER_EIG_MODE_VECTOR,
         rank,
@@ -139,30 +135,29 @@ auto Linalg::approximate_svd(
 
 auto Linalg::jacobi_svd_scratch(int rows, int rank, int batch_size) -> GesvdjScratch
 {
-    if (rows <= 0 or rank <= 0 or rank > rows or batch_size <= 0)
-    {
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    const auto valid_shape = rows > 0 and rank > 0 and rank <= rows and batch_size > 0;
+    require(
+        valid_shape, "gesvdj scratch rejects rows {}, rank {}, batch {}", rows, rank, batch_size
+    );
     const auto left_stride = static_cast<i64>(rows) * rank;
     const auto right_stride = static_cast<i64>(rank) * rank;
     const auto batched_extents_fit = strided_batch_fits_int(left_stride, batch_size)
                                      and strided_batch_fits_int(right_stride, batch_size)
                                      and strided_batch_fits_int(rank, batch_size);
-    if (not batched_extents_fit)
-    {
-        qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
-        return {};
-    }
+    require(
+        batched_extents_fit,
+        Status::bad_config,
+        "batched SVD extents rows {}, rank {}, batch {} exceed the int range",
+        rows,
+        rank,
+        batch_size
+    );
     if (not gesvdj_parameters_)
     {
-        CUSOLVER_CHECK(cusolverDnCreateGesvdjInfo(&gesvdj_parameters_));
-        if (err_state() != QNPEPS_OK) return {};
-        CUSOLVER_CHECK(cusolverDnXgesvdjSetTolerance(gesvdj_parameters_, k_gesvdj_tolerance));
-        CUSOLVER_CHECK(cusolverDnXgesvdjSetMaxSweeps(gesvdj_parameters_, k_gesvdj_max_sweeps));
-        CUSOLVER_CHECK(cusolverDnXgesvdjSetSortEig(gesvdj_parameters_, 1));
-        if (err_state() != QNPEPS_OK) return {};
+        check(cusolverDnCreateGesvdjInfo(&gesvdj_parameters_));
+        check(cusolverDnXgesvdjSetTolerance(gesvdj_parameters_, k_gesvdj_tolerance));
+        check(cusolverDnXgesvdjSetMaxSweeps(gesvdj_parameters_, k_gesvdj_max_sweeps));
+        check(cusolverDnXgesvdjSetSortEig(gesvdj_parameters_, 1));
     }
 
     const auto rows_count = static_cast<usize>(rows);
@@ -187,9 +182,8 @@ auto Linalg::jacobi_svd_scratch(int rows, int rank, int batch_size) -> GesvdjScr
     }
 
     auto* probe = svd_workspace_.grow(layout.total());
-    if (not probe) return {};
     int workspace_size{};
-    CUSOLVER_CHECK(cusolverDnCgesvdj_bufferSize(
+    check(cusolverDnCgesvdj_bufferSize(
         solver_->get(),
         CUSOLVER_EIG_MODE_VECTOR,
         1,
@@ -205,7 +199,6 @@ auto Linalg::jacobi_svd_scratch(int rows, int rank, int batch_size) -> GesvdjScr
         &workspace_size,
         gesvdj_parameters_
     ));
-    if (err_state() != QNPEPS_OK) return {};
     layout.workspace_count = std::max(workspace_size, 1);
     layout.workspace_bytes =
         device_align(sizeof(cuFloatComplex) * static_cast<usize>(layout.workspace_count));
@@ -225,24 +218,22 @@ auto Linalg::jacobi_svd_batched(
         scratch != nullptr and layout.workspace_count > 0 and layout.total() > 0;
     const auto valid =
         valid_shape and valid_stride and input.data() and valid_scratch and gesvdj_parameters_;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
-    if (not strided_batch_fits_int(input.stride(), batch_size))
-    {
-        qnpeps::set_err(QNPEPS_ERR_BAD_CONFIG);
-        return;
-    }
-    CUDA_CHECK(cudaMemsetAsync(
+    require(valid, "gesvdj rejects input {} over {} lanes", input, batch_size);
+    require(
+        strided_batch_fits_int(input.stride(), batch_size),
+        Status::bad_config,
+        "gesvdj stride {} over {} lanes exceeds the int range",
+        input.stride(),
+        batch_size
+    );
+    check(cudaMemsetAsync(
         layout.status(scratch), 0, sizeof(int) * static_cast<usize>(batch_size), stream_
     ));
     const auto left_stride = static_cast<i64>(rows) * rank;
     const auto right_stride = static_cast<i64>(rank) * rank;
     for (auto lane = 0; lane < batch_size; ++lane)
     {
-        CUSOLVER_CHECK(cusolverDnCgesvdj(
+        const auto lane_status = cusolverDnCgesvdj(
             solver_->get(),
             CUSOLVER_EIG_MODE_VECTOR,
             1,
@@ -259,8 +250,17 @@ auto Linalg::jacobi_svd_batched(
             layout.workspace_count,
             layout.status(scratch) + lane,
             gesvdj_parameters_
-        ));
-        if (err_state() != QNPEPS_OK) return;
+        );
+        if (lane_status != CUSOLVER_STATUS_SUCCESS)
+        {
+            fail(
+                Status::cuda,
+                "{} in gesvdj lane {} of {}",
+                cusolver_failure_text(lane_status),
+                lane,
+                batch_size
+            );
+        }
     }
 }
 

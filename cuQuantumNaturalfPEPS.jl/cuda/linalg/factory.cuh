@@ -9,44 +9,27 @@
 
 #include <cuda_runtime.h>
 #include <memory>
-#include <new>
 #include <utility>
 
 namespace qnpeps
 {
 [[nodiscard]] inline auto make_linalg(cudaStream_t stream) -> std::unique_ptr<Linalg>
 {
-    if (err_state() != QNPEPS_OK) return nullptr;
-    if (not stream)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return nullptr;
-    }
+    require(stream != nullptr, Status::bad_config, "linear algebra context needs a stream");
     auto device = int{};
-    CUDA_CHECK(cudaGetDevice(&device));
-    if (err_state() != QNPEPS_OK) return nullptr;
+    check(cudaGetDevice(&device));
     auto blas = CublasHandle::create(stream);
-    if (not blas) return nullptr;
     auto solver = CusolverDnHandle::create(stream);
-    if (not solver) return nullptr;
     auto device_arena = shared_device_arena(device);
-    if (not device_arena) return nullptr;
     auto arena_lease = device_arena->acquire_lease(stream);
-    if (not arena_lease) return nullptr;
-    auto linalg = std::unique_ptr<Linalg>{new (std::nothrow) Linalg{
+    return std::unique_ptr<Linalg>{new Linalg{
         device,
         stream,
-        std::move(*blas),
-        std::move(*solver),
+        std::move(blas),
+        std::move(solver),
         std::move(device_arena),
         std::move(arena_lease)
     }};
-    if (not linalg)
-    {
-        set_err(QNPEPS_ERR_OOM);
-        return nullptr;
-    }
-    return linalg;
 }
 
 struct RangefinderArgs

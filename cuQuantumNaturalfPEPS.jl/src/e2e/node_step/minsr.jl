@@ -54,7 +54,7 @@ function _node_step_minsr!(
         stream,
     )
     status = GC.@preserve host FFI.e2e_minsr_ptr(arguments)
-    status == 0 || error("qnpeps_e2e_minsr failed with status $status")
+    _check(; status, what="qnpeps_e2e_minsr")
     _minsr_host_stream_synchronize!(lane.stream)
     lane.minsr_s = _node_step_seconds() - minsr_started
     lane.complete_s = _node_step_seconds() - started

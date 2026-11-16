@@ -13,6 +13,7 @@ import ..QnpepsZipupMpoMpsDesc
 import ..QnpepsGramDesc
 import ..QnpepsGramArgs
 import ..QnpepsGramFootprint
+import ..QnpepsArenaReading
 import ..QnpepsMinsrDesc
 import ..QnpepsMinsrArgs
 import ..MAX_BATCH_SIZE
@@ -21,13 +22,7 @@ include("ffi_validation.jl")
 
 capi_version()::Cstring = ccall((:qnpeps_capi_version, _ffi_library()), Cstring, ())
 
-strerror(status)::Cstring = ccall((:qnpeps_strerror, _ffi_library()), Cstring, (Cint,), status)
-
-last_error_file()::Cstring = ccall((:qnpeps_last_error_file, _ffi_library()), Cstring, ())
-
-last_error_line()::Cint = ccall((:qnpeps_last_error_line, _ffi_library()), Cint, ())
-
-last_error_message()::Cstring = ccall((:qnpeps_last_error_message, _ffi_library()), Cstring, ())
+last_error()::Cstring = ccall((:qnpeps_last_error, _ffi_library()), Cstring, ())
 
 function ctx_create(config, out; stream)::Cint
     return ccall(
@@ -472,5 +467,15 @@ function sample_scratch_bytes(config, dim_batch)::Int64
 end
 
 sampler_pool_release()::Nothing = ccall((:qnpeps_sampler_pool_release, _ffi_library()), Cvoid, ())
+
+function device_arena_reading(device, out)::Cint
+    return ccall(
+        (:qnpeps_device_arena_reading, _ffi_library()),
+        Cint,
+        (Int32, Ref{QnpepsArenaReading}),
+        device,
+        out,
+    )
+end
 
 end

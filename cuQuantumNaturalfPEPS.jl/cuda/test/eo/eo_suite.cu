@@ -1,5 +1,6 @@
 #include "dans_qnpeps_eloc.h"
 #include "gate_fixture.cuh"
+#include "term_builders.cuh"
 
 #include <algorithm>
 #include <cmath>
@@ -60,7 +61,7 @@ struct DeviceMemory
 
 struct RunResult
 {
-    qnpeps_eloc_status status{QNPEPS_ELOC_ERR_INTERNAL};
+    qnpeps_status status{QNPEPS_ERR_INTERNAL};
     std::vector<double> logpsi{};
     std::vector<double> energy{};
     std::vector<C32> rows{};
@@ -69,7 +70,7 @@ struct RunResult
 
 auto finite(const RunResult& result) -> bool
 {
-    if (result.status != QNPEPS_ELOC_OK) return false;
+    if (result.status != QNPEPS_OK) return false;
     for (double value : result.logpsi)
         if (not std::isfinite(value)) return false;
     for (double value : result.energy)
@@ -129,8 +130,7 @@ auto run_product(
     int meo,
     const std::vector<C32>& peps,
     const std::vector<std::uint8_t>& samples,
-    const std::vector<QnpepsElocDiagBond>& diag,
-    const std::vector<QnpepsElocFlipTerm>& flip
+    const eo_test::TermTableBuilder& terms
 ) -> RunResult
 {
     RunResult result{};
@@ -147,15 +147,10 @@ auto run_product(
     auto d_rows{device.allocate<C32>(result.rows.size())};
     if (not d_peps or not d_samples or not d_logpsi or not d_energy or not d_rows)
     {
-        result.status = QNPEPS_ELOC_ERR_OOM;
+        result.status = QNPEPS_ERR_OOM;
         return result;
     }
-    QnpepsElocTermTable table{
-        static_cast<std::int32_t>(diag.size()),
-        diag.empty() ? nullptr : diag.data(),
-        static_cast<std::int32_t>(flip.size()),
-        flip.empty() ? nullptr : flip.data()
-    };
+    const auto table{terms.table()};
     result.status = qnpeps_eloc_run(
         &cfg,
         reinterpret_cast<qnpeps_eloc_cbuf*>(d_peps),
@@ -170,7 +165,7 @@ auto run_product(
         0.0,
         nullptr
     );
-    if (result.status == QNPEPS_ELOC_OK)
+    if (result.status == QNPEPS_OK)
     {
         cudaMemcpy(
             result.logpsi.data(),
@@ -196,52 +191,36 @@ auto analytic_energy(
     int ly,
     const std::vector<C32>& peps,
     const std::vector<std::uint8_t>& samples,
-    const std::vector<QnpepsElocDiagBond>& diag,
-    const std::vector<QnpepsElocFlipTerm>& flip
+    const eo_test::TermTableBuilder& terms
 ) -> std::vector<std::complex<double>>
 {
     const int sites{lx * ly};
     const int count{static_cast<int>(samples.size()) / sites};
+    auto amplitude = std::vector<double>(peps.size());
+    for (std::size_t index{}; index < peps.size(); ++index)
+        amplitude[index] = peps[index].re;
     auto out = std::vector<std::complex<double>>(static_cast<std::size_t>(count));
     for (int lane{}; lane < count; ++lane)
     {
-        auto sample{samples.data() + static_cast<std::size_t>(lane) * sites};
-        double diagonal{};
-        for (const auto& term : diag)
-        {
-            const int a{1 - 2 * sample[term.site_a]};
-            const int b{1 - 2 * sample[term.site_b]};
-            diagonal += term.coeff * a * b;
-        }
-        std::complex<double> energy{diagonal, 0.0};
-        for (const auto& term : flip)
-        {
-            if (term.mask_a >= 0 and sample[term.mask_a] == sample[term.mask_b]) continue;
-            double ratio{1.0};
-            for (int k{}; k < term.n_flips; ++k)
-            {
-                const int site{term.flip_site[k]};
-                const int old_spin{sample[site]};
-                const int new_spin{term.flip_value[k] < 0 ? 1 - old_spin : term.flip_value[k]};
-                const double old_value{peps[static_cast<std::size_t>(2 * site + old_spin)].re};
-                const double new_value{peps[static_cast<std::size_t>(2 * site + new_spin)].re};
-                ratio *= new_value / old_value;
-            }
-            energy += std::complex<double>{term.coeff_re, term.coeff_im} * ratio;
-        }
-        out[static_cast<std::size_t>(lane)] = energy;
+        const auto sample{samples.data() + static_cast<std::size_t>(lane) * sites};
+        out[static_cast<std::size_t>(lane)] = terms.product_energy(sample, amplitude);
     }
     return out;
 }
 
-auto flip_term(int site, double coefficient, int mask_a = -1, int mask_b = -1) -> QnpepsElocFlipTerm
+auto bond_terms(int site_a, int site_b, double coupling) -> eo_test::TermTableBuilder
 {
-    return QnpepsElocFlipTerm{1, {site, 0, 0, 0}, {-1, 0, 0, 0}, mask_a, mask_b, coefficient, 0.0};
+    eo_test::TermTableBuilder terms{};
+    terms.add_heisenberg_bond(site_a, site_b, coupling);
+    return terms;
 }
 
-auto two_flip_term(int a, int b, double coefficient) -> QnpepsElocFlipTerm
+auto flip_terms(const std::vector<int>& sites, double coefficient) -> eo_test::TermTableBuilder
 {
-    return QnpepsElocFlipTerm{2, {a, b, 0, 0}, {-1, -1, 0, 0}, a, b, coefficient, 0.0};
+    eo_test::TermTableBuilder terms{};
+    for (int site : sites)
+        terms.add_one_site_flip(site, coefficient);
+    return terms;
 }
 
 auto emit_case(
@@ -274,13 +253,14 @@ auto run_analytic() -> bool
         const int count{3};
         const auto peps{product_peps(lx, ly)};
         const auto samples{sample_set(lx, ly, count)};
-        const std::vector<QnpepsElocDiagBond> diag{{0, 1, 1.0}};
-        const std::vector<QnpepsElocFlipTerm> flip{two_flip_term(0, 1, 2.0)};
-        const RunResult got{run_product(lx, ly, count, 2, peps, samples, diag, flip)};
-        const auto want{analytic_energy(lx, ly, peps, samples, diag, flip)};
+        const auto terms{bond_terms(0, 1, 1.0)};
+        const RunResult got{run_product(lx, ly, count, 2, peps, samples, terms)};
+        const auto want{analytic_energy(lx, ly, peps, samples, terms)};
         const double error{max_error(got.energy, want)};
-        std::vector<QnpepsElocDiagBond> wrong_diag{{0, 2, 1.0}};
-        const auto wrong{analytic_energy(lx, ly, peps, samples, wrong_diag, flip)};
+        eo_test::TermTableBuilder wrong_terms{};
+        wrong_terms.add_zz(0, 2, 1.0);
+        wrong_terms.add_exchange(0, 1, 2.0);
+        const auto wrong{analytic_energy(lx, ly, peps, samples, wrong_terms)};
         const double control{max_error(got.energy, wrong)};
         passed = emit_case(
                      "1",
@@ -297,12 +277,13 @@ auto run_analytic() -> bool
         const int count{3};
         const auto peps{product_peps(lx, ly)};
         const auto samples{sample_set(lx, ly, count)};
-        const std::vector<QnpepsElocDiagBond> diag{{0, 3, 0.58}};
-        const std::vector<QnpepsElocFlipTerm> flip{two_flip_term(0, 3, 1.16)};
-        const RunResult got{run_product(lx, ly, count, 2, peps, samples, diag, flip)};
-        const auto want{analytic_energy(lx, ly, peps, samples, diag, flip)};
-        std::vector<QnpepsElocDiagBond> wrong_diag{{0, 3, -0.58}};
-        const auto wrong{analytic_energy(lx, ly, peps, samples, wrong_diag, flip)};
+        const auto terms{bond_terms(0, 3, 0.58)};
+        const RunResult got{run_product(lx, ly, count, 2, peps, samples, terms)};
+        const auto want{analytic_energy(lx, ly, peps, samples, terms)};
+        eo_test::TermTableBuilder wrong_terms{};
+        wrong_terms.add_zz(0, 3, -0.58);
+        wrong_terms.add_exchange(0, 3, 1.16);
+        const auto wrong{analytic_energy(lx, ly, peps, samples, wrong_terms)};
         const double error{max_error(got.energy, want)};
         const double control{max_error(got.energy, wrong)};
         passed = emit_case(
@@ -320,12 +301,10 @@ auto run_analytic() -> bool
         const int count{3};
         const auto peps{product_peps(lx, ly)};
         const auto samples{sample_set(lx, ly, count)};
-        const std::vector<QnpepsElocDiagBond> diag{};
-        const std::vector<QnpepsElocFlipTerm> flip{flip_term(2, 0.5)};
-        const RunResult got{run_product(lx, ly, count, 2, peps, samples, diag, flip)};
-        const auto want{analytic_energy(lx, ly, peps, samples, diag, flip)};
-        const std::vector<QnpepsElocFlipTerm> wrong_flip{flip_term(3, 0.5)};
-        const auto wrong{analytic_energy(lx, ly, peps, samples, diag, wrong_flip)};
+        const auto terms{flip_terms({2}, 0.5)};
+        const RunResult got{run_product(lx, ly, count, 2, peps, samples, terms)};
+        const auto want{analytic_energy(lx, ly, peps, samples, terms)};
+        const auto wrong{analytic_energy(lx, ly, peps, samples, flip_terms({3}, 0.5))};
         const double error{max_error(got.energy, want)};
         const double control{max_error(got.energy, wrong)};
         passed = emit_case(
@@ -343,7 +322,7 @@ auto run_analytic() -> bool
         const int count{3};
         const auto peps{product_peps(lx, ly)};
         const auto samples{sample_set(lx, ly, count)};
-        const RunResult got{run_product(lx, ly, count, 2, peps, samples, {}, {})};
+        const RunResult got{run_product(lx, ly, count, 2, peps, samples, {})};
         double error{};
         double control{};
         const int sites{lx * ly};
@@ -386,12 +365,11 @@ auto negative_endpoints() -> bool
     };
     record(
         "endpoint_logpsi_negative",
-        qnpeps_eloc_logpsi(&bad, nullptr, nullptr, 1, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
+        qnpeps_eloc_logpsi(&bad, nullptr, nullptr, 1, nullptr, nullptr) == QNPEPS_ERR_BAD_VERSION
     );
     record(
         "endpoint_logpsi_argument",
-        qnpeps_eloc_logpsi(&cfg, nullptr, nullptr, 1, nullptr, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
+        qnpeps_eloc_logpsi(&cfg, nullptr, nullptr, 1, nullptr, nullptr) == QNPEPS_ERR_NULL_ARG
     );
     record(
         "endpoint_run_negative",
@@ -408,7 +386,7 @@ auto negative_endpoints() -> bool
             nullptr,
             0.0,
             nullptr
-        ) == QNPEPS_ELOC_ERR_BAD_VERSION
+        ) == QNPEPS_ERR_BAD_VERSION
     );
     record(
         "endpoint_run_argument",
@@ -425,39 +403,38 @@ auto negative_endpoints() -> bool
             nullptr,
             0.0,
             nullptr
-        ) == QNPEPS_ELOC_ERR_NULL_ARG
+        ) == QNPEPS_ERR_NULL_ARG
     );
     record(
         "endpoint_ctx_create_negative",
-        qnpeps_eloc_ctx_create(&bad, 1, &empty, 0, nullptr, &context) == QNPEPS_ELOC_ERR_BAD_VERSION
+        qnpeps_eloc_ctx_create(&bad, 1, &empty, 0, nullptr, &context) == QNPEPS_ERR_BAD_VERSION
     );
     record(
         "endpoint_ctx_create_argument",
-        qnpeps_eloc_ctx_create(&cfg, 1, nullptr, 0, nullptr, &context) == QNPEPS_ELOC_ERR_NULL_ARG
+        qnpeps_eloc_ctx_create(&cfg, 1, nullptr, 0, nullptr, &context) == QNPEPS_ERR_NULL_ARG
     );
     qnpeps_eloc_ctx_destroy(nullptr);
     record("endpoint_ctx_destroy_negative", true);
     record(
-        "endpoint_ctx_run_negative",
-        qnpeps_eloc_ctx_run(nullptr, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
+        "endpoint_ctx_run_negative", qnpeps_eloc_ctx_run(nullptr, nullptr) == QNPEPS_ERR_NULL_ARG
     );
     record(
         "endpoint_compact_count_negative",
-        qnpeps_eloc_compact_count(&bad, &count) == QNPEPS_ELOC_ERR_BAD_VERSION
+        qnpeps_eloc_compact_count(&bad, &count) == QNPEPS_ERR_BAD_VERSION
     );
     record(
         "endpoint_gram_tile_negative",
         qnpeps_eloc_gram_tile(&bad, nullptr, nullptr, 1, nullptr, nullptr, 1, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_BAD_VERSION
+            == QNPEPS_ERR_BAD_VERSION
     );
     record(
         "endpoint_gram_tile_argument",
         qnpeps_eloc_gram_tile(&cfg, nullptr, nullptr, 1, nullptr, nullptr, 1, nullptr, nullptr)
-            == QNPEPS_ELOC_ERR_NULL_ARG
+            == QNPEPS_ERR_NULL_ARG
     );
     record(
         "endpoint_argument_negative",
-        qnpeps_eloc_compact_count(&cfg, nullptr) == QNPEPS_ELOC_ERR_NULL_ARG
+        qnpeps_eloc_compact_count(&cfg, nullptr) == QNPEPS_ERR_NULL_ARG
     );
     return passed;
 }
@@ -468,58 +445,67 @@ auto run_adversarial() -> bool
     const auto check =
         [&](const char* name, const RunResult& result, const char* outcome = "finite_correct")
     { passed = emit_case("adversarial", name, finite(result), 0.0, "run", outcome) and passed; };
-    check("m_equal_1", run_product(2, 2, 1, 1, product_peps(2, 2), sample_set(2, 2, 1), {}, {}));
+    check("m_equal_1", run_product(2, 2, 1, 1, product_peps(2, 2), sample_set(2, 2, 1), {}));
     check(
-        "meo_greater_than_m",
-        run_product(2, 2, 2, 8, product_peps(2, 2), sample_set(2, 2, 2), {}, {})
+        "meo_greater_than_m", run_product(2, 2, 2, 8, product_peps(2, 2), sample_set(2, 2, 2), {})
     );
-    check(
-        "minimal_chi_eo", run_product(2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {}, {})
-    );
-    check(
-        "rectangular_2x3", run_product(2, 3, 2, 2, product_peps(2, 3), sample_set(2, 3, 2), {}, {})
-    );
-    check(
-        "empty_term_table", run_product(2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {}, {})
-    );
+    check("minimal_chi_eo", run_product(2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {}));
+    check("rectangular_2x3", run_product(2, 3, 2, 2, product_peps(2, 3), sample_set(2, 3, 2), {}));
+    check("empty_term_table", run_product(2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {}));
     check(
         "single_term_table",
-        run_product(2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {{0, 1, 0.25}}, {})
+        run_product(
+            2,
+            2,
+            2,
+            2,
+            product_peps(2, 2),
+            sample_set(2, 2, 2),
+            []
+            {
+                eo_test::TermTableBuilder terms{};
+                terms.add_zz(0, 1, 0.25);
+                return terms;
+            }()
+        )
     );
     check(
         "duplicate_term_table",
         run_product(
-            2, 2, 2, 2, product_peps(2, 2), sample_set(2, 2, 2), {{0, 1, 0.25}, {0, 1, 0.25}}, {}
+            2,
+            2,
+            2,
+            2,
+            product_peps(2, 2),
+            sample_set(2, 2, 2),
+            []
+            {
+                eo_test::TermTableBuilder terms{};
+                terms.add_zz(0, 1, 0.25);
+                terms.add_zz(0, 1, 0.25);
+                return terms;
+            }()
         )
     );
     check(
         "boundary_site_flip",
-        run_product(
-            2,
-            3,
-            2,
-            2,
-            product_peps(2, 3),
-            sample_set(2, 3, 2),
-            {},
-            {flip_term(0, 0.5), flip_term(5, 0.5)}
-        )
+        run_product(2, 3, 2, 2, product_peps(2, 3), sample_set(2, 3, 2), flip_terms({0, 5}, 0.5))
     );
     check(
         "zero_unused_tensor_entries",
         run_product(
-            2, 3, 2, 2, product_peps(2, 3, true, false), sample_set(2, 3, 2, true, true), {}, {}
+            2, 3, 2, 2, product_peps(2, 3, true, false), sample_set(2, 3, 2, true, true), {}
         )
     );
     check(
         "near_zero_norm_columns",
         run_product(
-            2, 3, 2, 2, product_peps(2, 3, false, true), sample_set(2, 3, 2, true, true), {}, {}
+            2, 3, 2, 2, product_peps(2, 3, false, true), sample_set(2, 3, 2, true, true), {}
         )
     );
     check(
         "all_identical_samples",
-        run_product(2, 3, 3, 2, product_peps(2, 3), sample_set(2, 3, 3, true), {}, {})
+        run_product(2, 3, 3, 2, product_peps(2, 3), sample_set(2, 3, 3, true), {})
     );
     const double nan{std::numeric_limits<double>::quiet_NaN()};
     const double inf{std::numeric_limits<double>::infinity()};
@@ -579,7 +565,86 @@ auto write_binary(const std::filesystem::path& path, const std::vector<T>& value
     return static_cast<bool>(out);
 }
 
-auto dump_reference_case(const std::string& directory, int lattice) -> bool
+using Bonds = std::vector<std::pair<int, int>>;
+
+auto lattice_bonds(int lx, int ly, bool with_diagonals) -> Bonds
+{
+    auto bonds = Bonds{};
+    for (int row{}; row < lx; ++row)
+    {
+        for (int col{}; col < ly; ++col)
+        {
+            const int site{row * ly + col};
+            if (col + 1 < ly) bonds.push_back({site, site + 1});
+            if (row + 1 < lx) bonds.push_back({site, site + ly});
+            if (with_diagonals and row + 1 < lx and col + 1 < ly)
+            {
+                bonds.push_back({site, site + ly + 1});
+                bonds.push_back({site + ly, site + 1});
+            }
+        }
+    }
+    return bonds;
+}
+
+auto one_site_operator(int sites, eo_test::Complex up_to_down, eo_test::Complex down_to_up)
+    -> eo_test::TermTableBuilder
+{
+    eo_test::TermTableBuilder terms{};
+    const std::uint8_t up_active = up_to_down != 0.0 ? 1 : 0;
+    const std::uint8_t down_active = down_to_up != 0.0 ? 1 : 0;
+    for (int site{}; site < sites; ++site)
+        terms.add_piece(
+            {site}, {up_active, down_active}, {up_to_down, down_to_up}, {0.0, 1.0, 1.0, 0.0}
+        );
+    return terms;
+}
+
+auto x_times_y(const Bonds& bonds) -> eo_test::TermTableBuilder
+{
+    eo_test::TermTableBuilder terms{};
+    const eo_test::Complex i{0.0, 1.0};
+    const std::vector<eo_test::Complex> weights{
+        0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0
+    };
+    for (const auto& [a, b] : bonds)
+        terms.add_piece({a, b}, {1, 1, 1, 1}, {-i, i, -i, i}, weights);
+    return terms;
+}
+
+auto x_times_x_plus_z(const Bonds& bonds) -> eo_test::TermTableBuilder
+{
+    eo_test::TermTableBuilder terms{};
+    const std::vector<eo_test::Complex> weights{
+        0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, -1.0
+    };
+    for (const auto& [a, b] : bonds)
+        terms.add_piece({a, b}, {1, 1, 1, 1}, {1.0, 1.0, 1.0, 1.0}, weights);
+    return terms;
+}
+
+auto reference_terms(const std::string& name, int lx, int ly, bool& known)
+    -> eo_test::TermTableBuilder
+{
+    known = true;
+    const auto bonds{lattice_bonds(lx, ly, true)};
+    if (name == "y") return one_site_operator(lx * ly, {0.0, -1.0}, {0.0, 1.0});
+    if (name == "splus") return one_site_operator(lx * ly, 1.0, 0.0);
+    if (name == "xy") return x_times_y(bonds);
+    if (name == "weighted") return x_times_x_plus_z(bonds);
+    eo_test::TermTableBuilder terms{};
+    known = name == "j1j2";
+    for (const auto& [a, b] : bonds)
+    {
+        const bool diagonal{b - a == ly + 1 or a - b == ly - 1};
+        terms.add_heisenberg_bond(a, b, diagonal ? 0.58 : 1.0);
+    }
+    return terms;
+}
+
+auto dump_reference_case(
+    const std::string& directory, int lattice, const std::string& operator_name
+) -> bool
 {
     const int lx{lattice};
     const int ly{lattice};
@@ -593,30 +658,12 @@ auto dump_reference_case(const std::string& directory, int lattice) -> bool
     for (std::size_t index{}; index < peps.size(); ++index)
         peps[index] = C32{static_cast<float>(generated.flat[index]), 0.0f};
     const auto samples{gate::gen_samples(lx, ly, 2, count, seed + 1, false)};
-    std::vector<QnpepsElocDiagBond> diag{};
-    std::vector<QnpepsElocFlipTerm> flip{};
-    const auto add = [&](int a, int b, double coupling)
-    {
-        diag.push_back({a, b, coupling});
-        flip.push_back(two_flip_term(a, b, 2.0 * coupling));
-    };
-    for (int row{}; row < lx; ++row)
-    {
-        for (int col{}; col < ly; ++col)
-        {
-            const int site{row * ly + col};
-            if (col + 1 < ly) add(site, site + 1, 1.0);
-            if (row + 1 < lx) add(site, site + ly, 1.0);
-            if (row + 1 < lx and col + 1 < ly)
-            {
-                add(site, site + ly + 1, 0.58);
-                add(site + ly, site + 1, 0.58);
-            }
-        }
-    }
+    bool known{};
+    const auto terms{reference_terms(operator_name, lx, ly, known)};
+    if (not known) return false;
     QnpepsElocConfig cfg{sizeof(QnpepsElocConfig), lx, ly, 2, bond, chi, meo};
     std::int64_t compact{};
-    if (qnpeps_eloc_compact_count(&cfg, &compact) != QNPEPS_ELOC_OK) return false;
+    if (qnpeps_eloc_compact_count(&cfg, &compact) != QNPEPS_OK) return false;
     auto logpsi = std::vector<double>(static_cast<std::size_t>(2 * count));
     auto energy = std::vector<double>(static_cast<std::size_t>(2 * count));
     auto rows = std::vector<C32>(static_cast<std::size_t>(count) * compact);
@@ -626,12 +673,7 @@ auto dump_reference_case(const std::string& directory, int lattice) -> bool
     auto d_logpsi{device.allocate<double>(logpsi.size())};
     auto d_energy{device.allocate<double>(energy.size())};
     auto d_rows{device.allocate<C32>(rows.size())};
-    QnpepsElocTermTable table{
-        static_cast<std::int32_t>(diag.size()),
-        diag.data(),
-        static_cast<std::int32_t>(flip.size()),
-        flip.data()
-    };
+    const auto table{terms.table()};
     const auto status{qnpeps_eloc_run(
         &cfg,
         reinterpret_cast<qnpeps_eloc_cbuf*>(d_peps),
@@ -646,7 +688,7 @@ auto dump_reference_case(const std::string& directory, int lattice) -> bool
         0.0,
         nullptr
     )};
-    if (status != QNPEPS_ELOC_OK) return false;
+    if (status != QNPEPS_OK) return false;
     cudaMemcpy(logpsi.data(), d_logpsi, sizeof(double) * logpsi.size(), cudaMemcpyDeviceToHost);
     cudaMemcpy(energy.data(), d_energy, sizeof(double) * energy.size(), cudaMemcpyDeviceToHost);
     cudaMemcpy(rows.data(), d_rows, sizeof(C32) * rows.size(), cudaMemcpyDeviceToHost);
@@ -667,6 +709,7 @@ auto dump_reference_case(const std::string& directory, int lattice) -> bool
     manifest << "compact_count=" << compact << '\n';
     manifest << "J1=1\n";
     manifest << "J2=0.58\n";
+    manifest << "operator=" << operator_name << '\n';
     manifest << "reference_chi=" << 4 * bond << '\n';
     return static_cast<bool>(manifest);
 }
@@ -674,15 +717,19 @@ auto dump_reference_case(const std::string& directory, int lattice) -> bool
 
 int main(int argc, char** argv)
 {
-    if (argc == 4 and std::strcmp(argv[1], "--dump") == 0)
+    if ((argc == 4 or argc == 5) and std::strcmp(argv[1], "--dump") == 0)
     {
         const int lattice{std::atoi(argv[3])};
-        const bool passed{(lattice == 4 or lattice == 8) and dump_reference_case(argv[2], lattice)};
+        const std::string operator_name{argc == 5 ? argv[4] : "j1j2"};
+        const bool passed{
+            (lattice == 4 or lattice == 8) and dump_reference_case(argv[2], lattice, operator_name)
+        };
         std::printf(
-            "[eo_suite] tier=3 case=L%d status=%s observed=%d route=j1j2 outcome=dumped\n",
+            "[eo_suite] tier=3 case=L%d status=%s observed=%d route=%s outcome=dumped\n",
             lattice,
             passed ? "PASS" : "FAIL",
-            passed ? 0 : 1
+            passed ? 0 : 1,
+            operator_name.c_str()
         );
         return passed ? 0 : 1;
     }

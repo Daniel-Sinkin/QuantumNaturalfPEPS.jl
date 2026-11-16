@@ -1,3 +1,4 @@
+#include "density_rows.cuh"
 #include "parts.cuh"
 
 namespace qn_eloc::env
@@ -5,50 +6,59 @@ namespace qn_eloc::env
 
 auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver& cv) -> usize
 {
-    if (sh.lx < 1 or sh.ly < 1 or sh.dim_phys < 1 or sh.dim_bond < 1 or sh.chi < 1 or sh.lanes < 1)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return 0;
-    }
+    const auto positive = sh.lx >= 1 and sh.ly >= 1 and sh.dim_phys >= 1 and sh.dim_bond >= 1
+                          and sh.chi >= 1 and sh.lanes >= 1;
+    require(
+        positive,
+        Status::bad_config,
+        "local energy worker rejects lattice {}x{}, dim_phys {}, dim_bond {}, chi {}, {} lanes",
+        sh.lx,
+        sh.ly,
+        sh.dim_phys,
+        sh.dim_bond,
+        sh.chi,
+        sh.lanes
+    );
     const auto lanes = usize{static_cast<usize>(sh.lanes)};
     const auto C = std::uint64_t{static_cast<std::uint64_t>(sh.chi)};
     const auto D = std::uint64_t{static_cast<std::uint64_t>(sh.dim_bond)};
     i64 gram_slot{};
     i64 fold4_slot{};
     int chi_bond{};
-    if (not arena_slot({C, D, C}, w.slot_env) or not arena_slot({D, D, D, D}, w.slot_proj)
-        or not arena_slot({C, C, D, D, D}, w.slot_tmp) or not arena_slot({C, C, D}, w.slot_r)
-        or not arena_slot({C, C, D}, w.slot_rf) or not arena_slot({C, D, C}, w.slot_h)
-        or not arena_slot({C, D, D, C}, w.slot_fb) or not arena_slot({C, C}, gram_slot)
-        or not arena_slot({C, D, D, C, D}, fold4_slot) or not arena_int({C, D}, chi_bond))
-        return 0;
+    arena_slot({C, D, C}, w.slot_env);
+    arena_slot({D, D, D, D}, w.slot_proj);
+    arena_slot({C, C, D, D, D}, w.slot_tmp);
+    arena_slot({C, C, D}, w.slot_r);
+    arena_slot({C, C, D}, w.slot_rf);
+    arena_slot({C, D, C}, w.slot_h);
+    arena_slot({C, D, D, C}, w.slot_fb);
+    arena_slot({C, C}, gram_slot);
+    arena_slot({C, D, D, C, D}, fold4_slot);
+    arena_int({C, D}, chi_bond);
     i64 env_cuts{};
     i64 h_cuts_i64{};
     i64 fb_cuts_i64{};
-    if (not arena_slot(
-            {static_cast<std::uint64_t>(sh.lx - 1), static_cast<std::uint64_t>(sh.ly)}, env_cuts
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(sh.lx), static_cast<std::uint64_t>(sh.ly - 1)}, h_cuts_i64
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(sh.lx - 1), static_cast<std::uint64_t>(sh.ly - 1)},
-            fb_cuts_i64
-        ))
-        return 0;
+    arena_slot(
+        {static_cast<std::uint64_t>(sh.lx - 1), static_cast<std::uint64_t>(sh.ly)}, env_cuts
+    );
+    arena_slot(
+        {static_cast<std::uint64_t>(sh.lx), static_cast<std::uint64_t>(sh.ly - 1)}, h_cuts_i64
+    );
+    arena_slot(
+        {static_cast<std::uint64_t>(sh.lx - 1), static_cast<std::uint64_t>(sh.ly - 1)}, fb_cuts_i64
+    );
     const auto grab = [&](i64 slot, i64 count) -> EoDeviceBuffer
     {
         EoDeviceBuffer b{};
         b.stride = slot;
         i64 elements{};
-        if (slot < 0 or count < 0
-            or not arena_slot(
-                {static_cast<std::uint64_t>(slot),
-                 static_cast<std::uint64_t>(count),
-                 static_cast<std::uint64_t>(lanes)},
-                elements
-            ))
-            return b;
+        if (slot < 0 or count < 0) return b;
+        arena_slot(
+            {static_cast<std::uint64_t>(slot),
+             static_cast<std::uint64_t>(count),
+             static_cast<std::uint64_t>(lanes)},
+            elements
+        );
         b.p = cv.take<cf>(static_cast<usize>(elements));
         return b;
     };
@@ -81,11 +91,9 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         );
     }
     usize vertical_scales{};
-    if (not arena_product(
-            {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(sh.lx - 1)},
-            vertical_scales
-        ))
-        return 0;
+    arena_product(
+        {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(sh.lx - 1)}, vertical_scales
+    );
     w.f_down = cv.take<f64>(vertical_scales);
     w.f_top = cv.take<f64>(vertical_scales);
     w.f_ov = cv.take<f64>(lanes);
@@ -100,11 +108,9 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         w.hl = grab(w.slot_h, h_cuts_i64);
         w.hr = grab(w.slot_h, h_cuts_i64);
         usize h_scales{};
-        if (not arena_product(
-                {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(h_cuts_i64)},
-                h_scales
-            ))
-            return 0;
+        arena_product(
+            {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(h_cuts_i64)}, h_scales
+        );
         w.f_hl = cv.take<f64>(h_scales);
         w.f_hr = cv.take<f64>(h_scales);
     }
@@ -114,29 +120,25 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         w.fbr = grab(w.slot_fb, fb_cuts_i64);
         w.proj2 = grab(w.slot_proj, sh.ly);
         usize fb_scales{};
-        if (not arena_product(
-                {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(fb_cuts_i64)},
-                fb_scales
-            ))
-            return 0;
+        arena_product(
+            {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(fb_cuts_i64)}, fb_scales
+        );
         w.f_fbl = cv.take<f64>(fb_scales);
         w.f_fbr = cv.take<f64>(fb_scales);
     }
+    if (sh.density_batched) carve_density_rows(w, sh, cv);
     if (want_h or want_fb)
     {
         const auto slot_bytes = [&](i64 elems) -> usize
         {
             usize bytes{};
             usize aligned{};
-            if (elems < 0
-                or not arena_product(
-                    {sizeof(cf),
-                     static_cast<std::uint64_t>(elems),
-                     static_cast<std::uint64_t>(lanes)},
-                    bytes
-                )
-                or not arena_align(bytes, aligned))
-                return 0;
+            if (elems < 0) return 0;
+            arena_product(
+                {sizeof(cf), static_cast<std::uint64_t>(elems), static_cast<std::uint64_t>(lanes)},
+                bytes
+            );
+            arena_align(bytes, aligned);
             return aligned;
         };
         const auto h_e = i64{w.slot_h};
@@ -149,28 +151,29 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         const auto fb_bytes = usize{slot_bytes(fb_e)};
         const auto fold4_bytes = usize{slot_bytes(fold4_e)};
         const auto ok_bytes = usize{slot_bytes(ok_e)};
-        if (qn::err_state() != QNPEPS_ELOC_OK) return 0;
         usize reserve{};
-        const auto reserve_slots = [&](std::uint64_t count, usize bytes) -> bool
+        const auto reserve_slots = [&](std::uint64_t count, usize bytes)
         {
             usize term{};
-            return arena_product({count, static_cast<std::uint64_t>(bytes)}, term)
-                   and arena_accumulate(reserve, term);
+            arena_product({count, static_cast<std::uint64_t>(bytes)}, term);
+            arena_accumulate(reserve, term);
         };
         usize row_pair{};
         usize row_slots{};
         usize tail{};
-        if (not reserve_slots(6u, proj_bytes) or not reserve_slots(4u, h_bytes)
-            or (want_fb and not reserve_slots(4u, fb_bytes)) or not reserve_slots(12u, fold4_bytes)
-            or not reserve_slots(8u, ok_bytes) or not arena_sum(proj_bytes, h_bytes, row_pair)
-            or not arena_product(
-                {static_cast<std::uint64_t>(sh.ly), static_cast<std::uint64_t>(row_pair)}, row_slots
-            )
-            or not arena_accumulate(reserve, row_slots) or not arena_product({64u, 256u}, tail)
-            or not arena_accumulate(reserve, tail))
-            return 0;
+        reserve_slots(6u, proj_bytes);
+        reserve_slots(4u, h_bytes);
+        if (want_fb) reserve_slots(4u, fb_bytes);
+        reserve_slots(12u, fold4_bytes);
+        reserve_slots(8u, ok_bytes);
+        arena_sum(proj_bytes, h_bytes, row_pair);
+        arena_product(
+            {static_cast<std::uint64_t>(sh.ly), static_cast<std::uint64_t>(row_pair)}, row_slots
+        );
+        arena_accumulate(reserve, row_slots);
+        arena_product({64u, 256u}, tail);
+        arena_accumulate(reserve, tail);
         auto* const scratch_base = cv.take<char>(reserve);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return 0;
         w.scratch = Carver::carve(scratch_base, reserve);
     }
     return cv.total();
@@ -187,11 +190,11 @@ auto worker_setup(
     ContextArena& context_arena
 ) -> void
 {
-    if (stream != w.la.stream())
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return;
-    }
+    require(
+        stream == w.la.stream(),
+        Status::bad_config,
+        "local energy worker stream differs from its execution stream"
+    );
     w.sh = sh;
     w.want_h = want_h;
     w.want_fb = want_fb;
@@ -199,42 +202,41 @@ auto worker_setup(
     w.samples = samples;
     w.arena = &context_arena;
     carve_worker(w, sh, want_h, want_fb, context_arena);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
     if (sh.density)
     {
-        const auto status = int{
-            qn_eloc::density::create(w.la, context_arena, sh.ly, sh.dim_bond, sh.chi, &w.density)
-        };
-        if (status != 0 or not w.density)
-        {
-            qn::set_err(status == 5 ? QNPEPS_ELOC_ERR_OOM : QNPEPS_ELOC_ERR_INTERNAL);
-            return;
-        }
+        qnpeps::collapse_to_internal(
+            {Status::out_of_memory},
+            [&]
+            {
+                qn_eloc::density::create(
+                    w.la, context_arena, sh.ly, sh.dim_bond, sh.chi, &w.density
+                );
+            }
+        );
     }
     const auto lanes = usize{static_cast<usize>(sh.lanes)};
     auto hp = std::vector<cf*>(lanes);
     for (auto lane = usize{0}; lane < lanes; ++lane)
         hp[lane] = w.gram.p + static_cast<i64>(lane) * w.gram.stride;
     usize pointer_bytes{};
-    if (not arena_product({sizeof(cf*), lanes}, pointer_bytes)) return;
-    CUDA_CHECK(cudaMemcpy(w.gram_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
+    arena_product({sizeof(cf*), lanes}, pointer_bytes);
+    check(cudaMemcpy(w.gram_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
     for (auto lane = usize{0}; lane < lanes; ++lane)
         hp[lane] = w.sketch.p + static_cast<i64>(lane) * w.sketch.stride;
-    CUDA_CHECK(cudaMemcpy(w.sketch_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
+    check(cudaMemcpy(w.sketch_ptrs, hp.data(), pointer_bytes, cudaMemcpyHostToDevice));
     auto lane_indices = std::vector<int>(lanes);
     std::iota(lane_indices.begin(), lane_indices.end(), 0);
-    CUDA_CHECK(
+    check(
         cudaMemcpy(w.all_lanes, lane_indices.data(), sizeof(int) * lanes, cudaMemcpyHostToDevice)
     );
-    CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
+    check(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
 
     int site_count_int{};
     usize site_slots{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(sh.lx), static_cast<std::uint64_t>(sh.ly)}, site_count_int
-        )
-        or not arena_sum(static_cast<usize>(site_count_int), 1u, site_slots))
-        return;
+    arena_int(
+        {static_cast<std::uint64_t>(sh.lx), static_cast<std::uint64_t>(sh.ly)}, site_count_int
+    );
+    arena_sum(static_cast<usize>(site_count_int), 1u, site_slots);
     const auto site_count = usize{static_cast<usize>(site_count_int)};
     w.site_off.assign(site_slots, 0);
     i64 off{};
@@ -245,16 +247,15 @@ auto worker_setup(
             w.site_off[static_cast<usize>(row) * sh.ly + col] = off;
             i64 n_site{};
             i64 next{};
-            if (not arena_slot(
-                    {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond)),
-                     static_cast<std::uint64_t>(sh.dim_phys)},
-                    n_site
-                )
-                or not arena_i64_sum(off, n_site, next))
-                return;
+            arena_slot(
+                {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond)),
+                 static_cast<std::uint64_t>(sh.dim_phys)},
+                n_site
+            );
+            arena_i64_sum(off, n_site, next);
             off = next;
         }
     }
@@ -264,13 +265,13 @@ auto worker_setup(
     if (want_h or want_fb)
     {
         cu_fill_first_one<<<1, 256, 0, w.la.stream()>>>(w.unit, 1, 1, sh.lanes);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
 }
 
 auto worker_teardown(Worker& w) -> void
 {
-    if (w.la.stream()) CUDA_NOCHECK(cudaStreamSynchronize(w.la.stream()));
+    if (w.la.stream()) unchecked(cudaStreamSynchronize(w.la.stream()));
     qn_eloc::density::destroy(w.density);
     w.density = nullptr;
     w.omegas.clear();
@@ -280,15 +281,16 @@ auto worker_teardown(Worker& w) -> void
 
 auto worker_begin_rangefinders(Worker& w) -> void
 {
-    CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), w.la.stream()));
+    check(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), w.la.stream()));
+    clear_density_flags(w);
 }
 
 auto worker_rangefinder_failed(Worker& w) -> int
 {
     int fail{};
-    CUDA_CHECK(cudaStreamSynchronize(w.la.stream()));
-    CUDA_CHECK(cudaMemcpy(&fail, w.fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
-    return qn::err_state() == QNPEPS_ELOC_OK ? fail : -1;
+    check(cudaStreamSynchronize(w.la.stream()));
+    check(cudaMemcpy(&fail, w.fail_flag, sizeof(int), cudaMemcpyDeviceToHost));
+    return fail;
 }
 
 auto worker_ensure(
@@ -302,8 +304,13 @@ auto worker_ensure(
     ContextArena& context_arena
 ) -> void
 {
-    if (w.arena
-        and (w.sh.lanes != sh.lanes or w.sh.density != sh.density or w.sh.density_cutoff != sh.density_cutoff or w.sh.rangefinder != sh.rangefinder or w.sh.svd_cutoff != sh.svd_cutoff or w.want_h != want_h or w.want_fb != want_fb))
+    const auto has_same_shape =
+        w.sh.lanes == sh.lanes and w.sh.density == sh.density
+        and w.sh.density_batched == sh.density_batched and w.sh.density_cutoff == sh.density_cutoff
+        and w.sh.rangefinder == sh.rangefinder and w.sh.svd_cutoff == sh.svd_cutoff;
+    const auto has_same_outputs = w.want_h == want_h and w.want_fb == want_fb;
+    const auto is_reusable = has_same_shape and has_same_outputs;
+    if (w.arena and not is_reusable)
     {
         auto& linalg = w.la;
         worker_teardown(w);
@@ -317,7 +324,7 @@ auto worker_ensure(
     }
     w.peps = peps;
     w.samples = samples;
-    CUDA_CHECK(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
+    check(cudaMemsetAsync(w.fail_flag, 0, sizeof(int), stream));
 }
 
 }

@@ -71,8 +71,8 @@ class Sampler
     {
         return permutation_cache_;
     }
-    auto bind_linalg(Linalg& linalg) noexcept -> void { linalg_ = &linalg; }
-    auto bind_arena(ArenaCursor& arena) noexcept -> void { arena_ = &arena; }
+    auto bind_linalg(Linalg& linalg) -> void { linalg_ = &linalg; }
+    auto bind_arena(ArenaCursor& arena) -> void { arena_ = &arena; }
 
     [[nodiscard]] auto mpo() noexcept -> std::vector<std::vector<cuFloatComplex*>>& { return mpo_; }
     [[nodiscard]] auto peps_shapes() noexcept -> std::vector<std::vector<Shape>>&
@@ -145,11 +145,7 @@ class Sampler
     [[nodiscard]] auto omega(int cols, int rank) -> cuFloatComplex*
     {
         const auto valid = linalg_ and arena_ and cols > 0 and rank > 0 and rank <= cols;
-        if (not valid)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return nullptr;
-        }
+        require(valid, "sampler sketch rejects {} columns at rank {}", cols, rank);
         const std::pair key{cols, rank};
         if (const auto it = omegas_.find(key); it != omegas_.end())
         {
@@ -175,11 +171,13 @@ class Sampler
         const auto valid = linalg_ and input.data() and input.rows() > 0 and input.cols() > 0
                            and rank > 0 and rank <= std::min(input.rows(), input.cols())
                            and q_out.data() and r_out.data() and dim_batch > 0;
-        if (not valid)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return;
-        }
+        require(
+            valid,
+            "sampler rangefinder rejects input {} at rank {} over {} lanes",
+            input,
+            rank,
+            dim_batch
+        );
         batched_rangefinder(
             *linalg_,
             {

@@ -4,22 +4,9 @@
 #include "update.cuh"
 
 #include <cmath>
-#include <new>
 
 namespace qn_e2e
 {
-
-namespace
-{
-
-auto map_cuda(cudaError_t error) -> qnpeps_e2e_status
-{
-    if (error == cudaSuccess) return QNPEPS_E2E_OK;
-    if (error == cudaErrorMemoryAllocation) return QNPEPS_E2E_ERR_OOM;
-    return QNPEPS_E2E_ERR_CUDA;
-}
-
-}
 
 auto build_update_sites(const QnpepsE2eConfig& cfg) -> std::vector<UpdateSite>
 {
@@ -53,17 +40,23 @@ auto launch_update_f32(
     const cf* theta_dot,
     f64 learning_rate,
     cudaStream_t stream
-) -> qnpeps_e2e_status
+) -> void
 {
-    if (not sites or site_count < 1 or not peps_f32_io or not theta_dot)
-        return QNPEPS_E2E_ERR_NULL_ARG;
+    const auto has_buffers = sites and site_count >= 1 and peps_f32_io and theta_dot;
+    require(
+        has_buffers, Status::null_argument, "f32 update over {} sites misses a buffer", site_count
+    );
     const f32 rate{static_cast<f32>(learning_rate)};
-    if (not std::isfinite(learning_rate) or not std::isfinite(rate))
-        return QNPEPS_E2E_ERR_BAD_CONFIG;
+    require(
+        std::isfinite(learning_rate) and std::isfinite(rate),
+        Status::bad_config,
+        "f32 update learning rate {} is not finite in single precision",
+        learning_rate
+    );
     const auto block_count = static_cast<unsigned int>(site_count);
     const UpdateF32Args args{sites, peps_f32_io, theta_dot, rate};
     cu_update_f32<<<block_count, qnpeps::k_threads_per_block, 0, stream>>>(args);
-    return map_cuda(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_update_f64(
@@ -74,15 +67,23 @@ auto launch_update_f64(
     cf* peps_f32_out,
     f64 learning_rate,
     cudaStream_t stream
-) -> qnpeps_e2e_status
+) -> void
 {
-    if (not sites or site_count < 1 or not state_f64_io or not theta_dot or not peps_f32_out)
-        return QNPEPS_E2E_ERR_NULL_ARG;
-    if (not std::isfinite(learning_rate)) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    const auto has_buffers =
+        sites and site_count >= 1 and state_f64_io and theta_dot and peps_f32_out;
+    require(
+        has_buffers, Status::null_argument, "f64 update over {} sites misses a buffer", site_count
+    );
+    require(
+        std::isfinite(learning_rate),
+        Status::bad_config,
+        "f64 update learning rate {} is not finite",
+        learning_rate
+    );
     const auto block_count = static_cast<unsigned int>(site_count);
     const UpdateF64Args args{sites, state_f64_io, theta_dot, peps_f32_out, learning_rate};
     cu_update_f64<<<block_count, qnpeps::k_threads_per_block, 0, stream>>>(args);
-    return map_cuda(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }

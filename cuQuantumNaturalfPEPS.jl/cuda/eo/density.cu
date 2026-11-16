@@ -153,8 +153,12 @@ auto product(
     const auto& context = *static_cast<const ProductContext*>(context_value);
     const auto& args = *context.args;
     const auto index = static_cast<usize>(site.site);
-    if (index >= static_cast<usize>(args.sites))
-        return qnpeps::set_err(QNPEPS_ERR_INTERNAL), void();
+    require(
+        index < static_cast<usize>(args.sites),
+        "local energy density product site {} outside a row of {} sites",
+        index,
+        args.sites
+    );
     const auto& shape = args.shapes[index];
     const auto combined_left = site.state_left * site.operator_left;
     const auto combined_right = site.state_right * site.operator_right;
@@ -175,12 +179,7 @@ auto product(
          .contract_up = args.contract_up,
          .product = output}
     );
-    CUDA_CHECK(cudaGetLastError());
-}
-
-auto status_value() -> int
-{
-    return static_cast<int>(qnpeps::err_state());
+    check(cudaGetLastError());
 }
 }
 
@@ -208,14 +207,19 @@ auto create(
     int dim_bond,
     int max_bond,
     Context** output
-) -> int
+) -> void
 {
-    qnpeps::reset_err();
-    if (not output) return static_cast<int>(QNPEPS_ERR_NULL_ARG);
-    auto context = std::unique_ptr<Context>{new (std::nothrow) Context{}};
-    if (not context) return static_cast<int>(QNPEPS_ERR_OOM);
+    require(output != nullptr, Status::null_argument, "density context output is null");
+    auto context = std::make_unique<Context>();
     context->linalg = &linalg;
-    if (sites < 2 or dim_bond < 1 or max_bond < 1) return static_cast<int>(QNPEPS_ERR_BAD_CONFIG);
+    require(
+        sites >= 2 and dim_bond >= 1 and max_bond >= 1,
+        Status::bad_config,
+        "density context rejects {} sites, bond {}, maximum bond {}",
+        sites,
+        dim_bond,
+        max_bond
+    );
     const auto state_slot =
         static_cast<usize>(max_bond) * static_cast<usize>(dim_bond) * static_cast<usize>(max_bond);
     context->state_count = static_cast<usize>(sites) * state_slot;
@@ -239,9 +243,7 @@ auto create(
     context->sites = sites;
     context->dim_bond = dim_bond;
     context->max_bond = max_bond;
-    if (qnpeps::err_state() != QNPEPS_OK) return status_value();
     *output = context.release();
-    return static_cast<int>(QNPEPS_OK);
 }
 
 auto destroy(Context* context) -> void
@@ -249,22 +251,35 @@ auto destroy(Context* context) -> void
     delete context;
 }
 
-auto boundary(Context& context, const RowArgs& args) -> int
+auto boundary(Context& context, const RowArgs& args) -> void
 {
-    qnpeps::reset_err();
-    if (args.sites != context.sites or not args.shapes or not args.projected or not args.output
-        or not args.output_ranks or not args.device_gauge)
-        return static_cast<int>(QNPEPS_ERR_BAD_CONFIG);
+    const auto valid_args = args.sites == context.sites and args.shapes and args.projected
+                            and args.output and args.output_ranks and args.device_gauge;
+    require(
+        valid_args,
+        Status::bad_config,
+        "density boundary row of {} sites for a context of {} sites misses a buffer",
+        args.sites,
+        context.sites
+    );
     args.output_ranks[0] = 1;
     for (auto site = 0; site < args.sites; ++site)
     {
         const auto& shape = args.shapes[site];
         const auto vertical = args.contract_up ? shape.south : shape.north;
-        if ((args.contract_up and shape.north != 1) or (not args.contract_up and shape.south != 1)
-            or shape.west < 1 or vertical < 1 or shape.east < 1)
-            return static_cast<int>(QNPEPS_ERR_BAD_CONFIG);
-        if (site > 0 and args.output_ranks[site] != shape.west)
-            return static_cast<int>(QNPEPS_ERR_INTERNAL);
+        const auto open_edge = args.contract_up ? shape.north : shape.south;
+        const auto valid_shape =
+            open_edge == 1 and shape.west >= 1 and vertical >= 1 and shape.east >= 1;
+        require(
+            valid_shape, Status::bad_config, "density boundary site {} has extents {}", site, shape
+        );
+        require(
+            site == 0 or args.output_ranks[site] == shape.west,
+            "density boundary site {} west bond {} differs from the carried rank {}",
+            site,
+            shape.west,
+            args.output_ranks[site]
+        );
         args.output_ranks[site] = static_cast<int>(shape.west);
         args.output_ranks[site + 1] = static_cast<int>(shape.east);
         cu_boundary<<<1, qnpeps::k_threads_per_block, 0, context.linalg->stream()>>>(
@@ -277,31 +292,35 @@ auto boundary(Context& context, const RowArgs& args) -> int
              .contract_up = args.contract_up,
              .gauge = args.device_gauge}
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
-    if (args.output_ranks[0] != 1 or args.output_ranks[args.sites] != 1)
-        return static_cast<int>(QNPEPS_ERR_INTERNAL);
-    return status_value();
+    const auto open_row = args.output_ranks[0] == 1 and args.output_ranks[args.sites] == 1;
+    require(open_row, "density boundary row does not end in unit ranks");
 }
 
-auto contract(Context& context, const RowArgs& args) -> int
+auto contract(Context& context, const RowArgs& args) -> void
 {
-    qnpeps::reset_err();
-    if (args.sites != context.sites or args.max_bond != context.max_bond
-        or not std::isfinite(args.cutoff) or args.cutoff < 0.0 or not args.shapes
-        or not args.projected or not args.adjacent or not args.output or not args.adjacent_ranks
-        or not args.output_ranks or not args.device_gauge)
-        return static_cast<int>(QNPEPS_ERR_BAD_CONFIG);
+    const auto matches_context = args.sites == context.sites and args.max_bond == context.max_bond;
+    const auto valid_cutoff = std::isfinite(args.cutoff) and args.cutoff >= 0.0;
+    const auto has_buffers = args.shapes and args.projected and args.adjacent and args.output
+                             and args.adjacent_ranks and args.output_ranks and args.device_gauge;
+    require(
+        matches_context and valid_cutoff and has_buffers,
+        Status::bad_config,
+        "density contraction of {} sites at maximum bond {} and cutoff {} does not fit its context",
+        args.sites,
+        args.max_bond,
+        args.cutoff
+    );
     auto input_gauge = 0.0;
-    CUDA_CHECK(cudaMemcpyAsync(
+    check(cudaMemcpyAsync(
         &input_gauge,
         args.device_gauge,
         sizeof(input_gauge),
         cudaMemcpyDeviceToHost,
         context.linalg->stream()
     ));
-    CUDA_CHECK(cudaStreamSynchronize(context.linalg->stream()));
-    if (qnpeps::err_state() != QNPEPS_OK) return status_value();
+    check(cudaStreamSynchronize(context.linalg->stream()));
     auto sites = std::vector<qnpeps::densitymatrix::Site>{};
     sites.reserve(static_cast<usize>(args.sites));
     auto state_offset = 0_uz;
@@ -337,9 +356,14 @@ auto contract(Context& context, const RowArgs& args) -> int
         );
         state_offset += state_size;
     }
-    CUDA_CHECK(cudaGetLastError());
-    if (state_offset > context.state_count or qnpeps::err_state() != QNPEPS_OK)
-        return static_cast<int>(QNPEPS_ERR_BAD_CONFIG);
+    check(cudaGetLastError());
+    require(
+        state_offset <= context.state_count,
+        Status::bad_config,
+        "density contraction needs {} state values, {} reserved",
+        state_offset,
+        context.state_count
+    );
     const auto product_context = ProductContext{&args};
     qnpeps::densitymatrix::apply(
         *context.linalg,
@@ -367,24 +391,22 @@ auto contract(Context& context, const RowArgs& args) -> int
          .product = product,
          .product_context = &product_context}
     );
-    if (qnpeps::err_state() != QNPEPS_OK) return status_value();
     auto dimensions = std::vector<i32>(3_uz * static_cast<usize>(args.sites));
-    CUDA_CHECK(cudaMemcpyAsync(
+    check(cudaMemcpyAsync(
         dimensions.data(),
         context.result_dimensions,
         dimensions.size() * sizeof(i32),
         cudaMemcpyDeviceToHost,
         context.linalg->stream()
     ));
-    CUDA_CHECK(cudaMemcpyAsync(
+    check(cudaMemcpyAsync(
         args.device_gauge,
         context.output_gauge,
         sizeof(f64),
         cudaMemcpyDeviceToDevice,
         context.linalg->stream()
     ));
-    CUDA_CHECK(cudaStreamSynchronize(context.linalg->stream()));
-    if (qnpeps::err_state() != QNPEPS_OK) return status_value();
+    check(cudaStreamSynchronize(context.linalg->stream()));
     for (auto site = 0; site < args.sites; ++site)
     {
         const auto offset = 3 * site;
@@ -392,9 +414,16 @@ auto contract(Context& context, const RowArgs& args) -> int
         const auto right = static_cast<i64>(dimensions[static_cast<usize>(offset + 1)]);
         const auto left = static_cast<i64>(dimensions[static_cast<usize>(offset + 2)]);
         const auto expected = args.contract_up ? args.shapes[site].south : args.shapes[site].north;
-        if (physical != expected or left < 1 or right < 1
-            or (site > 0 and args.output_ranks[site] != left))
-            return static_cast<int>(QNPEPS_ERR_INTERNAL);
+        const auto valid_output = physical == expected and left >= 1 and right >= 1
+                                  and (site == 0 or args.output_ranks[site] == left);
+        require(
+            valid_output,
+            "density contraction site {} produced extents {}x{}x{}",
+            site,
+            left,
+            physical,
+            right
+        );
         args.output_ranks[site] = static_cast<int>(left);
         args.output_ranks[site + 1] = static_cast<int>(right);
         cu_pack<<<
@@ -409,9 +438,8 @@ auto contract(Context& context, const RowArgs& args) -> int
              .output = reinterpret_cast<cuFloatComplex*>(args.output[site])}
         );
     }
-    CUDA_CHECK(cudaGetLastError());
-    if (args.output_ranks[0] != 1 or args.output_ranks[args.sites] != 1)
-        return static_cast<int>(QNPEPS_ERR_INTERNAL);
-    return status_value();
+    check(cudaGetLastError());
+    const auto open_row = args.output_ranks[0] == 1 and args.output_ranks[args.sites] == 1;
+    require(open_row, "density contraction row does not end in unit ranks");
 }
 }

@@ -22,6 +22,11 @@ const TRUNCATION_DEFAULT = Int32(0)
 const TRUNCATION_SVD = Int32(1)
 const TRUNCATION_HOUSEHOLDER = Int32(2)
 const TRUNCATION_DENSITY = Int32(6)
+const TRUNCATION_DENSITY_BATCHED = Int32(9)
+const TRUNCATION_RANGEFINDER = Int32(10)
+const LOCAL_ENERGY_ONLY_ROUTES = (TRUNCATION_HOUSEHOLDER, TRUNCATION_DENSITY_BATCHED)
+const DENSITY_BATCHED_ROUTES = (TRUNCATION_DEFAULT, TRUNCATION_DENSITY_BATCHED)
+const TRUNCATION_ROUTE_NAMES = ":default, :rangefinder, :svd, :householder, :density or :density_batched"
 const MAX_BATCH_SIZE = 2048
 
 function _sampling_mode_value(mode)::Int32
@@ -35,11 +40,21 @@ function _sampling_mode_value(mode)::Int32
 end
 
 function _truncation_route_value(route)::Int32
-    route in (:default, :rf, :rangefinder, TRUNCATION_DEFAULT) && return TRUNCATION_DEFAULT
+    route in (:default, TRUNCATION_DEFAULT) && return TRUNCATION_DEFAULT
+    route in (:rangefinder, :rf, TRUNCATION_RANGEFINDER) && return TRUNCATION_RANGEFINDER
     route in (:svd, TRUNCATION_SVD) && return TRUNCATION_SVD
     route in (:householder, TRUNCATION_HOUSEHOLDER) && return TRUNCATION_HOUSEHOLDER
     route in (:density, TRUNCATION_DENSITY) && return TRUNCATION_DENSITY
-    throw(ArgumentError("truncation route must be :default, :svd, :householder or :density"))
+    route in (:density_batched, TRUNCATION_DENSITY_BATCHED) && return TRUNCATION_DENSITY_BATCHED
+    throw(ArgumentError("truncation route must be $TRUNCATION_ROUTE_NAMES"))
+end
+
+function _environment_route_value(route)::Int32
+    value = _truncation_route_value(route)
+    value == TRUNCATION_RANGEFINDER && return TRUNCATION_DEFAULT
+    value in LOCAL_ENERGY_ONLY_ROUTES &&
+        throw(ArgumentError("truncation route $(repr(route)) applies only to the local energy"))
+    return value
 end
 
 function QnpepsConfig(;
@@ -59,8 +74,8 @@ function QnpepsConfig(;
     projected_density_cutoff::Real=1.0e-4,
 )::QnpepsConfig
     sampling_mode_value = _sampling_mode_value(sampling_mode)
-    dlenv_route_value = _truncation_route_value(dlenv_truncation_route)
-    sampler_route_value = _truncation_route_value(sampler_truncation_route)
+    dlenv_route_value = _environment_route_value(dlenv_truncation_route)
+    sampler_route_value = _environment_route_value(sampler_truncation_route)
     if sampling_mode_value == SAMPLING_FULL && chi_c < 1
         throw(ArgumentError("chi_c must be positive in full sampling mode"))
     end
@@ -253,6 +268,17 @@ struct QnpepsGramFootprint
     caller_gram_bytes::UInt64
 end
 
+struct QnpepsArenaReading
+    struct_size::UInt32
+    device::Int32
+    capacity_bytes::UInt64
+    in_use_bytes::UInt64
+    top_bytes::UInt64
+    largest_free_bytes::UInt64
+    reservation_count::UInt64
+    quarantined_count::UInt64
+end
+
 struct QnpepsMinsrDesc
     struct_size::UInt32
     lx::Int32
@@ -338,6 +364,19 @@ function QnpepsMinsrDesc(;
         UInt32(0),
         Int64(n_samples),
         Int64(host_tile_bytes),
+    )
+end
+
+function _empty_arena_reading(device::Integer)::QnpepsArenaReading
+    return QnpepsArenaReading(
+        UInt32(sizeof(QnpepsArenaReading)),
+        Int32(device),
+        UInt64(0),
+        UInt64(0),
+        UInt64(0),
+        UInt64(0),
+        UInt64(0),
+        UInt64(0),
     )
 end
 

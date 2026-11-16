@@ -37,7 +37,7 @@ auto local_product(Linalg& linalg, const Apply& args, const Site& site, cuDouble
     cu_local_product<<<launch_count(elements), k_threads_per_block, 0, linalg.stream()>>>(
         local_product_args
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto form_product(
@@ -61,18 +61,23 @@ auto form_product(
 }
 
 auto validate(const Apply& args, i64& maximum_combined, i64& maximum_physical, i64& maximum_output)
-    -> bool
+    -> void
 {
     const auto invalid_args =
         args.settings.struct_size != sizeof(QnpepsDensitySettings)
         or args.settings.precision != 1_u32 or args.settings.mindim != 1_u32
         or args.settings.reserved != 0_u32 or not std::isfinite(args.settings.relative_cutoff)
         or args.settings.relative_cutoff < 0.0 or args.upper_bond < 1 or args.sites.size() < 2;
-    if (invalid_args)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return false;
-    }
+    require(
+        not invalid_args,
+        Status::bad_config,
+        "density apply rejects precision {}, mindim {}, cutoff {}, upper bond {}, {} sites",
+        args.settings.precision,
+        args.settings.mindim,
+        args.settings.relative_cutoff,
+        args.upper_bond,
+        args.sites.size()
+    );
     auto state_bond = 1_i64;
     auto operator_bond = 1_i64;
     maximum_combined = 1_i64;
@@ -86,11 +91,15 @@ auto validate(const Apply& args, i64& maximum_combined, i64& maximum_physical, i
                            and site.state_left > 0 and site.physical_input > 0
                            and site.state_right > 0 and site.operator_left > 0
                            and site.physical_output > 0 and site.operator_right > 0;
-        if (not valid)
-        {
-            set_err(QNPEPS_ERR_BAD_CONFIG);
-            return false;
-        }
+        require(
+            valid,
+            Status::bad_config,
+            "density site {} has {}, expected left bonds {} and {}",
+            index,
+            site,
+            state_bond,
+            operator_bond
+        );
         maximum_combined = std::max(
             maximum_combined,
             std::max(site.state_left * site.operator_left, site.state_right * site.operator_right)
@@ -100,12 +109,13 @@ auto validate(const Apply& args, i64& maximum_combined, i64& maximum_physical, i
         state_bond = site.state_right;
         operator_bond = site.operator_right;
     }
-    if (state_bond != 1 or operator_bond != 1)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return false;
-    }
-    return true;
+    require(
+        state_bond == 1 and operator_bond == 1,
+        Status::bad_config,
+        "density chain ends in right bonds {} and {}, expected 1 and 1",
+        state_bond,
+        operator_bond
+    );
 }
 }
 
@@ -151,9 +161,9 @@ auto apply(Linalg& linalg, const Apply& args) -> void
     auto maximum_combined = 0_i64;
     auto maximum_physical = 0_i64;
     auto maximum_output = 0_i64;
-    if (not validate(args, maximum_combined, maximum_physical, maximum_output)) return;
+    validate(args, maximum_combined, maximum_physical, maximum_output);
     HandleState handle_state{};
-    if (not enter_handle_state(linalg, handle_state)) return;
+    enter_handle_state(linalg, handle_state);
     DEFER([&] { restore_handle_state(linalg, handle_state); });
     const auto sites = args.sites.size();
     const auto cuts = sites - 1;
@@ -173,7 +183,6 @@ auto apply(Linalg& linalg, const Apply& args) -> void
     auto* temporary = args.workspace.temporaries;
     zero_async(linalg, args.workspace.left_environments, cuts * combined_square);
     zero_async(linalg, args.workspace.active_ranks, cuts);
-    if (err_state() != QNPEPS_OK) return;
     auto* previous_environment = static_cast<cuDoubleComplex*>(nullptr);
     auto previous_combined = 1_i64;
     for (auto index = 0_uz; index < cuts; ++index)
@@ -183,7 +192,13 @@ auto apply(Linalg& linalg, const Apply& args) -> void
         const auto combined_right = site.state_right * site.operator_right;
         const auto combined_left_u = static_cast<usize>(combined_left);
         const auto combined_right_u = static_cast<usize>(combined_right);
-        if (combined_left != previous_combined) return set_err(QNPEPS_ERR_INTERNAL), void();
+        require(
+            combined_left == previous_combined,
+            "density site {} combined left bond {} differs from the carried bond {}",
+            index,
+            combined_left,
+            previous_combined
+        );
         if (not args.product) form_product(linalg, args, site, 0_i64, product_values);
         auto* next_environment = args.workspace.left_environments + index * combined_square;
         const auto environment_count = combined_right_u * combined_right_u;
@@ -249,7 +264,6 @@ auto apply(Linalg& linalg, const Apply& args) -> void
                     1.0
                 );
             }
-            if (err_state() != QNPEPS_OK) return;
         }
         previous_environment = next_environment;
         previous_combined = combined_right;
@@ -306,7 +320,7 @@ auto apply(Linalg& linalg, const Apply& args) -> void
                 0,
                 stream>>>(right_block_args);
         }
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         auto* environment =
             args.workspace.left_environments + (reverse_index - 1) * combined_square;
         matmul(
@@ -330,7 +344,6 @@ auto apply(Linalg& linalg, const Apply& args) -> void
             CuMatrixCF64{args.workspace.density, static_cast<int>(order), static_cast<int>(order)},
             BlasOp::conj_trans
         );
-        if (err_state() != QNPEPS_OK) return;
         eigen_hermitian(
             linalg,
             CuMatrixCF64{args.workspace.density, static_cast<int>(order), static_cast<int>(order)},
@@ -356,15 +369,25 @@ auto apply(Linalg& linalg, const Apply& args) -> void
             .record = args.workspace.records + step,
         };
         cu_filter<<<1, 1, 0, stream>>>(filter_args);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         QnpepsDensityRankRecord record{};
         auto solver_information = 0_i32;
         download_async(linalg, &record, args.workspace.records + step, 1);
         download_async(linalg, &solver_information, args.workspace.solver_information, 1);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        if (err_state() != QNPEPS_OK) return;
-        if (solver_information != 0 or (record.flags & 0x80000000_u32) != 0)
-            return set_err(QNPEPS_ERR_INTERNAL), void();
+        check(cudaStreamSynchronize(stream));
+        require(
+            solver_information == 0,
+            "zheevd info {} at density cut {} of order {}",
+            solver_information,
+            step,
+            order
+        );
+        require(
+            (record.flags & 0x80000000_u32) == 0,
+            "density filter at cut {} flagged record {:#x}",
+            step,
+            record.flags
+        );
         const auto active_rank = record.active_rank;
         zero_async(linalg, basis, basis_count);
         const auto gather_basis_args = GatherBasisArgs{
@@ -378,7 +401,7 @@ auto apply(Linalg& linalg, const Apply& args) -> void
         cu_gather_basis<<<launch_count(order * args.upper_bond), k_threads_per_block, 0, stream>>>(
             gather_basis_args
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         matmul(
             linalg,
             CuMatrixCF64Const{basis, static_cast<int>(order), static_cast<int>(active_rank)},
@@ -424,7 +447,7 @@ auto apply(Linalg& linalg, const Apply& args) -> void
             k_threads_per_block,
             0,
             stream>>>(project_right_args);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         right_rank = active_rank;
     }
     const auto& first = args.sites[0];
@@ -498,7 +521,7 @@ auto apply(Linalg& linalg, const Apply& args) -> void
         .output_gauge = args.output_gauge,
     };
     cu_normalize<<<1, k_threads_per_block, 0, stream>>>(normalize_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     if (args.active_ranks_out)
         copy_device_async(linalg, args.active_ranks_out, args.workspace.active_ranks, cuts);
     if (args.records_out) copy_device_async(linalg, args.records_out, args.workspace.records, cuts);

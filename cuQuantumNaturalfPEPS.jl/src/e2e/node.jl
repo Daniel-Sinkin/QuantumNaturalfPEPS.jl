@@ -10,7 +10,7 @@ end
 
 function VMCContext(
     config::QnpepsE2eConfig,
-    terms::HeisenbergTerms;
+    terms::OperatorTerms;
     gpus::Integer=1,
     ns_capacity::Integer,
     ns_ahead::Integer=0,
@@ -24,10 +24,9 @@ function VMCContext(
     1 <= dim_batch <= 2048 || throw(ArgumentError("dim_batch must be between 1 and 2048"))
     host_tile_bytes >= 0 || throw(ArgumentError("host_tile_bytes must be nonnegative"))
 
-    diag = terms.diag
-    flip = terms.flip
-    handle = GC.@preserve diag flip begin
-        table = _eloc_term_table(terms)
+    buffers = _eloc_term_buffers(terms, config)
+    handle = GC.@preserve buffers begin
+        table = _eloc_term_table(buffers)
         table_ref = Ref(table)
         GC.@preserve table_ref _ffi_node_create(
             config,
@@ -92,6 +91,12 @@ function submit_peps!(context::VMCContext, peps::CuArray{ComplexF32})
     return context
 end
 
+function wait_environment(context::VMCContext)
+    handle = _require_open(context)
+    _ffi_node_wait_environment(handle)
+    return context
+end
+
 function _node_output_buffers(
     context::VMCContext,
     n_samples::Int;
@@ -144,7 +149,7 @@ end
 function _vmc_step_node!(
     data::CuArray{ComplexF32},
     config::QnpepsE2eConfig,
-    terms::HeisenbergTerms,
+    terms::OperatorTerms,
     gpus::Int,
     n_samples::Integer;
     host_tile_bytes::Integer,

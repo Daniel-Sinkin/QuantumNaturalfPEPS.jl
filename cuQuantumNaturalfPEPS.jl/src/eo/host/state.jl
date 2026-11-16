@@ -54,7 +54,6 @@ Base.@kwdef mutable struct _EoHostLane
     affinity_saved::Int32
     affinity_applied::Int32
     status::Int32
-    failure_location::String
     failure_message::String
 end
 

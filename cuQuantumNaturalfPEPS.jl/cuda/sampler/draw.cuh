@@ -50,16 +50,15 @@ struct SampleMultigpuArgs
     SampleOutputLocation output_location;
 };
 
-auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status;
-auto sample(const QnpepsConfig& config, const SampleArgs& args, qnpeps::Linalg& linalg)
-    -> qnpeps_status;
+auto sample(const QnpepsConfig& config, const SampleArgs& args) -> void;
+auto sample(const QnpepsConfig& config, const SampleArgs& args, qnpeps::Linalg& linalg) -> void;
 
-auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args) -> qnpeps_status;
+auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args) -> void;
 auto sample_multigpu(
     const QnpepsConfig& config,
     const SampleMultigpuArgs& args,
     std::span<qnpeps::Linalg* const> linalg
-) -> qnpeps_status;
+) -> void;
 
 }
 

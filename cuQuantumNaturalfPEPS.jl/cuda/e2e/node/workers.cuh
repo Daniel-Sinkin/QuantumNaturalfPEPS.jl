@@ -17,13 +17,14 @@ struct WorkerSync
     i64 command_generation{};
     i64 done_generation{};
     WorkerCmd command{};
-    qnpeps_e2e_status status{QNPEPS_E2E_OK};
+    qnpeps_status status{QNPEPS_OK};
+    bool closed{};
 };
 
 class NodeWorkers
 {
   public:
-    explicit NodeWorkers(NodeState& state) noexcept;
+    explicit NodeWorkers(NodeState& state);
     ~NodeWorkers();
     NodeWorkers(const NodeWorkers&) = delete;
     auto operator=(const NodeWorkers&) -> NodeWorkers& = delete;
@@ -31,14 +32,16 @@ class NodeWorkers
     auto operator=(NodeWorkers&&) -> NodeWorkers& = delete;
 
     auto start() -> void;
-    auto stop() noexcept -> void;
+    auto stop() -> void;
     auto issue(int device, const WorkerCmd& command) -> void;
-    [[nodiscard]] auto wait(int device) -> qnpeps_e2e_status;
+    [[nodiscard]] auto wait(int device) -> qnpeps_status;
     auto run_dlbuild(i64 epoch) -> void;
 
   private:
     auto worker_main(int device) -> void;
+    auto serve_commands(int device) -> void;
     auto dlbuild_main() -> void;
+    auto serve_builds() -> void;
 
     NodeState& state_;
     std::vector<std::thread> workers_{};
@@ -52,14 +55,12 @@ class NodeWorkers
 };
 
 auto wait_epoch_ready(NodeState* state, i64 epoch) -> void;
-[[nodiscard]] auto draw_fill(
+auto draw_fill(
     NodeState* state, GpuCtx& gpu, i64 first_batch, i64 batch_count, i64 ring_offset, i64 epoch
-) -> qnpeps_e2e_status;
-[[nodiscard]] auto draw_fill_multigpu(
+) -> void;
+auto draw_fill_multigpu(
     NodeState* state, i64 first_batch, i64 batch_count, i64 ring_offset, i64 epoch
-) -> qnpeps_e2e_status;
-[[nodiscard]] auto eo_run_shard(
-    NodeState* state, int device, const qn_e2e::mg::Shard& shard, i64 epoch
-) -> qnpeps_e2e_status;
+) -> void;
+auto eo_run_shard(NodeState* state, int device, const qn_e2e::mg::Shard& shard, i64 epoch) -> void;
 
 #endif

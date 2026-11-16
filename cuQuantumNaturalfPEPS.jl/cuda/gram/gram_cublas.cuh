@@ -27,7 +27,7 @@ auto expand(
     const int* offsets,
     const int* slices,
     cudaStream_t stream
-) -> cudaError_t;
+) -> void;
 
 auto accumulate_diagonal_block(
     Linalg& linalg,
@@ -36,7 +36,7 @@ auto accumulate_diagonal_block(
     const cuFloatComplex* dense,
     cuFloatComplex* output,
     int output_ld
-) -> cublasStatus_t;
+) -> void;
 
 auto accumulate_offdiagonal_block(
     Linalg& linalg,
@@ -47,7 +47,7 @@ auto accumulate_offdiagonal_block(
     const cuFloatComplex* dense_b,
     cuFloatComplex* output,
     int output_ld
-) -> cublasStatus_t;
+) -> void;
 
 auto finalize(
     cuFloatComplex* output,
@@ -56,7 +56,7 @@ auto finalize(
     int local_base,
     int samples,
     cudaStream_t stream
-) -> cudaError_t;
+) -> void;
 }
 
 #endif

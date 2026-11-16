@@ -1,5 +1,7 @@
 #include "e2e/node/lifecycle.cuh"
 
+#include "core/arena_cursor.cuh"
+#include "core/defer.cuh"
 #include "e2e/common.cuh"
 #include "e2e/layout.cuh"
 #include "e2e/mg_common.cuh"
@@ -9,20 +11,83 @@
 #include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
+#include <limits>
+#include <string_view>
 #include <vector>
 
 using qn_e2e::cf;
 using qn_e2e::compact_count;
-using qn_e2e::err_state;
-using qn_e2e::set_err;
 using qn_e2e::mg::build_shards;
-using qn_e2e::mg::device_allocate;
 using qn_e2e::mg::local_energy_config;
 using qn_e2e::mg::probe_peer_access_cached;
 using qn_e2e::mg::sampler_config;
 using qn_e2e::mg::Shard;
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
+namespace
+{
+template <class T>
+[[nodiscard]] auto lease_buffer(GpuCtx& gpu, std::string_view name, i64 count) -> T*
+{
+    const auto element_count = static_cast<usize>(std::max(count, i64{1}));
+    require(
+        element_count <= std::numeric_limits<usize>::max() / sizeof(T),
+        Status::out_of_memory,
+        "node buffer {} of {} elements overflows the size range",
+        name,
+        element_count
+    );
+    const auto bytes = sizeof(T) * element_count;
+    const auto largest_free = gpu.buffer_lease->remaining();
+    if (bytes > largest_free)
+    {
+        const auto arena = qnpeps::shared_device_arena(gpu.device)->reading();
+        fail(
+            Status::out_of_memory,
+            "node buffer {} of {} bytes does not fit the arena of GPU {}, {} of {} bytes free, "
+            "largest free block {}",
+            name,
+            bytes,
+            gpu.device,
+            arena.capacity - arena.in_use,
+            arena.capacity,
+            largest_free
+        );
+    }
+    return static_cast<T*>(gpu.buffer_lease->take(bytes));
+}
+
+auto destroy_node(qnpeps_e2e_node* node) -> void
+{
+    if (not node) return;
+    int caller_device{0};
+    unchecked(cudaGetDevice(&caller_device));
+
+    node->state_.workers_->stop();
+    node->state_.solve_.reset();
+
+    for (auto& context : node->state_.ctx)
+    {
+        if (not context.session) continue;
+        unchecked(cudaSetDevice(context.device));
+        unchecked(cudaDeviceSynchronize());
+    }
+    for (auto& context : node->state_.ctx)
+    {
+        if (not context.session) continue;
+        unchecked(cudaSetDevice(context.device));
+        context.buffer_lease.reset();
+        context.session.reset();
+    }
+    qnpeps::maybe_free_host(node->state_.ring_cfg);
+    qnpeps::maybe_free_host(node->state_.ring_logq);
+    qnpeps::maybe_free_host(node->state_.ring_lgauge);
+    qnpeps::maybe_free_host(node->state_.host_rows);
+
+    unchecked(cudaSetDevice(caller_device));
+    delete node;
+}
+
+auto create_node(
     const QnpepsE2eConfig* cfg,
     int gpus,
     int64_t ns_capacity,
@@ -31,29 +96,61 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
     int64_t host_tile_bytes,
     const void* terms,
     qnpeps_e2e_node** node_out
-)
+) -> void
 {
-    const qnpeps_e2e_status v{qn_e2e::mg::_config_check(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    if (not node_out) return QNPEPS_E2E_ERR_NULL_ARG;
+    qn_e2e::mg::validate_node_config(cfg);
+    require(node_out != nullptr, Status::null_argument, "node output is null");
     *node_out = nullptr;
-    if (const auto status = qn_e2e::mg::_term_check(*cfg, terms); status != QNPEPS_E2E_OK)
-        return status;
-    if (ns_capacity < 2 or ns_ahead < 0 or ns_ahead > ns_capacity) return QNPEPS_E2E_ERR_BAD_CONFIG;
-    if (dim_batch < 1 or dim_batch > qnpeps::k_max_batch_size or dim_batch > ns_capacity)
-        return QNPEPS_E2E_ERR_BAD_CONFIG;
+    qn_e2e::mg::validate_node_terms(*cfg, terms);
+    const auto valid_capacity = ns_capacity >= 2 and ns_ahead >= 0 and ns_ahead <= ns_capacity;
+    require(
+        valid_capacity,
+        Status::bad_config,
+        "node sample capacity {} with lookahead {} is not valid",
+        ns_capacity,
+        ns_ahead
+    );
+    const auto valid_batch =
+        dim_batch >= 1 and dim_batch <= qnpeps::k_max_batch_size and dim_batch <= ns_capacity;
+    require(
+        valid_batch,
+        Status::bad_config,
+        "node batch {} outside 1 to {} or above the capacity {}",
+        dim_batch,
+        qnpeps::k_max_batch_size,
+        ns_capacity
+    );
 
     int dev_count{0};
-    if (cudaGetDeviceCount(&dev_count) != cudaSuccess) return QNPEPS_E2E_ERR_CUDA;
-    if (gpus < 1 or gpus > dev_count) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    const auto count_status = cudaGetDeviceCount(&dev_count);
+    require(
+        count_status == cudaSuccess,
+        Status::cuda,
+        "node device count query failed, {}",
+        qnpeps::cuda_failure_text(count_status)
+    );
+    require(
+        gpus >= 1 and gpus <= dev_count,
+        Status::bad_config,
+        "node asks for {} of {} GPUs",
+        gpus,
+        dev_count
+    );
     const usize gpu_count{static_cast<usize>(gpus)};
     const usize capacity{static_cast<usize>(ns_capacity)};
 
     int caller_device{0};
-    cudaGetDevice(&caller_device);
-    qn_e2e::clear_err();
+    unchecked(cudaGetDevice(&caller_device));
+    const qnpeps::Defer restore_device{[&] { unchecked(cudaSetDevice(caller_device)); }};
 
     auto* n{new qnpeps_e2e_node()};
+    auto created = false;
+    const qnpeps::Defer destroy_after_failure{[&]
+                                              {
+                                                  if (created) return;
+                                                  n->state_.status_value = QNPEPS_ERR_INTERNAL;
+                                                  destroy_node(n);
+                                              }};
     n->state_.cfg = *cfg;
     n->state_.scfg = sampler_config(*cfg);
     n->state_.lcfg = local_energy_config(*cfg);
@@ -74,20 +171,17 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
     n->state_.dense = static_cast<i64>(cfg->dim_phys) * n->state_.compact;
     n->state_.peps_bytes = qnpeps_peps_bytes(&n->state_.scfg);
     n->state_.dlenv_bytes = qnpeps_dlenv_bytes(&n->state_.scfg);
-    if (n->state_.peps_bytes < 0 or n->state_.dlenv_bytes < 0)
-    {
-        delete n;
-        cudaSetDevice(caller_device);
-        return QNPEPS_E2E_ERR_BAD_CONFIG;
-    }
+    require(
+        n->state_.peps_bytes >= 0 and n->state_.dlenv_bytes >= 0,
+        Status::bad_config,
+        "node sampler config yields PEPS bytes {} and environment bytes {}",
+        n->state_.peps_bytes,
+        n->state_.dlenv_bytes
+    );
 
-    const auto* tt{static_cast<const QnpepsElocTermTable*>(terms)};
-    n->state_.terms_diag.assign(tt->diag, tt->diag + tt->n_diag);
-    n->state_.terms_flip.assign(tt->flip, tt->flip + tt->n_flip);
-    n->state_.terms.n_diag = tt->n_diag;
-    n->state_.terms.diag = n->state_.terms_diag.empty() ? nullptr : n->state_.terms_diag.data();
-    n->state_.terms.n_flip = tt->n_flip;
-    n->state_.terms.flip = n->state_.terms_flip.empty() ? nullptr : n->state_.terms_flip.data();
+    n->state_.owned_terms =
+        qnpeps::eo::OwnedTermTable{*static_cast<const QnpepsElocTermTable*>(terms)};
+    n->state_.terms = n->state_.owned_terms.view();
 
     if (auto e{std::getenv("QNPEPS_E2E_INJECT_OOM_GPU")}; e and e[0])
         n->state_.inject_oom_gpu = std::atoi(e);
@@ -105,7 +199,7 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
     if (n->state_.use_p2p and gpus >= 2)
     {
         n->state_.use_p2p = probe_peer_access_cached(gpus);
-        cudaSetDevice(0);
+        unchecked(cudaSetDevice(0));
     }
     if (force_dist and not force_staged and gpus >= 2) n->state_.use_p2p = true;
     n->state_.use_distributed_minsr = ns_ahead == 0 and gpus >= 2 and n->state_.use_p2p;
@@ -116,65 +210,70 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
     const i64 nc{ns_capacity};
     const i64 sc{n->state_.shard_capacity};
     const i64 comp{n->state_.compact};
-    for (int g{0}; g < gpus and err_state() == QNPEPS_E2E_OK; ++g)
+    for (int g{0}; g < gpus; ++g)
     {
         const usize gpu_index{static_cast<usize>(g)};
         auto& c{n->state_.ctx[gpu_index]};
         c.device = g;
-        if (cudaSetDevice(g) != cudaSuccess)
-        {
-            set_err(QNPEPS_E2E_ERR_CUDA);
-            break;
-        }
+        const auto device_status = cudaSetDevice(g);
+        require(
+            device_status == cudaSuccess,
+            Status::cuda,
+            "node cannot select GPU {}, {}",
+            g,
+            qnpeps::cuda_failure_text(device_status)
+        );
         c.session = qnpeps::make_session(nullptr);
-        if (not c.session)
-        {
-            set_err(err_state());
-            break;
-        }
-        c.device_peps_slots[0] = device_allocate<u8>(n->state_.peps_bytes);
-        c.device_peps_slots[1] = device_allocate<u8>(n->state_.peps_bytes);
-        c.device_dlenv_slots[0] = device_allocate<u8>(n->state_.dlenv_bytes);
-        c.device_dlenv_slots[1] = device_allocate<u8>(n->state_.dlenv_bytes);
-        c.device_eo_samples = device_allocate<u8>(nc * n->state_.sites);
-        c.device_eo_rows = device_allocate<cf>(sc * comp);
-        c.device_eo_log_amplitudes = device_allocate<f64>(2 * sc);
-        c.device_eo_local_energies = device_allocate<f64>(2 * sc);
-        if (g == 0) c.device_row_logs = device_allocate<f64>(cfg->lx - 1);
+        c.buffer_lease = qnpeps::shared_device_arena(g)->acquire_lease(c.stream());
+        c.device_peps_slots[0] = lease_buffer<u8>(c, "peps_slot", n->state_.peps_bytes);
+        c.device_peps_slots[1] = lease_buffer<u8>(c, "peps_slot", n->state_.peps_bytes);
+        c.device_dlenv_slots[0] = lease_buffer<u8>(c, "dlenv_slot", n->state_.dlenv_bytes);
+        c.device_dlenv_slots[1] = lease_buffer<u8>(c, "dlenv_slot", n->state_.dlenv_bytes);
+        c.device_eo_samples = lease_buffer<u8>(c, "eo_samples", nc * n->state_.sites);
+        c.device_eo_rows = lease_buffer<cf>(c, "eo_rows", sc * comp);
+        c.device_eo_log_amplitudes = lease_buffer<f64>(c, "eo_log_amplitudes", 2 * sc);
+        c.device_eo_local_energies = lease_buffer<f64>(c, "eo_local_energies", 2 * sc);
+        if (g == 0) c.device_row_logs = lease_buffer<f64>(c, "row_logs", cfg->lx - 1);
         if (g == n->state_.sampler_gpu)
         {
-            c.device_draw_samples = device_allocate<u8>(n->state_.draw_cap * n->state_.sites);
-            c.device_draw_log_proposals = device_allocate<f64>(n->state_.draw_cap);
-            c.device_draw_log_gauges = device_allocate<f64>(n->state_.draw_cap);
+            const auto draw_cap = n->state_.draw_cap;
+            c.device_draw_samples = lease_buffer<u8>(c, "draw_samples", draw_cap * n->state_.sites);
+            c.device_draw_log_proposals = lease_buffer<f64>(c, "draw_log_proposals", draw_cap);
+            c.device_draw_log_gauges = lease_buffer<f64>(c, "draw_log_gauges", draw_cap);
         }
     }
 
-    if (err_state() == QNPEPS_E2E_OK)
     {
-        cudaSetDevice(0);
-        n->state_.device_samples = device_allocate<u8>(nc * n->state_.sites);
-        n->state_.device_log_proposals = device_allocate<f64>(nc);
-        n->state_.device_log_gauges = device_allocate<f64>(nc);
-        n->state_.device_log_amplitudes = device_allocate<f64>(2 * nc);
-        n->state_.device_local_energies = device_allocate<f64>(2 * nc);
-        n->state_.device_gram = device_allocate<cf>(nc * nc);
-        n->state_.device_theta = device_allocate<cf>(n->state_.dense);
+        unchecked(cudaSetDevice(0));
+        auto& c0{n->state_.ctx[0]};
+        n->state_.device_samples = lease_buffer<u8>(c0, "samples", nc * n->state_.sites);
+        n->state_.device_log_proposals = lease_buffer<f64>(c0, "log_proposals", nc);
+        n->state_.device_log_gauges = lease_buffer<f64>(c0, "log_gauges", nc);
+        n->state_.device_log_amplitudes = lease_buffer<f64>(c0, "log_amplitudes", 2 * nc);
+        n->state_.device_local_energies = lease_buffer<f64>(c0, "local_energies", 2 * nc);
+        n->state_.device_gram = lease_buffer<cf>(c0, "gram", nc * nc);
+        n->state_.device_theta = lease_buffer<cf>(c0, "theta", n->state_.dense);
         const std::vector<qn_e2e::UpdateSite> device_update_sites{qn_e2e::build_update_sites(*cfg)};
-        if (device_update_sites.size() != static_cast<usize>(n->state_.sites))
-            set_err(QNPEPS_E2E_ERR_BAD_CONFIG);
-        if (err_state() == QNPEPS_E2E_OK)
+        require(
+            device_update_sites.size() == static_cast<usize>(n->state_.sites),
+            Status::bad_config,
+            "node update layout covers {} of {} sites",
+            device_update_sites.size(),
+            n->state_.sites
+        );
         {
-            n->state_.device_update_sites = device_allocate<qn_e2e::UpdateSite>(n->state_.sites);
-            QN_E2E_CUDA_CHECK(cudaMemcpy(
+            n->state_.device_update_sites =
+                lease_buffer<qn_e2e::UpdateSite>(c0, "update_sites", n->state_.sites);
+            check(cudaMemcpy(
                 n->state_.device_update_sites,
                 device_update_sites.data(),
                 device_update_sites.size() * sizeof(qn_e2e::UpdateSite),
                 cudaMemcpyHostToDevice
             ));
         }
-        n->state_.device_stage_a = device_allocate<cf>(sc * comp);
-        n->state_.device_stage_b = device_allocate<cf>(sc * comp);
-        n->state_.device_tile = device_allocate<cf>(sc * sc);
+        n->state_.device_stage_a = lease_buffer<cf>(c0, "stage_a", sc * comp);
+        n->state_.device_stage_b = lease_buffer<cf>(c0, "stage_b", sc * comp);
+        n->state_.device_tile = lease_buffer<cf>(c0, "tile", sc * sc);
         n->state_.slot_sites = qn_e2e::build_slot_site(*cfg, n->state_.compact);
     }
 
@@ -188,72 +287,34 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_node_create(
         static_cast<cf*>(n->state_.solve_->host_pinned(sizeof(cf) * static_cast<usize>(nc * comp)));
     n->state_.ring_epoch.assign(capacity, 0);
 
-    if (err_state() != QNPEPS_E2E_OK)
-    {
-        const qnpeps_e2e_status st{err_state()};
-        n->state_.status_value = QNPEPS_E2E_ERR_INTERNAL;
-        qnpeps_e2e_node_destroy(n);
-        cudaSetDevice(caller_device);
-        return st;
-    }
-
     n->state_.workers_->start();
-
-    cudaSetDevice(caller_device);
     *node_out = n;
-    return QNPEPS_E2E_OK;
+    created = true;
+}
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_node_destroy(qnpeps_e2e_node* node)
+extern "C" qnpeps_status qnpeps_e2e_node_create(
+    const QnpepsE2eConfig* cfg,
+    int gpus,
+    int64_t ns_capacity,
+    int64_t ns_ahead,
+    int64_t dim_batch,
+    int64_t host_tile_bytes,
+    const void* terms,
+    qnpeps_e2e_node** node_out
+)
 {
-    if (not node) return QNPEPS_E2E_OK;
-    int caller_device{0};
-    cudaGetDevice(&caller_device);
-
-    node->state_.workers_->stop();
-    node->state_.solve_.reset();
-
-    for (int gpu{0}; gpu < node->state_.gpus; ++gpu)
-    {
-        const usize gpu_index{static_cast<usize>(gpu)};
-        auto& context{node->state_.ctx[gpu_index]};
-        cudaSetDevice(gpu);
-        cudaFree(context.device_peps_slots[0]);
-        cudaFree(context.device_peps_slots[1]);
-        cudaFree(context.device_dlenv_slots[0]);
-        cudaFree(context.device_dlenv_slots[1]);
-        cudaFree(context.device_eo_samples);
-        cudaFree(context.device_eo_rows);
-        cudaFree(context.device_eo_log_amplitudes);
-        cudaFree(context.device_eo_local_energies);
-        cudaFree(context.device_row_logs);
-        cudaFree(context.device_draw_samples);
-        cudaFree(context.device_draw_log_proposals);
-        cudaFree(context.device_draw_log_gauges);
-        if (context.session)
+    return guarded(
+        [&]
         {
-            CUDA_NOCHECK(cudaStreamSynchronize(context.stream()));
-            context.session.reset();
+            create_node(
+                cfg, gpus, ns_capacity, ns_ahead, dim_batch, host_tile_bytes, terms, node_out
+            );
         }
-    }
-    cudaSetDevice(0);
-    cudaFree(node->state_.device_samples);
-    cudaFree(node->state_.device_log_proposals);
-    cudaFree(node->state_.device_log_gauges);
-    cudaFree(node->state_.device_log_amplitudes);
-    cudaFree(node->state_.device_local_energies);
-    cudaFree(node->state_.device_gram);
-    cudaFree(node->state_.device_theta);
-    cudaFree(node->state_.device_update_sites);
-    cudaFree(node->state_.device_stage_a);
-    cudaFree(node->state_.device_stage_b);
-    cudaFree(node->state_.device_tile);
-    if (node->state_.ring_cfg) cudaFreeHost(node->state_.ring_cfg);
-    if (node->state_.ring_logq) cudaFreeHost(node->state_.ring_logq);
-    if (node->state_.ring_lgauge) cudaFreeHost(node->state_.ring_lgauge);
-    if (node->state_.host_rows) cudaFreeHost(node->state_.host_rows);
+    );
+}
 
-    cudaSetDevice(caller_device);
-    delete node;
-    return QNPEPS_E2E_OK;
+extern "C" qnpeps_status qnpeps_e2e_node_destroy(qnpeps_e2e_node* node)
+{
+    return guarded([&] { destroy_node(node); });
 }

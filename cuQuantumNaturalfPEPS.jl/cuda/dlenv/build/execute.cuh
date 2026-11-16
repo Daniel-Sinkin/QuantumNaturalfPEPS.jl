@@ -8,7 +8,7 @@
 namespace qnpeps::dlenv
 {
 
-auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int;
+auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> void;
 
 }
 

@@ -16,7 +16,6 @@ auto batched_rangefinder(
     Linalg& la,
     MatrixBatch panel,
     int k,
-    bool exact_factorization,
     RangefinderRoute route,
     f64 svd_cutoff,
     const cf* omega,
@@ -30,17 +29,18 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    void* recovery_scratch,
-    usize recovery_scratch_bytes
+    void* fallback_scratch,
+    usize fallback_scratch_bytes
 ) -> void
 {
     const auto rows = panel.rows();
     const auto cols = panel.cols();
-    if (exact_factorization and route != RangefinderRoute::gesvda and k == std::min(rows, cols))
+    const auto panel_is_untruncated = k == std::min(rows, cols);
+    if (panel_is_untruncated and route != RangefinderRoute::gesvda)
     {
         const auto copy_batch = [&](MatrixBatch dst, MatrixBatch src)
         {
-            CUDA_CHECK(cudaMemcpy2DAsync(
+            check(cudaMemcpy2DAsync(
                 dst.data(),
                 static_cast<usize>(dst.stride()) * sizeof(cf),
                 src.data(),
@@ -73,7 +73,7 @@ auto batched_rangefinder(
             );
             copy_batch(r_out, panel);
         }
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         return;
     }
     if (route == RangefinderRoute::gesvda)
@@ -87,8 +87,8 @@ auto batched_rangefinder(
             dim_batch,
             svd_cutoff,
             fail_flag,
-            recovery_scratch,
-            recovery_scratch_bytes
+            fallback_scratch,
+            fallback_scratch_bytes
         );
         return;
     }
@@ -132,11 +132,13 @@ auto batched_rangefinder(
     const auto householder_orthogonalize = [&](MatrixBatch matrix)
     {
         const auto required_scratch = usize{qr_scratch_bytes(la, matrix.rows(), matrix.cols())};
-        if (required_scratch > recovery_scratch_bytes)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            return false;
-        }
+        require(
+            required_scratch <= fallback_scratch_bytes,
+            Status::out_of_memory,
+            "Householder fallback needs {} scratch bytes, {} available",
+            required_scratch,
+            fallback_scratch_bytes
+        );
         for (auto lane = int{0}; lane < dim_batch; ++lane)
         {
             qr(la,
@@ -144,11 +146,10 @@ auto batched_rangefinder(
                matrix.cols(),
                matrix.data() + static_cast<i64>(lane) * matrix.stride(),
                matrix.rows(),
-               recovery_scratch,
+               fallback_scratch,
                fail_flag,
                2);
         }
-        return true;
     };
     const auto finish_householder = [&]()
     {
@@ -156,7 +157,7 @@ auto batched_rangefinder(
         const auto src_pitch = static_cast<usize>(sketch.stride) * sizeof(cf);
         const auto copy_width = static_cast<usize>(rows) * k * sizeof(cf);
         const auto copy_height = static_cast<usize>(dim_batch);
-        CUDA_CHECK(cudaMemcpy2DAsync(
+        check(cudaMemcpy2DAsync(
             q_out.data(),
             dst_pitch,
             sketch.p,
@@ -186,7 +187,7 @@ auto batched_rangefinder(
 
     if (route == RangefinderRoute::householder)
     {
-        if (not householder_orthogonalize(sketch_mat)) return;
+        householder_orthogonalize(sketch_mat);
         finish_householder();
         return;
     }
@@ -205,37 +206,43 @@ auto batched_rangefinder(
             gram.p, k, gram.stride, dim_batch
         );
         la.cholesky_batched(k, gram_ptrs, k, info, dim_batch);
-        CUDA_CHECK(cudaMemcpyAsync(
+        check(cudaMemcpyAsync(
             lane_info.data(),
             info,
             sizeof(int) * lane_info.size(),
             cudaMemcpyDeviceToHost,
             la.stream()
         ));
-        CUDA_CHECK(cudaStreamSynchronize(la.stream()));
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        check(cudaStreamSynchronize(la.stream()));
         for (auto lane = int{0}; lane < dim_batch; ++lane)
         {
             const auto lane_status = int{lane_info[static_cast<usize>(lane)]};
             if (lane_status == 0) continue;
             if (lane_status < 0)
             {
-                qn::set_backend_err(
-                    QNPEPS_ELOC_ERR_CUDA, "cholesky_batched", lane_status, __FILE__, __LINE__
+                fail(
+                    Status::cuda,
+                    "cholesky_batched info {} on lane {} of {}",
+                    lane_status,
+                    lane,
+                    dim_batch
                 );
-                return;
             }
-            if (qr_scratch_bytes(la, rows, k) > recovery_scratch_bytes)
-            {
-                qn::set_err(QNPEPS_ELOC_ERR_OOM);
-                return;
-            }
+            const auto fallback_bytes = qr_scratch_bytes(la, rows, k);
+            require(
+                fallback_bytes <= fallback_scratch_bytes,
+                Status::out_of_memory,
+                "Householder fallback on lane {} needs {} scratch bytes, {} available",
+                lane,
+                fallback_bytes,
+                fallback_scratch_bytes
+            );
             qr(la,
                rows,
                k,
                sketch.p + static_cast<i64>(lane) * sketch.stride,
                rows,
-               recovery_scratch,
+               fallback_scratch,
                fail_flag,
                2);
             const auto blocks = int{std::max(1, (k * k + 255) / 256)};
@@ -250,7 +257,7 @@ auto batched_rangefinder(
     const auto src_pitch = static_cast<usize>(sketch.stride) * sizeof(cf);
     const auto copy_width = static_cast<usize>(rows) * k * sizeof(cf);
     const auto copy_height = static_cast<usize>(dim_batch);
-    CUDA_CHECK(cudaMemcpy2DAsync(
+    check(cudaMemcpy2DAsync(
         q_out.data(),
         dst_pitch,
         sketch.p,

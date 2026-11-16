@@ -4,24 +4,15 @@ namespace qnpeps::sampler
 {
 auto ctx_sample_refresh(qnpeps_ctx& ctx, const void* device_peps, PepsLayout layout) -> void
 {
-    if (not device_peps)
-    {
-        set_err(QNPEPS_ERR_NULL_ARG);
-        return;
-    }
-
-    if (not ctx.sampler.ready())
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(device_peps != nullptr, Status::null_argument, "sampler refresh without a PEPS");
+    require(ctx.sampler.ready(), "sampler refresh before setup");
 
     auto& samp = ctx.sampler.samp;
     const auto num_rows = static_cast<usize>(ctx.cfg.lx);
     const auto num_cols = static_cast<usize>(ctx.cfg.ly);
     const auto stream = ctx.linalg().stream();
 
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    check(cudaStreamSynchronize(stream));
 
     Permutation mpo_permutation{};
     Permutation ket_row0_permutation{};

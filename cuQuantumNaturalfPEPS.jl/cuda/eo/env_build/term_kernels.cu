@@ -3,38 +3,55 @@
 namespace qn_eloc::env
 {
 
-__global__ auto cu_project_site_val_indexed(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    const int* active_indices,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    cf* out,
-    i64 out_stride,
-    int active
-) -> void
+__global__ auto cu_project_site_gather(CuProjectGatherArgs args) -> void
 {
-    const auto total = i64{slab * active};
-    const auto grid_stride = i64{static_cast<i64>(gridDim.x) * blockDim.x};
-    for (auto tid = static_cast<i64>(blockIdx.x * blockDim.x + threadIdx.x); tid < total;
+    const auto slab = static_cast<usize>(args.slab);
+    const auto total = slab * static_cast<usize>(args.active);
+    const auto grid_stride = static_cast<usize>(gridDim.x) * blockDim.x;
+    const auto lane_stride = static_cast<usize>(args.lane_stride);
+    const auto out_stride = static_cast<usize>(args.out_stride);
+    for (auto tid = static_cast<usize>(blockIdx.x) * blockDim.x + threadIdx.x; tid < total;
          tid += grid_stride)
     {
-        const auto compact_lane = int{static_cast<int>(tid / slab)};
-        const auto elem = i64{tid % slab};
-        const auto lane = int{active_indices[compact_lane]};
-        const auto spin_raw =
-            int{static_cast<int>(samples[static_cast<i64>(lane) * lane_stride + site_idx])};
-        auto val = int{fixed_val};
-        if (value_mode == -2)
-            val = spin_raw;
-        else if (value_mode < 0)
-            val = dim_phys - 1 - spin_raw;
-        out[static_cast<i64>(compact_lane) * out_stride + elem] =
-            site[static_cast<i64>(val) * slab + elem];
+        const auto compact_lane = tid / slab;
+        const auto elem = tid % slab;
+        const auto lane = static_cast<usize>(args.active_indices[compact_lane]);
+        const auto lane_sample = args.samples + lane * lane_stride;
+        auto value = static_cast<usize>(lane_sample[args.site_index]);
+        if (args.support_position != k_keep_position)
+        {
+            const auto state = static_cast<usize>(local_state_index(args.local_state, lane_sample));
+            const auto position = static_cast<usize>(args.support_position);
+            value =
+                args.targets[state * static_cast<usize>(args.local_state.site_count) + position];
+        }
+        args.out[compact_lane * out_stride + elem] = args.site[value * slab + elem];
+    }
+}
+
+__global__ auto cu_project_site_weighted(CuProjectWeightedArgs args) -> void
+{
+    const auto slab = static_cast<usize>(args.slab);
+    const auto total = slab * static_cast<usize>(args.active);
+    const auto grid_stride = static_cast<usize>(gridDim.x) * blockDim.x;
+    const auto lane_stride = static_cast<usize>(args.lane_stride);
+    const auto out_stride = static_cast<usize>(args.out_stride);
+    const auto dim_phys = static_cast<usize>(args.local_state.dim_phys);
+    const auto site_count = static_cast<usize>(args.local_state.site_count);
+    const auto position = static_cast<usize>(args.support_position);
+    for (auto tid = static_cast<usize>(blockIdx.x) * blockDim.x + threadIdx.x; tid < total;
+         tid += grid_stride)
+    {
+        const auto compact_lane = tid / slab;
+        const auto elem = tid % slab;
+        const auto lane = static_cast<usize>(args.active_indices[compact_lane]);
+        const auto lane_sample = args.samples + lane * lane_stride;
+        const auto state = static_cast<usize>(local_state_index(args.local_state, lane_sample));
+        const auto base = (state * site_count + position) * dim_phys;
+        auto weighted = cf{};
+        for (auto value = 0_uz; value < dim_phys; ++value)
+            fx::cf_acc(weighted, args.weights[base + value], args.site[value * slab + elem]);
+        args.out[compact_lane * out_stride + elem] = weighted;
     }
 }
 
@@ -61,72 +78,58 @@ __global__ auto cu_compact_lanes(
     }
 }
 
-__global__ auto cu_diagonal(
-    f64* e_loc,
-    const u8* samples,
-    i64 lane_stride,
-    const int* site_a,
-    const int* site_b,
-    const f64* coeff,
-    int n_diag,
-    int lanes
-) -> void
+__global__ auto cu_diagonal(CuDiagonalArgs args) -> void
 {
-    const auto lane = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    if (lane >= lanes) return;
-    const auto base = i64{static_cast<i64>(lane) * lane_stride};
-    auto e = f64{0.0};
-    for (auto t = int{0}; t < n_diag; ++t)
+    const auto lane = static_cast<usize>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (lane >= static_cast<usize>(args.lanes)) return;
+    const auto lane_sample = args.samples + lane * static_cast<usize>(args.lane_stride);
+    const auto term_count = static_cast<usize>(args.term_count);
+    auto energy_real = 0.0;
+    auto energy_imag = 0.0;
+    for (auto t = 0_uz; t < term_count; ++t)
     {
-        const auto sa = int{1 - 2 * static_cast<int>(samples[base + site_a[t]])};
-        const auto sb =
-            int{site_b[t] == QNPEPS_ELOC_DIAG_ONE_SITE_Z
-                    ? 1
-                    : 1 - 2 * static_cast<int>(samples[base + site_b[t]])};
-        e += coeff[t] * sa * sb;
+        const auto& term = args.terms[t];
+        const auto state = local_state_index(term.local_state, lane_sample);
+        const auto value = args.values[term.value_offset + state];
+        energy_real += value.x;
+        energy_imag += value.y;
     }
-    e_loc[2 * lane] += e;
+    args.e_loc[2 * lane] += energy_real;
+    args.e_loc[2 * lane + 1] += energy_imag;
 }
 
-__global__ auto cu_reduce_term_indexed(
-    f64* e_loc,
-    const cf* value,
-    const f64* f_top,
-    const f64* f_down,
-    const f64* f_rail_l,
-    const f64* f_rail_r,
-    const f64* f_chain,
-    const f64* logpsi,
-    const int* active_indices,
-    f64 coeff_re,
-    f64 coeff_im,
-    int active
-) -> void
+__global__ auto cu_reduce_term_indexed(CuReduceTermArgs args) -> void
 {
-    const auto compact_lane = int{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
-    if (compact_lane >= active) return;
-    const auto lane = int{active_indices[compact_lane]};
-    const auto v = cf{value[compact_lane]};
-    const auto re = f64{static_cast<f64>(v.re)};
-    const auto im = f64{static_cast<f64>(v.im)};
-    const auto logmag = f64{0.5 * log(norm2(re, im))};
-    const auto phase = f64{atan2(im, re)};
-    const auto fsum =
-        f64{(f_top ? f_top[lane] : 0.0) + (f_down ? f_down[lane] : 0.0)
-            + (f_rail_l ? f_rail_l[lane] : 0.0) + (f_rail_r ? f_rail_r[lane] : 0.0)
-            + f_chain[compact_lane]};
-    const auto dre = f64{logmag + fsum - logpsi[2 * lane]};
-    const auto dim = f64{phase - logpsi[2 * lane + 1]};
-    const auto mag = f64{exp(dre)};
-    const auto rr = f64{mag * cos(dim)};
-    const auto ri = f64{mag * sin(dim)};
-    e_loc[2 * lane] += coeff_re * rr - coeff_im * ri;
-    e_loc[2 * lane + 1] += coeff_re * ri + coeff_im * rr;
+    const auto compact_lane = static_cast<usize>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (compact_lane >= static_cast<usize>(args.active)) return;
+    const auto v = args.value[compact_lane];
+    if (v.re == 0.0f and v.im == 0.0f) return;
+    const auto lane = static_cast<usize>(args.active_indices[compact_lane]);
+    const auto lane_sample = args.samples + lane * static_cast<usize>(args.lane_stride);
+    const auto coefficient = args.coefficients[local_state_index(args.local_state, lane_sample)];
+    const auto coeff_re = coefficient.x;
+    const auto coeff_im = coefficient.y;
+    const auto re = static_cast<f64>(v.re);
+    const auto im = static_cast<f64>(v.im);
+    const f64 logmag{0.5 * log(norm2(re, im))};
+    const f64 phase{atan2(im, re)};
+    const f64 fsum{
+        (args.f_top ? args.f_top[lane] : 0.0) + (args.f_down ? args.f_down[lane] : 0.0)
+        + (args.f_rail_l ? args.f_rail_l[lane] : 0.0) + (args.f_rail_r ? args.f_rail_r[lane] : 0.0)
+        + args.f_chain[compact_lane]
+    };
+    const f64 dre{logmag + fsum - args.logpsi[2 * lane]};
+    const f64 dim{phase - args.logpsi[2 * lane + 1]};
+    const f64 mag{exp(dre)};
+    const f64 rr{mag * cos(dim)};
+    const f64 ri{mag * sin(dim)};
+    args.e_loc[2 * lane] += coeff_re * rr - coeff_im * ri;
+    args.e_loc[2 * lane + 1] += coeff_re * ri + coeff_im * rr;
 }
 
 auto reduce_term_indexed(
     Worker& w,
-    const FlipInst& term,
+    const TermPiece& piece,
     const cf* value,
     const f64* f_chain,
     const int* active_indices,
@@ -139,35 +142,43 @@ auto reduce_term_indexed(
     const f64* logpsi
 ) -> void
 {
-    const auto blocks = int{(active + 255) / 256};
-    cu_reduce_term_indexed<<<blocks, 256, 0, w.la.stream()>>>(
-        e_loc,
-        value,
-        f_top,
-        f_down,
-        f_rail_l,
-        f_rail_r,
-        f_chain,
-        logpsi,
-        active_indices,
-        term.coeff_re,
-        term.coeff_im,
-        active
-    );
-    CUDA_CHECK(cudaGetLastError());
+    const auto blocks = (active + 255) / 256;
+    const auto args = CuReduceTermArgs{
+        .e_loc = e_loc,
+        .value = value,
+        .f_top = f_top,
+        .f_down = f_down,
+        .f_rail_l = f_rail_l,
+        .f_rail_r = f_rail_r,
+        .f_chain = f_chain,
+        .logpsi = logpsi,
+        .active_indices = active_indices,
+        .samples = w.samples,
+        .lane_stride = static_cast<i64>(w.sh.lx) * w.sh.ly,
+        .local_state = piece.local_state,
+        .coefficients = piece.device_coefficients,
+        .active = active,
+    };
+    cu_reduce_term_indexed<<<blocks, 256, 0, w.la.stream()>>>(args);
+    check(cudaGetLastError());
 }
 
-auto launch_diagonal(
-    Worker& w, f64* e_loc, const int* site_a, const int* site_b, const f64* coeff, int n_diag
-) -> void
+auto launch_diagonal(Worker& w, f64* e_loc, const DeviceTermPools& pools, int term_count) -> void
 {
-    if (n_diag < 1) return;
-    const auto lanes = int{w.sh.lanes};
-    const auto blocks = int{(lanes + 255) / 256};
-    cu_diagonal<<<blocks, 256, 0, w.la.stream()>>>(
-        e_loc, w.samples, static_cast<i64>(w.sh.lx) * w.sh.ly, site_a, site_b, coeff, n_diag, lanes
-    );
-    CUDA_CHECK(cudaGetLastError());
+    if (term_count < 1) return;
+    const auto lanes = w.sh.lanes;
+    const auto blocks = (lanes + 255) / 256;
+    const auto args = CuDiagonalArgs{
+        .e_loc = e_loc,
+        .samples = w.samples,
+        .lane_stride = static_cast<i64>(w.sh.lx) * w.sh.ly,
+        .terms = pools.diagonal,
+        .values = pools.diagonal_values,
+        .term_count = term_count,
+        .lanes = lanes,
+    };
+    cu_diagonal<<<blocks, 256, 0, w.la.stream()>>>(args);
+    check(cudaGetLastError());
 }
 
 __global__ auto cu_fourbody(
@@ -213,7 +224,7 @@ auto launch_dot(
     const auto shmem = usize{static_cast<usize>(block) * sizeof(cf)};
     const auto grid = int{std::min(lanes, 65535)};
     cu_fourbody<<<grid, block, shmem, w.la.stream()>>>(lanes, mid, cl, stride_l, cr, stride_r, out);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }

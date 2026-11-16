@@ -1,4 +1,9 @@
+#include "density_rows.cuh"
 #include "parts.cuh"
+
+#ifdef QNPEPS_GATE_HOOKS
+#    include "test/eo/panel_capture.cuh"
+#endif
 
 namespace qn_eloc::env
 {
@@ -10,17 +15,14 @@ auto project_row(Worker& w, int row) -> void
     {
         i64 slab{};
         i64 total{};
-        if (not arena_slot(
-                {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
-                 static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
-                 static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
-                 static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond))},
-                slab
-            )
-            or not arena_slot(
-                {static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(sh.lanes)}, total
-            ))
-            return;
+        arena_slot(
+            {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
+             static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
+             static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
+             static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond))},
+            slab
+        );
+        arena_slot({static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(sh.lanes)}, total);
         const auto threads = int{256};
         const auto blocks =
             int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
@@ -34,7 +36,7 @@ auto project_row(Worker& w, int row) -> void
             w.slot_proj,
             sh.lanes
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
 }
 
@@ -50,16 +52,21 @@ auto build_env_row(
 ) -> void
 {
     const auto& sh = w.sh;
+    if (sh.density_batched)
+    {
+        build_density_row(w, row, contract_up, ks_adj, adj_site, out_site, f_lane, ks_out);
+        return;
+    }
     if (sh.density)
     {
-        if (sh.lanes != 1 or not w.density)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-            return;
-        }
+        require(
+            sh.lanes == 1 and w.density != nullptr,
+            "density environment rows need one lane and a density context, got {} lanes",
+            sh.lanes
+        );
         project_row(w, row);
         usize rail_slots{};
-        if (not arena_sum(static_cast<usize>(sh.ly), 1u, rail_slots)) return;
+        arena_sum(static_cast<usize>(sh.ly), 1u, rail_slots);
         ks_out.assign(rail_slots, 1);
         auto shapes = std::vector<qn_eloc::density::SiteShape>(static_cast<usize>(sh.ly));
         auto projected = std::vector<const cf*>(static_cast<usize>(sh.ly));
@@ -90,51 +97,41 @@ auto build_env_row(
             .output_ranks = ks_out.data(),
             .device_gauge = f_lane
         };
-        const auto status =
-            int{ks_adj ? qn_eloc::density::contract(*w.density, args)
-                       : qn_eloc::density::boundary(*w.density, args)};
-        if (status != 0) qn::set_err(status == 5 ? QNPEPS_ELOC_ERR_OOM : QNPEPS_ELOC_ERR_INTERNAL);
+        qnpeps::collapse_to_internal(
+            {Status::out_of_memory},
+            [&]
+            {
+                if (ks_adj)
+                    qn_eloc::density::contract(*w.density, args);
+                else
+                    qn_eloc::density::boundary(*w.density, args);
+            }
+        );
         return;
     }
-    auto exact_factorization = bool{true};
-    auto exact_rank = int{1};
-    for (auto axis = int{1}; axis < std::max(sh.lx, sh.ly); ++axis)
-    {
-        if (exact_rank > sh.chi / sh.dim_bond)
-        {
-            exact_factorization = false;
-            break;
-        }
-        exact_rank *= sh.dim_bond;
-    }
-    exact_factorization = exact_factorization and exact_rank <= sh.chi;
     const auto lanes = int{sh.lanes};
     project_row(w, row);
 
     usize rail_slots{};
-    if (not arena_sum(static_cast<usize>(sh.ly), 1u, rail_slots)) return;
+    arena_sum(static_cast<usize>(sh.ly), 1u, rail_slots);
     ks_out.assign(rail_slots, 1);
     const auto threads = int{256};
     const auto launch = [&](i64 n) -> int
     {
         i64 total{};
-        if (n < 0
-            or not arena_slot(
-                {static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(lanes)}, total
-            ))
-            return 0;
+        if (n < 0) return 0;
+        arena_slot({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(lanes)}, total);
         return static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads));
     };
 
     cu_fill_first_one<<<launch(1), threads, 0, w.la.stream()>>>(
         w.rroll.p, w.rroll.stride, 1, lanes
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 
     auto previous_rank = int{1};
     for (auto col = int{0}; col < sh.ly; ++col)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto wdim = int{bd(sh.ly, col, sh.dim_bond)};
         const auto sdim = int{bd(sh.lx, row + 1, sh.dim_bond)};
         const auto edim = int{bd(sh.ly, col + 1, sh.dim_bond)};
@@ -150,24 +147,18 @@ auto build_env_row(
         int projected_rows{};
         int adjacent_cols{};
         int contraction_cols{};
-        if (not arena_int({static_cast<std::uint64_t>(wdim), static_cast<std::uint64_t>(lp)}, a_dim)
-            or not arena_int(
-                {static_cast<std::uint64_t>(edim), static_cast<std::uint64_t>(rp)}, b_dim
-            )
-            or not arena_int(
-                {static_cast<std::uint64_t>(wdim),
-                 static_cast<std::uint64_t>(edim),
-                 static_cast<std::uint64_t>(vdim)},
-                projected_rows
-            )
-            or not arena_int(
-                {static_cast<std::uint64_t>(lp), static_cast<std::uint64_t>(rp)}, adjacent_cols
-            )
-            or not arena_int(
-                {static_cast<std::uint64_t>(vdim), static_cast<std::uint64_t>(b_dim)},
-                contraction_cols
-            ))
-            return;
+        arena_int({static_cast<std::uint64_t>(wdim), static_cast<std::uint64_t>(lp)}, a_dim);
+        arena_int({static_cast<std::uint64_t>(edim), static_cast<std::uint64_t>(rp)}, b_dim);
+        arena_int(
+            {static_cast<std::uint64_t>(wdim),
+             static_cast<std::uint64_t>(edim),
+             static_cast<std::uint64_t>(vdim)},
+            projected_rows
+        );
+        arena_int({static_cast<std::uint64_t>(lp), static_cast<std::uint64_t>(rp)}, adjacent_cols);
+        arena_int(
+            {static_cast<std::uint64_t>(vdim), static_cast<std::uint64_t>(b_dim)}, contraction_cols
+        );
         if (ks_adj)
         {
             device_permute(
@@ -265,31 +256,29 @@ auto build_env_row(
         );
 
         int rangefinder_rows{};
-        if (not arena_int(
-                {static_cast<std::uint64_t>(previous_rank), static_cast<std::uint64_t>(vdim)},
-                rangefinder_rows
-            ))
-            return;
+        arena_int(
+            {static_cast<std::uint64_t>(previous_rank), static_cast<std::uint64_t>(vdim)},
+            rangefinder_rows
+        );
         const auto next_rank = int{std::max(1, std::min({sh.chi, rangefinder_rows, b_dim}))};
-        auto recovery_scratch{
+        auto fallback_scratch{
             w.qr_scratch ? static_cast<void*>(w.qr_scratch) : static_cast<void*>(w.tmp_a.p)
         };
-        usize fallback_scratch_bytes{};
-        if (not w.qr_scratch
-            and not arena_product(
+        usize tmp_a_bytes{};
+        if (not w.qr_scratch)
+        {
+            arena_product(
                 {static_cast<std::uint64_t>(w.tmp_a.stride),
                  static_cast<std::uint64_t>(lanes),
                  sizeof(cf)},
-                fallback_scratch_bytes
-            ))
-            return;
-        const auto recovery_scratch_bytes =
-            usize{w.qr_scratch ? w.qr_scratch_bytes : fallback_scratch_bytes};
+                tmp_a_bytes
+            );
+        }
+        const auto fallback_scratch_bytes = usize{w.qr_scratch ? w.qr_scratch_bytes : tmp_a_bytes};
         batched_rangefinder(
             w.la,
             {w.tmp_b.p, w.tmp_b.stride, rangefinder_rows, b_dim},
             next_rank,
-            exact_factorization,
             sh.rangefinder,
             sh.svd_cutoff,
             omega_for(w, b_dim, next_rank),
@@ -303,19 +292,33 @@ auto build_env_row(
             w.sketch_ptrs,
             w.info,
             w.fail_flag,
-            recovery_scratch,
-            recovery_scratch_bytes
+            fallback_scratch,
+            fallback_scratch_bytes
         );
+#ifdef QNPEPS_GATE_HOOKS
+        const auto panel_event = qnpeps::test::PanelEvent{
+            .linalg = &w.la,
+            .row = row,
+            .col = col,
+            .from_top = contract_up,
+            .lattice_rows = sh.lx,
+            .lanes = lanes,
+            .sketch = omega_for(w, b_dim, next_rank),
+            .panel = {w.tmp_b.p, w.tmp_b.stride, rangefinder_rows, b_dim},
+            .basis = {out_site(col), w.slot_env, rangefinder_rows, next_rank},
+            .factor = {w.rnext.p, w.rnext.stride, next_rank, b_dim}
+        };
+        qnpeps::test::capture_panel(panel_event);
+#endif
         int normalized_elements{};
-        if (not arena_int(
-                {static_cast<std::uint64_t>(next_rank), static_cast<std::uint64_t>(b_dim)},
-                normalized_elements
-            ))
-            return;
+        arena_int(
+            {static_cast<std::uint64_t>(next_rank), static_cast<std::uint64_t>(b_dim)},
+            normalized_elements
+        );
         cu_normalize_log<<<lanes, threads, 0, w.la.stream()>>>(
             w.rnext.p, normalized_elements, w.rnext.stride, f_lane, lanes, nullptr
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         std::swap(w.rroll.p, w.rnext.p);
         std::swap(w.rroll.stride, w.rnext.stride);
         ks_out[static_cast<usize>(col) + 1] = next_rank;
@@ -324,20 +327,19 @@ auto build_env_row(
 
     const auto last = int{sh.ly - 1};
     int n_last_int{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(ks_out[static_cast<usize>(last)]),
-             static_cast<std::uint64_t>(
-                 contract_up ? bd(sh.lx, row + 1, sh.dim_bond) : bd(sh.lx, row, sh.dim_bond)
-             ),
-             static_cast<std::uint64_t>(ks_out[static_cast<usize>(last) + 1])},
-            n_last_int
-        ))
-        return;
+    arena_int(
+        {static_cast<std::uint64_t>(ks_out[static_cast<usize>(last)]),
+         static_cast<std::uint64_t>(
+             contract_up ? bd(sh.lx, row + 1, sh.dim_bond) : bd(sh.lx, row, sh.dim_bond)
+         ),
+         static_cast<std::uint64_t>(ks_out[static_cast<usize>(last) + 1])},
+        n_last_int
+    );
     const auto n_last = i64{n_last_int};
     cu_scale_last<<<launch(n_last), threads, 0, w.la.stream()>>>(
         out_site(last), w.slot_env, n_last, w.rroll.p, w.rroll.stride, lanes
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
@@ -349,25 +351,22 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
     usize vertical_count{};
     usize vertical_bytes{};
     usize overlap_bytes{};
-    if (not arena_product(
-            {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(sh.lx - 1)},
-            vertical_count
-        )
-        or not arena_product({sizeof(f64), vertical_count}, vertical_bytes)
-        or not arena_product({sizeof(f64), lanes_u}, overlap_bytes))
-        return;
+    arena_product(
+        {static_cast<std::uint64_t>(lanes), static_cast<std::uint64_t>(sh.lx - 1)}, vertical_count
+    );
+    arena_product({sizeof(f64), vertical_count}, vertical_bytes);
+    arena_product({sizeof(f64), lanes_u}, overlap_bytes);
 
-    CUDA_CHECK(cudaMemsetAsync(w.f_down, 0, vertical_bytes, w.la.stream()));
-    CUDA_CHECK(cudaMemsetAsync(w.f_top, 0, vertical_bytes, w.la.stream()));
-    CUDA_CHECK(cudaMemsetAsync(w.f_ov, 0, overlap_bytes, w.la.stream()));
+    check(cudaMemsetAsync(w.f_down, 0, vertical_bytes, w.la.stream()));
+    check(cudaMemsetAsync(w.f_top, 0, vertical_bytes, w.la.stream()));
+    check(cudaMemsetAsync(w.f_ov, 0, overlap_bytes, w.la.stream()));
 
     for (auto k = int{0}; k < sh.lx - 1; ++k)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         auto f_lane{w.f_down + static_cast<i64>(k) * lanes};
         if (k > 0)
         {
-            CUDA_CHECK(cudaMemcpyAsync(
+            check(cudaMemcpyAsync(
                 f_lane,
                 w.f_down + static_cast<i64>(k - 1) * lanes,
                 overlap_bytes,
@@ -398,11 +397,10 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
     auto cur = int{0};
     for (auto k = int{0}; k < top_rows; ++k)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         auto f_lane{w.f_top + static_cast<i64>(k) * lanes};
         if (k > 0)
         {
-            CUDA_CHECK(cudaMemcpyAsync(
+            check(cudaMemcpyAsync(
                 f_lane,
                 w.f_top + static_cast<i64>(k - 1) * lanes,
                 overlap_bytes,
@@ -429,10 +427,9 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
     const auto ov_site = [&w, full_top, ti](int col) -> cf*
     { return full_top ? etf_site(w, ti, col) : et_site(w, static_cast<int>(ti % 2 == 0), col); };
     cu_fill_first_one<<<1, threads, 0, w.la.stream()>>>(w.rroll.p, w.rroll.stride, 1, lanes);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     for (auto col = int{0}; col < sh.ly; ++col)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto ktl = int{kt[static_cast<usize>(col)]};
         const auto ktr = int{kt[static_cast<usize>(col) + 1]};
         const auto kdl = int{kd[static_cast<usize>(col)]};
@@ -441,16 +438,13 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
         int top_width{};
         int bottom_width{};
         int overlap_elements{};
-        if (not arena_int(
-                {static_cast<std::uint64_t>(vdim), static_cast<std::uint64_t>(ktr)}, top_width
-            )
-            or not arena_int(
-                {static_cast<std::uint64_t>(kdl), static_cast<std::uint64_t>(vdim)}, bottom_width
-            )
-            or not arena_int(
-                {static_cast<std::uint64_t>(kdr), static_cast<std::uint64_t>(ktr)}, overlap_elements
-            ))
-            return;
+        arena_int({static_cast<std::uint64_t>(vdim), static_cast<std::uint64_t>(ktr)}, top_width);
+        arena_int(
+            {static_cast<std::uint64_t>(kdl), static_cast<std::uint64_t>(vdim)}, bottom_width
+        );
+        arena_int(
+            {static_cast<std::uint64_t>(kdr), static_cast<std::uint64_t>(ktr)}, overlap_elements
+        );
         w.la.matmul_batched(
             CuMatrixBatchedCF32Const{
                 reinterpret_cast<const cuFloatComplex*>(w.rroll.p), w.rroll.stride, kdl, ktl
@@ -485,7 +479,7 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
         cu_normalize_log<<<lanes, threads, 0, w.la.stream()>>>(
             w.rnext.p, overlap_elements, w.rnext.stride, w.f_ov, lanes, nullptr
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         std::swap(w.rroll.p, w.rnext.p);
         std::swap(w.rroll.stride, w.rnext.stride);
     }
@@ -500,7 +494,7 @@ auto compute_logpsi(Worker& w, f64* logpsi_out, bool full_top) -> void
         logpsi_out,
         lanes
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }

@@ -13,8 +13,6 @@ namespace qnpeps::minsr
 {
 using cf = qnpeps::ComplexF32;
 using cd = cuDoubleComplex;
-using qn_e2e::err_state;
-using qn_e2e::set_err;
 
 class MinsrSolveContext;
 
@@ -39,7 +37,7 @@ auto prepared_solve_run(
     -> TransientArenaCursor;
 [[nodiscard]] auto prepared_solve_samples(const MinsrSolveContext& solve) noexcept -> i64;
 [[nodiscard]] auto prepared_solve_linalg(const MinsrSolveContext& solve) noexcept -> Linalg&;
-auto prepared_solve_destroy(MinsrSolveContext* solve) noexcept -> void;
+auto prepared_solve_destroy(MinsrSolveContext* solve) -> void;
 
 auto minsr_context_create(
     const QnpepsE2eConfig& config,
@@ -74,7 +72,7 @@ auto minsr_context_run(
     f64* ess_output
 ) -> void;
 
-auto minsr_context_destroy(qnpeps_e2e_minsr_ctx* context) noexcept -> void;
+auto minsr_context_destroy(qnpeps_e2e_minsr_ctx* context) -> void;
 [[nodiscard]] auto minsr_context_stream(const qnpeps_e2e_minsr_ctx& context) noexcept
     -> cudaStream_t;
 [[nodiscard]] auto minsr_context_device(const qnpeps_e2e_minsr_ctx& context) noexcept -> int;

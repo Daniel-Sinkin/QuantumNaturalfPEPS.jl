@@ -1,4 +1,6 @@
-#include "core/error.cuh"
+#include "core/defer.cuh"
+#include "core/error.hpp"
+#include "eo/shards.cuh"
 #include "core/predicates.cuh"
 #include "linalg/linalg.cuh"
 #include "linalg/transfer.cuh"
@@ -31,25 +33,14 @@ constexpr i64 k_peer_tile_bytes_default{static_cast<i64>(1) << 30};
 template <class T>
 [[nodiscard]] auto device_alloc(i64 count) -> T*
 {
-    if (qnpeps::err_state() != QNPEPS_OK) return nullptr;
     const auto allocation_count = static_cast<usize>(std::max(count, i64{1}));
     void* pointer{};
-    const auto status = cudaMalloc(&pointer, sizeof(T) * allocation_count);
-    if (status != cudaSuccess)
-    {
-        qnpeps::set_cuda_err(status, QNPEPS_ERR_OOM);
-        return nullptr;
-    }
+    check_allocation(cudaMalloc(&pointer, sizeof(T) * allocation_count));
     return static_cast<T*>(pointer);
 }
-
-auto map_eloc(qnpeps_eloc_status status) noexcept -> void
-{
-    if (status != QNPEPS_ELOC_OK) qnpeps::set_err(static_cast<qnpeps_status>(status));
-}
 }
 
-auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
+auto build_gram_blockrow(const DistributedGramArgs& args) -> void
 {
     const auto& destination = *args.destination;
     const auto max_count = [&]
@@ -60,28 +51,35 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
         return count;
     }();
     const auto chunk_rows = peer_chunk_rows(args.peer_tile_bytes, args.compact, max_count);
-    auto* const blockrow = device_alloc<ComplexF32>(destination.count * args.n_samples);
-    auto* const tile = device_alloc<ComplexF32>(destination.count * max_count);
-    auto* const visit = device_alloc<ComplexF32>(chunk_rows * args.compact);
+    ComplexF32* blockrow{};
+    ComplexF32* tile{};
+    ComplexF32* visit{};
+    const Defer release_buffers{[&]
+                                {
+                                    unchecked(cudaFree(blockrow));
+                                    unchecked(cudaFree(tile));
+                                    unchecked(cudaFree(visit));
+                                }};
+    blockrow = device_alloc<ComplexF32>(destination.count * args.n_samples);
+    tile = device_alloc<ComplexF32>(destination.count * max_count);
+    visit = device_alloc<ComplexF32>(chunk_rows * args.compact);
 
     for (const auto& source : args.lanes)
     {
-        if (qnpeps::err_state() != QNPEPS_OK) break;
         if (all_nonpositive(source.count)) continue;
         if (source.device == destination.device)
         {
-            map_eloc(qnpeps_eloc_gram_tile(
-                args.config,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(destination.rows),
-                destination.samples + destination.base * args.sites,
-                destination.count,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(destination.rows),
-                destination.samples + source.base * args.sites,
-                source.count,
-                reinterpret_cast<qnpeps_eloc_cbuf*>(tile),
-                destination.linalg->stream()
-            ));
-            if (qnpeps::err_state() == QNPEPS_OK)
+            eo::gram_tile({
+                .config = args.config,
+                .rows_a = destination.rows,
+                .samples_a = destination.samples + destination.base * args.sites,
+                .count_a = destination.count,
+                .rows_b = destination.rows,
+                .samples_b = destination.samples + source.base * args.sites,
+                .count_b = source.count,
+                .tile = tile,
+                .stream = destination.linalg->stream(),
+            });
             {
                 const auto destination_pitch = static_cast<usize>(args.n_samples);
                 const auto source_pitch = static_cast<usize>(source.count);
@@ -95,7 +93,7 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
                     source_pitch,
                     height
                 );
-                CUDA_CHECK(cudaStreamSynchronize(destination.linalg->stream()));
+                check(cudaStreamSynchronize(destination.linalg->stream()));
             }
             continue;
         }
@@ -104,7 +102,6 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
         const auto chunk_size = static_cast<usize>(chunk_rows);
         for (auto base = 0_uz; base < source_count; base += chunk_size)
         {
-            if (qnpeps::err_state() != QNPEPS_OK) break;
             const auto count = std::min(chunk_size, source_count - base);
             const auto base_offset = static_cast<i64>(base);
             const auto count_value = static_cast<i64>(count);
@@ -118,20 +115,18 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
                 source.device,
                 visit_count
             );
-            CUDA_CHECK(cudaStreamSynchronize(destination.linalg->stream()));
-            if (qnpeps::err_state() != QNPEPS_OK) break;
-            map_eloc(qnpeps_eloc_gram_tile(
-                args.config,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(destination.rows),
-                destination.samples + destination.base * args.sites,
-                destination.count,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(visit),
-                destination.samples + (source.base + base_offset) * args.sites,
-                count_value,
-                reinterpret_cast<qnpeps_eloc_cbuf*>(tile),
-                destination.linalg->stream()
-            ));
-            if (qnpeps::err_state() == QNPEPS_OK)
+            check(cudaStreamSynchronize(destination.linalg->stream()));
+            eo::gram_tile({
+                .config = args.config,
+                .rows_a = destination.rows,
+                .samples_a = destination.samples + destination.base * args.sites,
+                .count_a = destination.count,
+                .rows_b = visit,
+                .samples_b = destination.samples + (source.base + base_offset) * args.sites,
+                .count_b = count_value,
+                .tile = tile,
+                .stream = destination.linalg->stream(),
+            });
             {
                 const auto destination_pitch = static_cast<usize>(args.n_samples);
                 const auto source_pitch = count;
@@ -145,12 +140,11 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
                     source_pitch,
                     height
                 );
-                CUDA_CHECK(cudaStreamSynchronize(destination.linalg->stream()));
+                check(cudaStreamSynchronize(destination.linalg->stream()));
             }
         }
     }
 
-    if (qnpeps::err_state() == QNPEPS_OK)
     {
         const auto blockrow_count = static_cast<usize>(destination.count * args.n_samples);
         copy_peer_async(
@@ -161,19 +155,26 @@ auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status
             destination.device,
             blockrow_count
         );
-        CUDA_CHECK(cudaStreamSynchronize(destination.linalg->stream()));
+        check(cudaStreamSynchronize(destination.linalg->stream()));
     }
-    cudaFree(blockrow);
-    cudaFree(tile);
-    cudaFree(visit);
-    return qnpeps::err_state();
 }
 
-auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status
+auto scatter_ring(const DistributedScatterArgs& args) -> void
 {
     auto accumulators = std::vector<cuDoubleComplex*>{args.lanes.size()};
     auto coefficients = std::vector<cuDoubleComplex*>{args.lanes.size()};
     auto slot_sites = std::vector<i32*>{args.lanes.size()};
+    const Defer release_buffers{[&]
+                                {
+                                    for (auto index = 0_uz; index < args.lanes.size(); ++index)
+                                    {
+                                        unchecked(cudaSetDevice(args.lanes[index].device));
+                                        unchecked(cudaFree(accumulators[index]));
+                                        unchecked(cudaFree(coefficients[index]));
+                                        unchecked(cudaFree(slot_sites[index]));
+                                    }
+                                    unchecked(cudaSetDevice(0));
+                                }};
     std::optional<usize> previous{};
     const auto lane_count = args.lanes.size();
     const auto sample_count = static_cast<usize>(args.n_samples);
@@ -183,14 +184,12 @@ auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status
 
     for (auto index = 0_uz; index < lane_count; ++index)
     {
-        if (qnpeps::err_state() != QNPEPS_OK) break;
         const auto& lane = args.lanes[index];
         if (all_nonpositive(lane.count)) continue;
-        CUDA_CHECK(cudaSetDevice(lane.device));
+        check(cudaSetDevice(lane.device));
         accumulators[index] = device_alloc<cuDoubleComplex>(args.dense);
         coefficients[index] = device_alloc<cuDoubleComplex>(args.n_samples);
         slot_sites[index] = device_alloc<i32>(args.compact);
-        if (qnpeps::err_state() != QNPEPS_OK) break;
         upload_async(*lane.linalg, coefficients[index], args.coefficients.data(), sample_count);
         upload_async(*lane.linalg, slot_sites[index], args.slot_site.data(), compact_count);
         if (not previous)
@@ -207,9 +206,8 @@ auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status
                 args.lanes[*previous].device,
                 dense_count
             );
-            CUDA_CHECK(cudaDeviceSynchronize());
+            check(cudaDeviceSynchronize());
         }
-        if (qnpeps::err_state() != QNPEPS_OK) break;
         launch_scatter(
             *lane.linalg,
             {
@@ -226,13 +224,12 @@ auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status
                 .row_end = static_cast<int>(lane.base + lane.count),
             }
         );
-        CUDA_CHECK(cudaDeviceSynchronize());
+        check(cudaDeviceSynchronize());
         previous = index;
     }
 
-    if (qnpeps::err_state() == QNPEPS_OK)
     {
-        CUDA_CHECK(cudaSetDevice(0));
+        check(cudaSetDevice(0));
         auto* const accumulator0 = accumulators[0];
         if (previous and *previous != 0)
         {
@@ -244,22 +241,12 @@ auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status
                 args.lanes[*previous].device,
                 dense_count
             );
-            CUDA_CHECK(cudaDeviceSynchronize());
+            check(cudaDeviceSynchronize());
         }
         launch_cast_accumulator(
             *args.lanes[0].linalg, args.theta_device0, accumulator0, args.dense
         );
-        CUDA_CHECK(cudaStreamSynchronize(args.lanes[0].linalg->stream()));
+        check(cudaStreamSynchronize(args.lanes[0].linalg->stream()));
     }
-
-    for (auto index = 0_uz; index < lane_count; ++index)
-    {
-        cudaSetDevice(args.lanes[index].device);
-        cudaFree(accumulators[index]);
-        cudaFree(coefficients[index]);
-        cudaFree(slot_sites[index]);
-    }
-    cudaSetDevice(0);
-    return qnpeps::err_state();
 }
 }

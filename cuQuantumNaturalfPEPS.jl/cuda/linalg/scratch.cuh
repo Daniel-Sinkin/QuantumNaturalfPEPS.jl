@@ -189,12 +189,7 @@ class DeviceBuffer
     {
         if (bytes <= bytes_) return base_;
         void* grown = arena_ ? arena_->take<char>(bytes) : nullptr;
-        if (not arena_) CUDA_CHECK(cudaMalloc(&grown, bytes));
-        if (not grown)
-        {
-            qnpeps::set_err(QNPEPS_ERR_OOM);
-            return nullptr;
-        }
+        if (not arena_) check(cudaMalloc(&grown, bytes));
         if (not arena_) maybe_free_device(base_);
         base_ = grown;
         bytes_ = bytes;

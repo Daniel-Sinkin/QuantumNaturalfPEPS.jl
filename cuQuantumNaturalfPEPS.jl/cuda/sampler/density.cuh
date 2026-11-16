@@ -30,7 +30,7 @@ auto build_density_state_row(
     int environment_index,
     std::span<const int> input_bonds,
     std::vector<int>& output_bonds
-) -> bool;
+) -> void;
 auto build_density_projected_row(
     qnpeps_ctx& ctx,
     const SamplerConfig& config,
@@ -39,7 +39,7 @@ auto build_density_projected_row(
     int output_environment_index,
     std::span<const int> input_bonds,
     std::vector<int>& output_bonds
-) -> bool;
+) -> void;
 }
 
 #endif

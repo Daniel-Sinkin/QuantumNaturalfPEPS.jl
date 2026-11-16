@@ -3,6 +3,7 @@
 #include "eloc.hpp"
 #include "gate_fixture.cuh"
 #include "hamiltonian.hpp"
+#include "term_builders.cuh"
 #include "mps.hpp"
 #include "tensor.hpp"
 
@@ -84,35 +85,21 @@ auto site0(int i, int j, int ly) -> int
     return (i - 1) * ly + (j - 1);
 }
 
-auto flip_term(const Bond& b, int ly, double coeff, bool masked) -> QnpepsElocFlipTerm
+auto bond_flip(const Bond& b, int ly, double coeff, bool masked) -> eo_test::TermTableBuilder
 {
-    QnpepsElocFlipTerm t{};
-    t.n_flips = 2;
-    t.flip_site[0] = site0(b.ai, b.aj, ly);
-    t.flip_site[1] = site0(b.bi, b.bj, ly);
-    t.flip_value[0] = -1;
-    t.flip_value[1] = -1;
-    t.mask_a = masked ? t.flip_site[0] : -1;
-    t.mask_b = masked ? t.flip_site[1] : -1;
-    t.coeff_re = coeff;
-    t.coeff_im = 0.0;
-    return t;
+    eo_test::TermTableBuilder terms{};
+    const int site_a{site0(b.ai, b.aj, ly)};
+    const int site_b{site0(b.bi, b.bj, ly)};
+    terms.add_reflection({site_a, site_b}, {}, coeff, masked ? site_a : -1, masked ? site_b : -1);
+    return terms;
 }
 
-auto diag_bonds_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocDiagBond>
+auto heisenberg_of(const std::vector<Bond>& bonds, int ly) -> eo_test::TermTableBuilder
 {
-    std::vector<QnpepsElocDiagBond> out{};
+    eo_test::TermTableBuilder terms{};
     for (const Bond& b : bonds)
-        out.push_back({site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j});
-    return out;
-}
-
-auto masked_flips_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocFlipTerm>
-{
-    std::vector<QnpepsElocFlipTerm> out{};
-    for (const Bond& b : bonds)
-        out.push_back(flip_term(b, ly, 2.0 * b.j, true));
-    return out;
+        terms.add_heisenberg_bond(site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j);
+    return terms;
 }
 
 auto oracle_terms(const std::vector<Bond>& bonds, const std::vector<int>& sample, int ly)
@@ -207,22 +194,17 @@ auto dev_teardown(Dev& d) -> void
 
 auto dev_run(
     Dev& d,
-    const std::vector<QnpepsElocDiagBond>& diag,
-    const std::vector<QnpepsElocFlipTerm>& flips,
+    const eo_test::TermTableBuilder& terms,
     bool ident,
     int meo,
     std::vector<double>& lp,
     std::vector<double>& el
-) -> qnpeps_eloc_status
+) -> qnpeps_status
 {
     QnpepsElocConfig cfg{d.cfg};
     cfg.meo = meo;
-    QnpepsElocTermTable tt{};
-    tt.n_diag = static_cast<int32_t>(diag.size());
-    tt.diag = diag.empty() ? nullptr : diag.data();
-    tt.n_flip = static_cast<int32_t>(flips.size());
-    tt.flip = flips.empty() ? nullptr : flips.data();
-    const qnpeps_eloc_status st{qnpeps_eloc_run(
+    const auto tt{terms.table()};
+    const qnpeps_status st{qnpeps_eloc_run(
         &cfg,
         static_cast<const qnpeps_eloc_cbuf*>(d.d_peps),
         ident ? d.d_samp_ident : d.d_samp_rand,
@@ -305,11 +287,11 @@ auto perterm_set(
     const std::size_t sites{static_cast<std::size_t>(fx.lx) * ly};
     for (const Bond& b : bonds)
     {
-        std::vector<QnpepsElocFlipTerm> one{flip_term(b, ly, 1.0, false)};
+        const auto one{bond_flip(b, ly, 1.0, false)};
         std::vector<double> lp{};
         std::vector<double> el{};
-        const qnpeps_eloc_status st{dev_run(d, {}, one, false, d.cfg.meo, lp, el)};
-        if (st != QNPEPS_ELOC_OK)
+        const qnpeps_status st{dev_run(d, one, false, d.cfg.meo, lp, el)};
+        if (st != QNPEPS_OK)
         {
             std::printf(
                 "[gate2]   %s device error bond=(%d,%d)-(%d,%d): %s\n",
@@ -318,7 +300,7 @@ auto perterm_set(
                 b.aj,
                 b.bi,
                 b.bj,
-                qnpeps_eloc_strerror(st)
+                qnpeps_last_error()
             );
             r.fail = 1;
             continue;
@@ -414,14 +396,13 @@ auto eloc_set(
     SetResult r{};
     r.name = name;
     const int ly{fx.ly};
-    const std::vector<QnpepsElocDiagBond> diag{diag_bonds_of(bonds, ly)};
-    const std::vector<QnpepsElocFlipTerm> flips{masked_flips_of(bonds, ly)};
+    const auto terms{heisenberg_of(bonds, ly)};
     std::vector<double> lp{};
     std::vector<double> el{};
-    const qnpeps_eloc_status st{dev_run(d, diag, flips, false, d.cfg.meo, lp, el)};
-    if (st != QNPEPS_ELOC_OK)
+    const qnpeps_status st{dev_run(d, terms, false, d.cfg.meo, lp, el)};
+    if (st != QNPEPS_OK)
     {
-        std::printf("[gate2]   %s device error: %s\n", name.c_str(), qnpeps_eloc_strerror(st));
+        std::printf("[gate2]   %s device error: %s\n", name.c_str(), qnpeps_last_error());
         r.fail = 1;
         return r;
     }
@@ -530,13 +511,13 @@ auto mask_set(
         n_aligned,
         n_anti
     );
-    std::vector<QnpepsElocFlipTerm> one{flip_term(b, ly, 2.0 * j1, true)};
+    const auto one{bond_flip(b, ly, 2.0 * j1, true)};
     std::vector<double> lp{};
     std::vector<double> el{};
-    const qnpeps_eloc_status st{dev_run(d, {}, one, false, d.cfg.meo, lp, el)};
-    if (st != QNPEPS_ELOC_OK)
+    const qnpeps_status st{dev_run(d, one, false, d.cfg.meo, lp, el)};
+    if (st != QNPEPS_OK)
     {
-        std::printf("[gate2]   %s device error: %s\n", name.c_str(), qnpeps_eloc_strerror(st));
+        std::printf("[gate2]   %s device error: %s\n", name.c_str(), qnpeps_last_error());
         r.fail = 1;
         return r;
     }
@@ -708,14 +689,13 @@ auto run_case(
     {
         SetResult r{};
         r.name = "D_batch";
-        const std::vector<QnpepsElocDiagBond> diag{diag_bonds_of(bj1j2, ly)};
-        const std::vector<QnpepsElocFlipTerm> flips{masked_flips_of(bj1j2, ly)};
+        const auto terms{heisenberg_of(bj1j2, ly)};
         std::vector<double> lp{};
         std::vector<double> el{};
-        const qnpeps_eloc_status st{dev_run(d, diag, flips, true, meo, lp, el)};
-        if (st != QNPEPS_ELOC_OK)
+        const qnpeps_status st{dev_run(d, terms, true, meo, lp, el)};
+        if (st != QNPEPS_OK)
         {
-            std::printf("[gate2]   D_batch device error: %s\n", qnpeps_eloc_strerror(st));
+            std::printf("[gate2]   D_batch device error: %s\n", qnpeps_last_error());
             r.fail = 1;
         }
         for (int lane{1}; lane < n and not r.fail; ++lane)
@@ -740,21 +720,18 @@ auto run_case(
     {
         SetResult r{};
         r.name = "E_wave";
-        const std::vector<QnpepsElocDiagBond> diag{diag_bonds_of(bj1j2, ly)};
-        const std::vector<QnpepsElocFlipTerm> flips{masked_flips_of(bj1j2, ly)};
+        const auto terms{heisenberg_of(bj1j2, ly)};
         std::vector<double> lp4{};
         std::vector<double> el4{};
         std::vector<double> lp8{};
         std::vector<double> el8{};
-        const qnpeps_eloc_status st4{dev_run(d, diag, flips, false, 4, lp4, el4)};
-        const qnpeps_eloc_status st8{dev_run(d, diag, flips, false, 8, lp8, el8)};
+        const qnpeps_status st4{dev_run(d, terms, false, 4, lp4, el4)};
+        const qnpeps_status st8{dev_run(d, terms, false, 8, lp8, el8)};
         bool bit_equal{true};
-        if (st4 != QNPEPS_ELOC_OK or st8 != QNPEPS_ELOC_OK)
+        if (st4 != QNPEPS_OK or st8 != QNPEPS_OK)
         {
             std::printf(
-                "[gate2]   E_wave device error: %s / %s\n",
-                qnpeps_eloc_strerror(st4),
-                qnpeps_eloc_strerror(st8)
+                "[gate2]   E_wave device error: %s / %s\n", qnpeps_last_error(), qnpeps_last_error()
             );
             r.fail = 1;
         }

@@ -58,4 +58,16 @@ auto qn_eloc_run_impl(
     qnpeps::Linalg& linalg
 ) -> void;
 
+auto qn_eloc_gram_tile_impl(
+    const QnpepsElocConfig& cfg,
+    const cf* rows_a,
+    const std::uint8_t* samples_a,
+    std::int64_t ns_a,
+    const cf* rows_b,
+    const std::uint8_t* samples_b,
+    std::int64_t ns_b,
+    cf* tile_out,
+    cudaStream_t stream
+) -> void;
+
 #endif

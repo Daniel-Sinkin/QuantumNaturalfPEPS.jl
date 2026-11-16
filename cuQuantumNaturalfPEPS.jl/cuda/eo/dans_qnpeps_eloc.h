@@ -1,27 +1,18 @@
 #ifndef QNPEPS_ELOC_H
 #define QNPEPS_ELOC_H
 
+#include "qnpeps_status.h"
+
 #include <stdint.h>
 
-#define QNPEPS_ELOC_DIAG_ONE_SITE_Z (-1)
-#define QNPEPS_ELOC_CAP_ONE_SITE_Z UINT64_C(1)
+#define QNPEPS_ELOC_TERM_MAX_SITES 4
+#define QNPEPS_ELOC_CAP_LOCAL_OPERATORS UINT64_C(2)
 
 #ifdef __cplusplus
 extern "C"
 {
 #    pragma GCC visibility push(default)
 #endif
-
-    typedef enum qnpeps_eloc_status
-    {
-        QNPEPS_ELOC_OK = 0,
-        QNPEPS_ELOC_ERR_NULL_ARG = 1,
-        QNPEPS_ELOC_ERR_BAD_CONFIG = 2,
-        QNPEPS_ELOC_ERR_BAD_VERSION = 3,
-        QNPEPS_ELOC_ERR_CUDA = 4,
-        QNPEPS_ELOC_ERR_OOM = 5,
-        QNPEPS_ELOC_ERR_INTERNAL = 6
-    } qnpeps_eloc_status;
 
     typedef struct QnpepsElocConfig
     {
@@ -60,33 +51,47 @@ extern "C"
         double lambda;
     } QnpepsElocCtxRunArgs;
 
-    typedef struct QnpepsElocDiagBond
+    typedef struct QnpepsElocComplex
     {
-        int32_t site_a;
-        int32_t site_b;
-        double coeff;
-    } QnpepsElocDiagBond;
+        double re;
+        double im;
+    } QnpepsElocComplex;
 
-    typedef struct QnpepsElocFlipTerm
+    typedef struct QnpepsElocDiagonalTerm
     {
-        int32_t n_flips;
-        int32_t flip_site[4];
-        int32_t flip_value[4];
-        int32_t mask_a;
-        int32_t mask_b;
-        double coeff_re;
-        double coeff_im;
-    } QnpepsElocFlipTerm;
+        int64_t value_offset;
+        int32_t site_count;
+        int32_t state_count;
+        int32_t site[QNPEPS_ELOC_TERM_MAX_SITES];
+    } QnpepsElocDiagonalTerm;
+
+    typedef struct QnpepsElocOffDiagonalPiece
+    {
+        int64_t state_offset;
+        int64_t weight_offset;
+        int32_t site_count;
+        int32_t state_count;
+        int32_t site[QNPEPS_ELOC_TERM_MAX_SITES];
+    } QnpepsElocOffDiagonalPiece;
 
     typedef struct QnpepsElocTermTable
     {
-        int32_t n_diag;
-        const QnpepsElocDiagBond* diag;
-        int32_t n_flip;
-        const QnpepsElocFlipTerm* flip;
+        uint32_t struct_size;
+        int32_t dim_phys;
+        int32_t diagonal_count;
+        int32_t piece_count;
+        const QnpepsElocDiagonalTerm* diagonal;
+        const QnpepsElocOffDiagonalPiece* piece;
+        int64_t diagonal_value_count;
+        const QnpepsElocComplex* diagonal_values;
+        int64_t piece_state_count;
+        const uint8_t* piece_active;
+        const QnpepsElocComplex* piece_coefficients;
+        int64_t piece_weight_count;
+        const QnpepsElocComplex* piece_weights;
     } QnpepsElocTermTable;
 
-    qnpeps_eloc_status qnpeps_eloc_logpsi(
+    qnpeps_status qnpeps_eloc_logpsi(
         const QnpepsElocConfig* cfg,
         const qnpeps_eloc_cbuf* device_peps,
         const uint8_t* device_samples,
@@ -95,7 +100,7 @@ extern "C"
         void* stream
     );
 
-    qnpeps_eloc_status qnpeps_eloc_run(
+    qnpeps_status qnpeps_eloc_run(
         const QnpepsElocConfig* cfg,
         const qnpeps_eloc_cbuf* device_peps,
         const uint8_t* device_samples,
@@ -110,7 +115,7 @@ extern "C"
         void* stream
     );
 
-    qnpeps_eloc_status qnpeps_eloc_ctx_create(
+    qnpeps_status qnpeps_eloc_ctx_create(
         const QnpepsElocConfig* cfg,
         int64_t n_samples,
         const QnpepsElocTermTable* terms,
@@ -121,11 +126,11 @@ extern "C"
 
     void qnpeps_eloc_ctx_destroy(qnpeps_eloc_ctx* ctx);
 
-    qnpeps_eloc_status qnpeps_eloc_ctx_run(qnpeps_eloc_ctx* ctx, const QnpepsElocCtxRunArgs* args);
+    qnpeps_status qnpeps_eloc_ctx_run(qnpeps_eloc_ctx* ctx, const QnpepsElocCtxRunArgs* args);
 
-    qnpeps_eloc_status qnpeps_eloc_compact_count(const QnpepsElocConfig* cfg, int64_t* out_count);
+    qnpeps_status qnpeps_eloc_compact_count(const QnpepsElocConfig* cfg, int64_t* out_count);
 
-    qnpeps_eloc_status qnpeps_eloc_gram_tile(
+    qnpeps_status qnpeps_eloc_gram_tile(
         const QnpepsElocConfig* cfg,
         const qnpeps_eloc_cbuf* rows_a,
         const uint8_t* samples_a,
@@ -137,7 +142,6 @@ extern "C"
         void* stream
     );
 
-    const char* qnpeps_eloc_strerror(qnpeps_eloc_status status);
     const char* qnpeps_eloc_version(void);
     uint64_t qnpeps_eloc_capabilities(void);
 

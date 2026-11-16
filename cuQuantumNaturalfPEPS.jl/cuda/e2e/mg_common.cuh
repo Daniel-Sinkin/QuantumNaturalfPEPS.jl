@@ -1,13 +1,13 @@
 #ifndef QNPEPS_E2E_MG_COMMON_CUH
 #define QNPEPS_E2E_MG_COMMON_CUH
 
+#include "capi/internal/format.cuh"
 #include "capi/qnpeps.h"
 #include "common.cuh"
 #include "dans_qnpeps_e2e.h"
 #include "dans_qnpeps_eloc.h"
 #include "eo/term_validation.cuh"
 
-#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cuda_runtime.h>
@@ -27,15 +27,34 @@ inline constexpr int k_probe_fill{0xAB};
 inline constexpr int k_probe_iterations{8};
 inline constexpr usize k_probe_bytes{static_cast<usize>(1) << 20};
 
-[[nodiscard]] inline auto _term_check(const QnpepsE2eConfig& config, const void* terms) noexcept
-    -> qnpeps_e2e_status
+inline auto validate_node_terms(const QnpepsE2eConfig& config, const void* terms) -> void
 {
     const auto status = qnpeps::eo::validate_terms(
-        config.lx, config.ly, static_cast<const QnpepsElocTermTable*>(terms)
+        config.lx, config.ly, config.dim_phys, static_cast<const QnpepsElocTermTable*>(terms)
     );
-    if (status == qnpeps::eo::TermValidation::null_argument) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (status == qnpeps::eo::TermValidation::bad_config) return QNPEPS_E2E_ERR_BAD_CONFIG;
-    return QNPEPS_E2E_OK;
+    require(
+        status != qnpeps::eo::TermValidation::null_argument,
+        Status::null_argument,
+        "node term table misses an array"
+    );
+    require(
+        status != qnpeps::eo::TermValidation::bad_version,
+        Status::bad_version,
+        "node term table struct_size is not recognized"
+    );
+    require(
+        status != qnpeps::eo::TermValidation::bad_config,
+        Status::bad_config,
+        "node term table rejects its entries"
+    );
+    const auto& table = *static_cast<const QnpepsElocTermTable*>(terms);
+    require(
+        qnpeps::eo::is_routable(config.lx, config.ly, table),
+        Status::bad_config,
+        "node term table is not routable on a {}x{} lattice",
+        config.lx,
+        config.ly
+    );
 }
 
 [[nodiscard]] inline auto sampler_config(const QnpepsE2eConfig& config) noexcept -> QnpepsConfig
@@ -65,73 +84,52 @@ inline constexpr usize k_probe_bytes{static_cast<usize>(1) << 20};
     output.dim_phys = config.dim_phys;
     output.dim_bond = config.dim_bond;
     output.chi_eo = config.chi_eo;
-    output.meo = config.meo;
+    output.meo = local_energy_wave_lanes(config);
     apply_truncation(config, output);
     return output;
 }
 
-inline auto map_sampler_status(qnpeps_status status) noexcept -> void
+inline auto validate_node_config(const QnpepsE2eConfig* config) -> void
 {
-    if (status == QNPEPS_OK) return;
-    if (status == QNPEPS_ERR_BAD_CONFIG)
-        set_err(QNPEPS_E2E_ERR_BAD_CONFIG);
-    else if (status == QNPEPS_ERR_CUDA)
-        set_err(QNPEPS_E2E_ERR_CUDA);
-    else if (status == QNPEPS_ERR_OOM)
-        set_err(QNPEPS_E2E_ERR_OOM);
-    else
-        set_err(QNPEPS_E2E_ERR_INTERNAL);
-}
-
-inline auto map_local_energy_status(qnpeps_eloc_status status) noexcept -> void
-{
-    if (status == QNPEPS_ELOC_OK) return;
-    if (status == QNPEPS_ELOC_ERR_BAD_CONFIG)
-        set_err(QNPEPS_E2E_ERR_BAD_CONFIG);
-    else if (status == QNPEPS_ELOC_ERR_CUDA)
-        set_err(QNPEPS_E2E_ERR_CUDA);
-    else if (status == QNPEPS_ELOC_ERR_OOM)
-        set_err(QNPEPS_E2E_ERR_OOM);
-    else
-        set_err(QNPEPS_E2E_ERR_INTERNAL);
-}
-
-template <class T>
-[[nodiscard]] auto device_allocate(i64 count) noexcept -> T*
-{
-    if (err_state() != QNPEPS_E2E_OK) return nullptr;
-    void* pointer{};
-    const auto allocation_count = static_cast<usize>(std::max(count, i64{1}));
-    const cudaError_t allocation_status{cudaMalloc(&pointer, sizeof(T) * allocation_count)};
-    if (allocation_status != cudaSuccess)
-    {
-        set_err(QNPEPS_E2E_ERR_OOM);
-        return nullptr;
-    }
-    return static_cast<T*>(pointer);
-}
-
-[[nodiscard]] inline auto _config_check(const QnpepsE2eConfig* config) noexcept -> qnpeps_e2e_status
-{
-    if (not config) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (config->struct_size != sizeof(QnpepsE2eConfig)) return QNPEPS_E2E_ERR_BAD_VERSION;
+    require(config != nullptr, Status::null_argument, "node config is null");
+    require_struct_size(*config, "node config");
     const auto valid_geometry =
         config->lx >= 2 and config->ly >= 2 and config->dim_phys == 2 and config->dim_bond >= 1;
-    if (not valid_geometry) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    require(valid_geometry, Status::bad_config, "node config rejects the geometry of {}", *config);
     const auto valid_ranks =
         config->chi_s >= 1 and config->chi_dl >= 1 and config->chi_eo >= 1 and config->meo >= 1;
-    if (not valid_ranks) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    require(valid_ranks, Status::bad_config, "node config rejects the ranks of {}", *config);
     const auto valid_sampling_mode = config->sampling_mode == QNPEPS_SAMPLING_FAST
                                      or config->sampling_mode == QNPEPS_SAMPLING_FULL;
-    if (not valid_sampling_mode) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    require(
+        valid_sampling_mode,
+        Status::bad_config,
+        "node config sampling mode {} is unknown",
+        config->sampling_mode
+    );
     const auto valid_contract_dimension =
         config->sampling_mode != QNPEPS_SAMPLING_FULL or config->contract_dim >= 1;
-    if (not valid_contract_dimension) return QNPEPS_E2E_ERR_BAD_CONFIG;
+    require(
+        valid_contract_dimension,
+        Status::bad_config,
+        "node config full sampling needs a positive contract_dim, {}",
+        *config
+    );
     const auto valid_sample_batch =
         config->sample_batch >= 0 and config->sample_batch <= qnpeps::k_max_batch_size;
-    if (not valid_sample_batch) return QNPEPS_E2E_ERR_BAD_CONFIG;
-    if (not has_valid_truncation(*config)) return QNPEPS_E2E_ERR_BAD_CONFIG;
-    return QNPEPS_E2E_OK;
+    require(
+        valid_sample_batch,
+        Status::bad_config,
+        "node config sample_batch outside 0 to {}, {}",
+        qnpeps::k_max_batch_size,
+        *config
+    );
+    require(
+        has_valid_truncation(*config),
+        Status::bad_config,
+        "node config rejects the truncation of {}",
+        *config
+    );
 }
 
 [[nodiscard]] inline auto read_integer_file(const std::string& path, int default_value) -> int
@@ -159,7 +157,7 @@ template <class T>
     cpu_set_t cpu_set{};
     CPU_ZERO(&cpu_set);
     bool found_cpu{};
-    const auto is_digit = [](char character) noexcept
+    const auto is_digit = [](char character)
     { return std::isdigit(static_cast<unsigned char>(character)); };
     usize index{0};
     while (index < list.size())
@@ -205,7 +203,7 @@ inline auto pin_thread_to_gpu_numa(int device) -> int
     return pin_cpu_list(list);
 }
 
-inline auto enable_all_peer_access(int gpu_count) noexcept -> void
+inline auto enable_all_peer_access(int gpu_count) -> void
 {
     for (int source_device{0}; source_device < gpu_count; ++source_device)
     {
@@ -225,7 +223,7 @@ inline auto enable_all_peer_access(int gpu_count) noexcept -> void
 
 [[nodiscard]] inline auto peer_roundtrip(
     int source_device, int destination_device, usize bytes, int iterations
-) noexcept -> int
+) -> int
 {
     void* source_buffer{};
     void* destination_buffer{};

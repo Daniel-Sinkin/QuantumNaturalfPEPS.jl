@@ -1,6 +1,7 @@
 #include "boundary.hpp"
 #include "dans_qnpeps_eloc.h"
 #include "gate_fixture.cuh"
+#include "term_builders.cuh"
 #include "ok.hpp"
 #include "tensor.hpp"
 
@@ -151,29 +152,17 @@ struct DevOut
     std::vector<cf32> rows{};
     std::vector<cf32> hrows{};
     std::vector<cf32> T{};
-    qnpeps_eloc_status st{};
+    qnpeps_status st{};
 };
 
 auto dev_run(
-    Dev& d,
-    const std::vector<QnpepsElocDiagBond>& diag,
-    const std::vector<QnpepsElocFlipTerm>& flips,
-    bool ident,
-    int meo,
-    bool want_o,
-    bool want_host,
-    bool want_gram,
-    double lambda
+    Dev& d, bool ident, int meo, bool want_o, bool want_host, bool want_gram, double lambda
 ) -> DevOut
 {
     DevOut o{};
     QnpepsElocConfig cfg{d.cfg};
     cfg.meo = meo;
-    QnpepsElocTermTable tt{};
-    tt.n_diag = static_cast<int32_t>(diag.size());
-    tt.diag = diag.empty() ? nullptr : diag.data();
-    tt.n_flip = static_cast<int32_t>(flips.size());
-    tt.flip = flips.empty() ? nullptr : flips.data();
+    const auto tt{eo_test::TermTableBuilder{}.table()};
     if (want_o) cudaMemset(d.d_rows, 0, static_cast<std::size_t>(d.n) * d.compact * sizeof(cf32));
     if (want_gram) cudaMemset(d.d_T, 0, static_cast<std::size_t>(d.n) * d.n * sizeof(cf32));
     if (want_host)
@@ -354,12 +343,12 @@ auto run_case(
         return 1;
     }
 
-    const DevOut base{dev_run(d, {}, {}, false, meo, true, true, true, 0.0)};
+    const DevOut base{dev_run(d, false, meo, true, true, true, 0.0)};
     std::vector<SetResult> results{};
 
-    if (base.st != QNPEPS_ELOC_OK)
+    if (base.st != QNPEPS_OK)
     {
-        std::printf("[gate3] device error: %s\n", qnpeps_eloc_strerror(base.st));
+        std::printf("[gate3] device error: %s\n", qnpeps_last_error());
         dev_teardown(d);
         return 1;
     }
@@ -408,7 +397,7 @@ auto run_case(
 
     for (double lam : {0.0, lambda_pos})
     {
-        const DevOut go{dev_run(d, {}, {}, false, meo, true, false, true, lam)};
+        const DevOut go{dev_run(d, false, meo, true, false, true, lam)};
         const std::vector<peps::cdouble> tref{peps::direct_sector_gram(
             [&]
             {
@@ -458,7 +447,7 @@ auto run_case(
 
     {
         const std::int64_t sites{static_cast<std::int64_t>(lx) * ly};
-        const DevOut tref{dev_run(d, {}, {}, false, meo, true, false, true, 0.0)};
+        const DevOut tref{dev_run(d, false, meo, true, false, true, 0.0)};
         cf32* d_tile{};
         cudaMalloc(
             reinterpret_cast<void**>(&d_tile), static_cast<std::size_t>(n) * n * sizeof(cf32)
@@ -468,9 +457,9 @@ auto run_case(
                                    std::int64_t la,
                                    std::int64_t rb0,
                                    std::int64_t lb,
-                                   std::vector<cf32>& out) -> qnpeps_eloc_status
+                                   std::vector<cf32>& out) -> qnpeps_status
         {
-            const qnpeps_eloc_status st{qnpeps_eloc_gram_tile(
+            const qnpeps_status st{qnpeps_eloc_gram_tile(
                 &d.cfg,
                 reinterpret_cast<const qnpeps_eloc_cbuf*>(d.d_rows + ra0 * d.compact),
                 d.d_samp_rand + ra0 * sites,
@@ -505,11 +494,11 @@ auto run_case(
             for (std::int64_t len : sch.second)
             {
                 std::vector<cf32> tl{};
-                const qnpeps_eloc_status st{call_tile(r0, len, 0, n, tl)};
-                if (st != QNPEPS_ELOC_OK)
+                const qnpeps_status st{call_tile(r0, len, 0, n, tl)};
+                if (st != QNPEPS_OK)
                 {
                     r.fail = 1;
-                    r.worst = qnpeps_eloc_strerror(st);
+                    r.worst = qnpeps_last_error();
                 }
                 for (auto i = static_cast<std::int64_t>(0); i < len; ++i)
                 {
@@ -542,11 +531,11 @@ auto run_case(
             const std::int64_t r0{n / 2};
             const std::int64_t len{n - r0};
             std::vector<cf32> tl{};
-            const qnpeps_eloc_status st{call_tile(r0, len, r0, len, tl)};
-            if (st != QNPEPS_ELOC_OK)
+            const qnpeps_status st{call_tile(r0, len, r0, len, tl)};
+            if (st != QNPEPS_OK)
             {
                 r.fail = 1;
-                r.worst = qnpeps_eloc_strerror(st);
+                r.worst = qnpeps_last_error();
             }
             for (auto i = static_cast<std::int64_t>(0); i < len and not r.fail; ++i)
             {
@@ -573,11 +562,11 @@ auto run_case(
             const std::int64_t la{std::max<std::int64_t>(1, n / 3)};
             const std::int64_t lb{n - la};
             std::vector<cf32> tl{};
-            const qnpeps_eloc_status st{call_tile(0, la, la, lb, tl)};
-            if (st != QNPEPS_ELOC_OK)
+            const qnpeps_status st{call_tile(0, la, la, lb, tl)};
+            if (st != QNPEPS_OK)
             {
                 r.fail = 1;
-                r.worst = qnpeps_eloc_strerror(st);
+                r.worst = qnpeps_last_error();
             }
             if (la == lb)
             {
@@ -627,7 +616,7 @@ auto run_case(
     {
         SetResult r{};
         r.name = "R_energy";
-        const DevOut en{dev_run(d, {}, {}, false, meo, false, false, false, 0.0)};
+        const DevOut en{dev_run(d, false, meo, false, false, false, 0.0)};
         for (auto k = 0; k < 2 * n; ++k)
         {
             if (en.lp[static_cast<std::size_t>(k)] != base.lp[static_cast<std::size_t>(k)]
@@ -658,8 +647,8 @@ auto run_case(
     {
         SetResult r{};
         r.name = "Det";
-        const DevOut a{dev_run(d, {}, {}, false, meo, true, false, true, 0.0)};
-        const DevOut b{dev_run(d, {}, {}, false, meo, true, false, true, 0.0)};
+        const DevOut a{dev_run(d, false, meo, true, false, true, 0.0)};
+        const DevOut b{dev_run(d, false, meo, true, false, true, 0.0)};
         for (auto k = static_cast<std::size_t>(0); k < a.rows.size(); ++k)
             if (a.rows[k].re != b.rows[k].re or a.rows[k].im != b.rows[k].im) r.fail = 1;
         for (auto k = static_cast<std::size_t>(0); k < a.T.size(); ++k)
@@ -670,7 +659,7 @@ auto run_case(
     {
         SetResult r{};
         r.name = "Batch";
-        const DevOut a{dev_run(d, {}, {}, true, meo, true, false, true, 0.0)};
+        const DevOut a{dev_run(d, true, meo, true, false, true, 0.0)};
         for (auto lane = 1; lane < n and not r.fail; ++lane)
         {
             for (auto k = static_cast<std::int64_t>(0); k < d.compact; ++k)
@@ -690,8 +679,8 @@ auto run_case(
     {
         SetResult r{};
         r.name = "Wave";
-        const DevOut a{dev_run(d, {}, {}, false, 4, true, false, true, 0.0)};
-        const DevOut b{dev_run(d, {}, {}, false, 8, true, false, true, 0.0)};
+        const DevOut a{dev_run(d, false, 4, true, false, true, 0.0)};
+        const DevOut b{dev_run(d, false, 8, true, false, true, 0.0)};
         bool biteq{true};
         for (auto k = static_cast<std::size_t>(0); k < a.rows.size(); ++k)
             if (a.rows[k].re != b.rows[k].re or a.rows[k].im != b.rows[k].im) biteq = false;

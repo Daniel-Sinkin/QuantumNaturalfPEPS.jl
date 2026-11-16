@@ -6,7 +6,7 @@
 namespace qnpeps::sampler::internal
 {
 
-[[nodiscard]] inline auto draw_sigma(
+inline auto draw_sigma(
     Sampler& samp,
     const SamplerConfig& cfg,
     int row,
@@ -14,7 +14,7 @@ namespace qnpeps::sampler::internal
     const std::vector<int>& ket_bonds,
     const std::vector<int>& env_bonds,
     u64* device_seed
-) -> bool
+) -> void
 {
     const auto dim_batch = cfg.dim_batch;
     const auto dim_bond = cfg.dim_bond;
@@ -50,7 +50,7 @@ namespace qnpeps::sampler::internal
 
         if (row == 0)
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 {
@@ -64,11 +64,10 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.tmp_b_ptrs()},
                 dim_batch
             );
-            if (not res) return false;
         }
         else
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -82,11 +81,10 @@ namespace qnpeps::sampler::internal
                 {.view = samp.tmp_b()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 {
@@ -100,11 +98,10 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.tmp_b_ptrs()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -119,14 +116,13 @@ namespace qnpeps::sampler::internal
                 {.view = samp.sigma_full()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         const int sigma_elems{ket_bond_r * env_bond_r * ket_bond_r};
         const auto next_offset = (col_i + 1) * samp.max_env_unsampled();
         const auto* env_unsampled_next = samp.env_unsampled().p + next_offset;
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -140,7 +136,6 @@ namespace qnpeps::sampler::internal
                 {.view = samp.rho()},
                 dim_batch
             );
-            if (not res) return false;
         }
         std::swap(samp.sigma_full().p, samp.sigma_full_scratch().p);
 
@@ -183,7 +178,6 @@ namespace qnpeps::sampler::internal
             0,
             la.stream()>>>(project_args);
     }
-    return err_state() == QNPEPS_OK;
 }
 
 }

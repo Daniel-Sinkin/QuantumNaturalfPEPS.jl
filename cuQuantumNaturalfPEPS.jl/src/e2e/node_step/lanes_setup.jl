@@ -25,11 +25,10 @@ function _node_step_create_eo_lane(arguments::_NodeStepEoLaneArguments)
     e_loc = CUDA.zeros(Float64, 2 * row_count)
     rows = CUDA.zeros(ComplexF32, row_count * compact)
     try
-        diag = terms.diag
-        flip = terms.flip
+        buffers = _eloc_term_buffers(terms, config)
         output = Ref{Ptr{Cvoid}}(C_NULL)
-        status = GC.@preserve diag flip begin
-            table = _eloc_term_table(terms)
+        status = GC.@preserve buffers begin
+            table = _eloc_term_table(buffers)
             table_ref = Ref(table)
             GC.@preserve table_ref FFI.eloc_ctx_create(
                 config,
@@ -85,7 +84,6 @@ function _node_step_create_eo_lane(arguments::_NodeStepEoLaneArguments)
             affinity_saved=Int32(0),
             affinity_applied=Int32(0),
             status=Int32(0),
-            failure_location="",
             failure_message="",
         )
     catch

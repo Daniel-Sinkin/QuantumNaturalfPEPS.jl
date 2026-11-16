@@ -51,7 +51,6 @@ class EnvironmentRowBuilder
                 .maxdim = args.maxdim,
             }
         );
-        if (err_state() != QNPEPS_OK) return std::vector<DeviceTensor>(num_cols);
 
         std::vector<DeviceTensor> output{};
         output.resize(num_cols);
@@ -126,7 +125,6 @@ class EnvironmentRowBuilder
 
         for (usize row{num_env_rows}; row >= 2; --row)
         {
-            if (err_state() != QNPEPS_OK) return env_rows;
             const int build_step{static_cast<int>(num_env_rows - row + 1)};
             if (truncation_route == QNPEPS_TRUNCATION_DENSITY)
             {

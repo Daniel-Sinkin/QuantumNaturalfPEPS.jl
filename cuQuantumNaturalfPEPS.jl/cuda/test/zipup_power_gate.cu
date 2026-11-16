@@ -69,7 +69,7 @@ auto execute(const std::array<cuFloatComplex, 2>& mps, const std::array<cuFloatC
         .stream = nullptr,
     };
     result.status = qnpeps_zipup_mpo_mps(&descriptor, &args);
-    const auto* message = qnpeps_last_error_message();
+    const auto* message = qnpeps_last_error();
     if (message) result.message = message;
     if (result.status == QNPEPS_OK)
         cudaMemcpy(
@@ -151,8 +151,10 @@ auto main() -> int
         {0.0f, 0.0f},
     }};
     const auto overflow = execute(overflow_mps, overflow_mpo);
-    const auto overflow_ok = overflow.status == QNPEPS_ERR_INTERNAL
-                             and overflow.message == "nonfinite zipup power intermediate";
+    const auto overflow_ok =
+        overflow.status == QNPEPS_ERR_INTERNAL
+        and overflow.message.find("] nonfinite zipup power intermediate, failure flags ")
+                != std::string::npos;
 
     std::printf(
         "case,status,passed,log_gauge,message\n"

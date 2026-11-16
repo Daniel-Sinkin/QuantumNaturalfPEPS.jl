@@ -1,4 +1,9 @@
+#include "density_rows.cuh"
 #include "parts.cuh"
+
+#ifdef QNPEPS_GATE_HOOKS
+#    include "test/eo/panel_capture.cuh"
+#endif
 
 auto qn_eloc_envs_logpsi(
     const QnpepsElocConfig& cfg,
@@ -18,15 +23,11 @@ auto qn_eloc_envs_logpsi(
     int sites_int{};
     i64 sample_sites{};
     i64 output_elements{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, sites_int
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(sites_int)},
-            sample_sites
-        )
-        or not arena_slot({2u, static_cast<std::uint64_t>(n_samples)}, output_elements))
-        return;
+    arena_int({static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, sites_int);
+    arena_slot(
+        {static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(sites_int)}, sample_sites
+    );
+    arena_slot({2u, static_cast<std::uint64_t>(n_samples)}, output_elements);
     const auto sites = i64{sites_int};
     (void) sample_sites;
     auto done = i64{0};
@@ -36,15 +37,14 @@ auto qn_eloc_envs_logpsi(
         const auto lanes =
             int{density ? 1 : static_cast<int>(std::min<i64>(cfg.meo, n_samples - done))};
         i64 output_offset{};
-        if (not arena_slot({2u, static_cast<std::uint64_t>(done)}, output_offset)) return;
+        arena_slot({2u, static_cast<std::uint64_t>(done)}, output_offset);
         auto wave_samples{samples + done * sites};
         auto sh = shape_for(cfg, lanes, false);
         worker_ensure(w, sh, false, false, peps, wave_samples, stream, context_arena);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         worker_begin_rangefinders(w);
         compute_logpsi(w, logpsi_out + output_offset, false);
         report_rangefinder_failure(worker_rangefinder_failed(w));
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        report_density_failure(w);
         done += lanes;
     }
     (void) output_elements;
@@ -65,18 +65,13 @@ auto run_cache_execute(
     using namespace qn_eloc::env;
     const auto& cfg{state.cfg};
     const auto n_samples = i64{state.n_samples};
-    auto tt{&state.term_table};
     const auto stream = cudaStream_t{state.stream};
     int sites_int{};
     i64 sample_sites{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, sites_int
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(sites_int)},
-            sample_sites
-        ))
-        return;
+    arena_int({static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, sites_int);
+    arena_slot(
+        {static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(sites_int)}, sample_sites
+    );
     const auto sites = i64{sites_int};
     const auto want_o = bool{(state.flags & QNPEPS_ELOC_CTX_O_ROWS) != 0};
     const auto want_gram = bool{(state.flags & QNPEPS_ELOC_CTX_GRAM) != 0};
@@ -88,28 +83,36 @@ auto run_cache_execute(
     usize output_bytes{};
     usize o_bytes{};
     usize gram_bytes{};
-    if (not arena_slot({2u, static_cast<std::uint64_t>(n_samples)}, output_elements)
-        or not arena_product(
-            {sizeof(f64), static_cast<std::uint64_t>(output_elements)}, output_bytes
-        ))
-        return;
-    if (want_o
-        and (not arena_slot({static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(compact_count)}, o_elements) or not arena_product({sizeof(cf), static_cast<std::uint64_t>(o_elements)}, o_bytes)))
-        return;
-    if (want_gram and (not arena_int({static_cast<std::uint64_t>(n_samples)}, gram_samples) or not arena_int({static_cast<std::uint64_t>(compact_count)}, gram_compact) or not arena_product({sizeof(cf), static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(n_samples)}, gram_bytes)))
-        return;
+    arena_slot({2u, static_cast<std::uint64_t>(n_samples)}, output_elements);
+    arena_product({sizeof(f64), static_cast<std::uint64_t>(output_elements)}, output_bytes);
+    if (want_o)
+    {
+        arena_slot(
+            {static_cast<std::uint64_t>(n_samples), static_cast<std::uint64_t>(compact_count)},
+            o_elements
+        );
+        arena_product({sizeof(cf), static_cast<std::uint64_t>(o_elements)}, o_bytes);
+    }
+    if (want_gram)
+    {
+        arena_int({static_cast<std::uint64_t>(n_samples)}, gram_samples);
+        arena_int({static_cast<std::uint64_t>(compact_count)}, gram_compact);
+        arena_product(
+            {sizeof(cf),
+             static_cast<std::uint64_t>(n_samples),
+             static_cast<std::uint64_t>(n_samples)},
+            gram_bytes
+        );
+    }
     (void) output_bytes;
     (void) o_bytes;
     (void) gram_bytes;
     const auto& ok_off{state.ok_off};
     const auto& ok_slice{state.ok_slice};
-    const auto& orig_terms{state.orig_terms};
-    const auto& tr_terms{state.tr_terms};
+    const auto& orig_terms{state.plan.original};
+    const auto& tr_terms{state.plan.transposed};
     auto peps_t{state.peps_t};
     auto samples_t{state.samples_t};
-    auto d_a{state.d_a};
-    auto d_b{state.d_b};
-    auto d_j{state.d_j};
     auto value_buf{state.value_buf};
     auto logpsi_tr{state.logpsi_tr};
     auto gscratch{state.gscratch};
@@ -122,7 +125,6 @@ auto run_cache_execute(
     if (not tr_terms.empty())
     {
         build_transposed_peps(cfg, peps, peps_t, stream);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto threads = int{256};
         const auto total = i64{sample_sites};
         const auto blocks =
@@ -130,7 +132,7 @@ auto run_cache_execute(
         cu_transpose_samples<<<blocks, threads, 0, stream>>>(
             samples, samples_t, cfg.lx, cfg.ly, n_samples
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
     if (want_gram)
     {
@@ -139,48 +141,50 @@ auto run_cache_execute(
         const auto blocks =
             int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
         cu_u8_to_i32<<<blocks, threads, 0, stream>>>(spins_i32, samples, total);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
 
     const auto orig_fb = bool{state.orig_fb};
     const auto tr_fb = bool{state.tr_fb};
     const auto orig_h = bool{state.orig_h};
     const std::vector<std::pair<i64, int>>& wave_ranges{state.wave_ranges};
-    auto& w{state.w};
-    auto& wt{state.wt};
     auto done = i64{0};
     while (done < n_samples)
     {
         const auto density = bool{cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY};
         const auto lanes =
             int{density ? 1 : static_cast<int>(std::min<i64>(cfg.meo, n_samples - done))};
+        const auto is_full_wave = lanes == state.w.sh.lanes;
+        auto& w = is_full_wave ? state.w : state.last_wave;
+        auto& wt = is_full_wave ? state.wt : state.last_wave_transposed;
         const auto so = i64{done * sites};
         i64 output_offset{};
         usize energy_bytes{};
         usize o_wave_bytes{};
-        if (not arena_slot({2u, static_cast<std::uint64_t>(done)}, output_offset)
-            or not arena_product({sizeof(f64), 2u, static_cast<std::uint64_t>(lanes)}, energy_bytes)
-            or not arena_product(
-                {sizeof(cf),
-                 static_cast<std::uint64_t>(lanes),
-                 static_cast<std::uint64_t>(compact_count)},
-                o_wave_bytes
-            ))
-            return;
+        arena_slot({2u, static_cast<std::uint64_t>(done)}, output_offset);
+        arena_product({sizeof(f64), 2u, static_cast<std::uint64_t>(lanes)}, energy_bytes);
+        arena_product(
+            {sizeof(cf),
+             static_cast<std::uint64_t>(lanes),
+             static_cast<std::uint64_t>(compact_count)},
+            o_wave_bytes
+        );
         auto sh = shape_for(cfg, lanes, false);
         worker_ensure(w, sh, orig_h, orig_fb, peps, samples + so, stream, *state.context_arena);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         prepare_active_lists(orig_active, w.samples, sites, lanes, stream);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         worker_begin_rangefinders(w);
+#ifdef QNPEPS_GATE_HOOKS
+        qnpeps::test::enter_panel_pass(qnpeps::test::PanelPass::original, done);
+#endif
         compute_logpsi(w, logpsi_out + output_offset, orig_h or orig_fb);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+#ifdef QNPEPS_GATE_HOOKS
+        qnpeps::test::leave_panel_pass();
+#endif
         emit_stage_c(w, orig_h, orig_fb);
-        CUDA_CHECK(cudaMemsetAsync(e_loc_out + output_offset, 0, energy_bytes, stream));
-        launch_diagonal(w, e_loc_out + output_offset, d_a, d_b, d_j, tt->n_diag);
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
-        for (const FlipInst& t : orig_terms)
+        check(cudaMemsetAsync(e_loc_out + output_offset, 0, energy_bytes, stream));
+        const auto diagonal_count = static_cast<int>(state.plan.diagonal.size());
+        launch_diagonal(w, e_loc_out + output_offset, state.pools, diagonal_count);
+        for (const TermPiece& t : orig_terms)
         {
             const auto active =
                 int{t.active_slot >= 0 ? orig_active.host_counts[static_cast<usize>(t.active_slot)]
@@ -190,7 +194,7 @@ auto run_cache_execute(
                     ? orig_active.indices + static_cast<i64>(t.active_slot) * orig_active.max_lanes
                     : nullptr
             };
-            eval_flip_inst(
+            eval_term_piece(
                 w,
                 t,
                 value_buf,
@@ -200,7 +204,6 @@ auto run_cache_execute(
                 active
             );
         }
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         if (want_o)
         {
             auto wave_base{o_rows_dev + done * compact_count};
@@ -209,7 +212,7 @@ auto run_cache_execute(
             );
             if (o_rows_host)
             {
-                CUDA_CHECK(cudaMemcpyAsync(
+                check(cudaMemcpyAsync(
                     o_rows_host + done * compact_count,
                     wave_base,
                     o_wave_bytes,
@@ -219,22 +222,24 @@ auto run_cache_execute(
             }
         }
         report_rangefinder_failure(worker_rangefinder_failed(w));
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
+        report_density_failure(w);
         if (not tr_terms.empty())
         {
             auto sht = shape_for(cfg, lanes, true);
             worker_ensure(
                 wt, sht, true, tr_fb, peps_t, samples_t + so, stream, *state.context_arena
             );
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             prepare_active_lists(tr_active, wt.samples, sites, lanes, stream);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             worker_begin_rangefinders(wt);
+#ifdef QNPEPS_GATE_HOOKS
+            qnpeps::test::enter_panel_pass(qnpeps::test::PanelPass::transposed, done);
+#endif
             compute_logpsi(wt, logpsi_tr, true);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
+#ifdef QNPEPS_GATE_HOOKS
+            qnpeps::test::leave_panel_pass();
+#endif
             emit_stage_c(wt, true, tr_fb);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
-            for (const FlipInst& t : tr_terms)
+            for (const TermPiece& t : tr_terms)
             {
                 const auto active =
                     int{t.active_slot >= 0
@@ -245,13 +250,13 @@ auto run_cache_execute(
                         ? tr_active.indices + static_cast<i64>(t.active_slot) * tr_active.max_lanes
                         : nullptr
                 };
-                eval_flip_inst(
+                eval_term_piece(
                     wt, t, value_buf, e_loc_out + output_offset, logpsi_tr, active_indices, active
                 );
             }
             report_rangefinder_failure(worker_rangefinder_failed(wt));
+            report_density_failure(wt);
         }
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         done += lanes;
     }
 
@@ -278,7 +283,7 @@ auto run_cache_execute(
                 ur.second,
                 stream
             );
-            CUDA_CHECK(cudaGetLastError());
+            check(cudaGetLastError());
         };
         for (auto j = usize{0}; j < wave_ranges.size(); ++j)
         {
@@ -292,6 +297,6 @@ auto run_cache_execute(
         cu_add_lambda_diag<<<(ntot + threads - 1) / threads, threads, 0, stream>>>(
             T_dev, ntot, lambda
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
 }

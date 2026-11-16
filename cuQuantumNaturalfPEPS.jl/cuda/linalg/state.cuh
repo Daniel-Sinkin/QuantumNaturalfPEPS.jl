@@ -1,7 +1,7 @@
 #ifndef QNPEPS_LINALG_STATE_CUH
 #define QNPEPS_LINALG_STATE_CUH
 
-#include "core/error.cuh"
+#include "core/error.hpp"
 #include "linalg/linalg.cuh"
 
 #include <cublas_v2.h>
@@ -9,24 +9,23 @@
 
 namespace qnpeps
 {
-[[nodiscard]] inline auto Linalg::enter_default_state(LinalgState& state) noexcept -> bool
+inline auto Linalg::enter_default_state(LinalgState& state) -> void
 {
-    CUBLAS_CHECK(cublasGetMathMode(blas_->get(), &state.math));
-    CUBLAS_CHECK(cublasGetPointerMode(blas_->get(), &state.pointer));
-    CUBLAS_CHECK(cublasGetAtomicsMode(blas_->get(), &state.atomics));
-    CUSOLVER_CHECK(cusolverDnGetDeterministicMode(solver_->get(), &state.deterministic));
-    CUBLAS_CHECK(cublasSetMathMode(blas_->get(), CUBLAS_DEFAULT_MATH));
-    CUBLAS_CHECK(cublasSetPointerMode(blas_->get(), CUBLAS_POINTER_MODE_HOST));
-    CUBLAS_CHECK(cublasSetAtomicsMode(blas_->get(), CUBLAS_ATOMICS_NOT_ALLOWED));
-    return err_state() == QNPEPS_OK;
+    check(cublasGetMathMode(blas_->get(), &state.math));
+    check(cublasGetPointerMode(blas_->get(), &state.pointer));
+    check(cublasGetAtomicsMode(blas_->get(), &state.atomics));
+    check(cusolverDnGetDeterministicMode(solver_->get(), &state.deterministic));
+    check(cublasSetMathMode(blas_->get(), CUBLAS_DEFAULT_MATH));
+    check(cublasSetPointerMode(blas_->get(), CUBLAS_POINTER_MODE_HOST));
+    check(cublasSetAtomicsMode(blas_->get(), CUBLAS_ATOMICS_NOT_ALLOWED));
 }
 
-inline auto Linalg::restore_state(const LinalgState& state) noexcept -> void
+inline auto Linalg::restore_state(const LinalgState& state) -> void
 {
-    CUBLAS_CHECK(cublasSetMathMode(blas_->get(), state.math));
-    CUBLAS_CHECK(cublasSetPointerMode(blas_->get(), state.pointer));
-    CUBLAS_CHECK(cublasSetAtomicsMode(blas_->get(), state.atomics));
-    CUSOLVER_CHECK(cusolverDnSetDeterministicMode(solver_->get(), state.deterministic));
+    unchecked(cublasSetMathMode(blas_->get(), state.math));
+    unchecked(cublasSetPointerMode(blas_->get(), state.pointer));
+    unchecked(cublasSetAtomicsMode(blas_->get(), state.atomics));
+    unchecked(cusolverDnSetDeterministicMode(solver_->get(), state.deterministic));
 }
 }
 

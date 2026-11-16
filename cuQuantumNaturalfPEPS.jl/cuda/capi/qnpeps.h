@@ -1,6 +1,8 @@
 #ifndef QNPEPS_H
 #define QNPEPS_H
 
+#include "qnpeps_status.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -8,17 +10,6 @@ extern "C"
 {
 #    pragma GCC visibility push(default)
 #endif
-
-    typedef enum qnpeps_status
-    {
-        QNPEPS_OK = 0,
-        QNPEPS_ERR_NULL_ARG = 1,
-        QNPEPS_ERR_BAD_CONFIG = 2,
-        QNPEPS_ERR_BAD_VERSION = 3,
-        QNPEPS_ERR_CUDA = 4,
-        QNPEPS_ERR_OOM = 5,
-        QNPEPS_ERR_INTERNAL = 6
-    } qnpeps_status;
 
     typedef enum qnpeps_sampling_mode
     {
@@ -31,7 +22,9 @@ extern "C"
         QNPEPS_TRUNCATION_DEFAULT = 0,
         QNPEPS_TRUNCATION_SVD = 1,
         QNPEPS_TRUNCATION_HOUSEHOLDER = 2,
-        QNPEPS_TRUNCATION_DENSITY = 6
+        QNPEPS_TRUNCATION_DENSITY = 6,
+        QNPEPS_TRUNCATION_DENSITY_BATCHED = 9,
+        QNPEPS_TRUNCATION_RANGEFINDER = 10
     } qnpeps_truncation_route;
 
     typedef struct QnpepsDensitySettings
@@ -378,6 +371,18 @@ extern "C"
         uint64_t caller_gram_bytes;
     } QnpepsGramFootprint;
 
+    typedef struct QnpepsArenaReading
+    {
+        uint32_t struct_size;
+        int32_t device;
+        uint64_t capacity_bytes;
+        uint64_t in_use_bytes;
+        uint64_t top_bytes;
+        uint64_t largest_free_bytes;
+        uint64_t reservation_count;
+        uint64_t quarantined_count;
+    } QnpepsArenaReading;
+
     typedef struct QnpepsMinsrDesc
     {
         uint32_t struct_size;
@@ -526,10 +531,7 @@ extern "C"
     int64_t qnpeps_sample_scratch_bytes(const QnpepsConfig* config, uint64_t dim_batch);
 
     void qnpeps_sampler_pool_release(void);
-    const char* qnpeps_strerror(qnpeps_status status);
-    const char* qnpeps_last_error_file(void);
-    int32_t qnpeps_last_error_line(void);
-    const char* qnpeps_last_error_message(void);
+    qnpeps_status qnpeps_device_arena_reading(int32_t device, QnpepsArenaReading* out);
     const char* qnpeps_capi_version(void);
 
 #ifdef __cplusplus

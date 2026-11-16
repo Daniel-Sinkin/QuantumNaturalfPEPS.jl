@@ -65,8 +65,7 @@ __global__ auto cu_apply_inverse(ApplyInverseArgs args) -> void;
 __global__ auto cu_scatter(ScatterArgs args) -> void;
 __global__ auto cu_cast_accumulator(cf* output, const cd* accumulator, i64 count) -> void;
 
-[[nodiscard]] auto launch_canonicalize_eigenvectors(Linalg& linalg, cd* matrix, int order)
-    -> qnpeps_status;
+auto launch_canonicalize_eigenvectors(Linalg& linalg, cd* matrix, int order) -> void;
 auto launch_beta(Linalg& linalg, const BetaArgs& args) -> void;
 auto launch_build_matrix(Linalg& linalg, const BuildMatrixArgs& args) -> void;
 auto launch_apply_inverse(Linalg& linalg, const ApplyInverseArgs& args) -> void;

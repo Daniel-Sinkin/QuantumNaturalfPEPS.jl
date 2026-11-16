@@ -179,6 +179,17 @@ struct DiagonalizeConfig
     int* info;
 };
 
+using CuMatrixBatchedCF64 = CuMatrixBatched<cuDoubleComplex>;
+using CuMatrixBatchedCF64Const = CuMatrixBatched<const cuDoubleComplex>;
+
+struct DiagonalizeBatchedConfig
+{
+    f64* eigenvalues{};
+    void* workspace{};
+    usize workspace_bytes{};
+    int* info{};
+};
+
 struct QrStageConfig
 {
     cuFloatComplex* reflector_scalars;
@@ -212,6 +223,12 @@ class Linalg
     [[nodiscard]] auto diagonalize_workspace_count(int order) -> int;
     [[nodiscard]] auto diagonalize_workspace_count(CuMatrixCF64 matrix, f64* eigenvalues) -> int;
     auto diagonalize(CuMatrixCF64 matrix, const DiagonalizeConfig& config) -> void;
+    [[nodiscard]] auto diagonalize_batched_workspace_bytes(
+        CuMatrixBatchedCF64 matrices, f64* eigenvalues, int batch_size
+    ) -> usize;
+    auto diagonalize_batched(
+        CuMatrixBatchedCF64 matrices, const DiagonalizeBatchedConfig& config, int batch_size
+    ) -> void;
     [[nodiscard]] auto heevd_scratch(int order) -> HeevdScratch;
     auto zheevd(CuMatrixCF64 matrix, void* scratch, const HeevdScratch& layout) -> void;
     auto matmul(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) -> void;
@@ -232,17 +249,17 @@ class Linalg
         int batch_size,
         const TriangularSolveConfig& cfg = TriangularSolveConfig{}
     ) -> void;
-    [[nodiscard]] auto blas_state(BlasState& state) noexcept -> cublasStatus_t;
-    [[nodiscard]] auto set_blas_state(const BlasState& state) noexcept -> cublasStatus_t;
-    [[nodiscard]] auto set_gram_state() noexcept -> cublasStatus_t;
-    [[nodiscard]] auto accumulate_hermitian(
+    auto blas_state(BlasState& state) -> void;
+    auto restore_blas_state(const BlasState& state) -> void;
+    auto set_gram_state() -> void;
+    auto accumulate_hermitian(
         int rows,
         int dense_width,
         const cuFloatComplex* dense,
         cuFloatComplex* output,
         int output_ld
-    ) noexcept -> cublasStatus_t;
-    [[nodiscard]] auto accumulate_gram_block(
+    ) -> void;
+    auto accumulate_gram_block(
         int rows_a,
         int rows_b,
         int dense_width,
@@ -250,7 +267,7 @@ class Linalg
         const cuFloatComplex* dense_b,
         cuFloatComplex* output,
         int output_ld
-    ) noexcept -> cublasStatus_t;
+    ) -> void;
     ~Linalg();
 
     [[nodiscard]] auto cublas() const noexcept -> cublasHandle_t;
@@ -292,6 +309,13 @@ class Linalg
         CuMatrixBatchedCF32 c,
         int batch_size
     ) -> void;
+    auto matmul_batched(
+        CuMatrixBatchedCF64Const a,
+        CuMatrixBatchedCF64Const b,
+        CuMatrixBatchedCF64 c,
+        int batch_size,
+        const MatmulConfig& cfg = MatmulConfig{}
+    ) -> void;
     auto matmul_batched_left_adj(
         CuMatrixBatchedCF32Const a,
         CuMatrixBatchedCF32Const b,
@@ -329,8 +353,8 @@ class Linalg
     auto qr(CuMatrixCF32 matrix, void* scratch, const QrScratch& layout) -> void;
     auto qr_factor(CuMatrixCF32 matrix, const QrStageConfig& config) -> void;
     auto qr_form(CuMatrixCF32 matrix, const QrStageConfig& config) -> void;
-    [[nodiscard]] auto enter_default_state(LinalgState& state) noexcept -> bool;
-    auto restore_state(const LinalgState& state) noexcept -> void;
+    auto enter_default_state(LinalgState& state) -> void;
+    auto restore_state(const LinalgState& state) -> void;
     [[nodiscard]] auto approximate_svd_scratch(int rows, int rank, int batch_size) -> GesvdaScratch;
     auto approximate_svd(
         CuMatrixBatchedCF32Const input,
@@ -367,6 +391,7 @@ class Linalg
     auto operator=(const Linalg&) -> Linalg& = delete;
     auto operator=(Linalg&&) -> Linalg& = delete;
     auto destroy() -> void;
+    [[nodiscard]] auto batched_eigen_parameters() -> cusolverDnParams_t;
 
     std::optional<CublasHandle> blas_{};
     std::optional<CusolverDnHandle> solver_{};
@@ -377,6 +402,7 @@ class Linalg
     ArenaCursor persistent_arena_{};
     DeviceBuffer svd_workspace_{};
     gesvdjInfo_t gesvdj_parameters_{};
+    cusolverDnParams_t batched_eigen_parameters_{};
     std::map<std::tuple<int, int, int>, int> gesvda_workspace_counts_{};
     std::map<std::tuple<int, int, int>, int> gesvdj_workspace_counts_{};
 };

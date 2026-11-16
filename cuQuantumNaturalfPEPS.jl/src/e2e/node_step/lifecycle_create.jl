@@ -31,7 +31,7 @@ end
 function NodeStepHost(
     peps::CuVector{ComplexF32},
     config::QnpepsE2eConfig,
-    terms::HeisenbergTerms;
+    terms::OperatorTerms;
     n_samples::Integer,
     dim_batch::Integer=config.sample_batch == 0 ? n_samples : config.sample_batch,
     host_tile_bytes::Integer=0,
@@ -121,14 +121,7 @@ function NodeStepHost(
     e_loc_pointer = CUDA.CuPtr{Cvoid}(pointer(e_loc))
     theta_dot_pointer = CUDA.CuPtr{Cvoid}(pointer(theta_dot))
     bases, counts = _node_step_row_partition(Int64(n_samples))
-    lconfig = QnpepsElocConfig(;
-        lx=Int(config.lx),
-        ly=Int(config.ly),
-        dim_bond=Int(config.dim_bond),
-        chi_eo=Int(config.chi_eo),
-        meo=Int(config.meo),
-        dim_phys=Int(config.dim_phys),
-    )
+    lconfig = _local_energy_config(config)
     o_rows_registration = try
         GC.@preserve o_rows_host CUDA.register(
             CUDA.HostMemory,

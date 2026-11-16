@@ -9,7 +9,6 @@
 #include <cmath>
 #include <complex>
 #include <memory>
-#include <new>
 #include <vector>
 
 namespace qnpeps::minsr
@@ -48,7 +47,6 @@ class MinsrSolveContext
         weighted_coefficients_.resize(sample_count);
         sample_coefficients_.resize(sample_count);
 
-        if (err_state() != QNPEPS_E2E_OK) return;
         auto& arena = solve_arena_.cursor();
         device_importance_weights_ = arena.take<f64>(sample_count);
         device_gram_means_ = arena.take<cd>(sample_count);
@@ -58,12 +56,10 @@ class MinsrSolveContext
         device_eigen_coefficients_ = arena.take<cd>(sample_count);
         device_raw_coefficients_ = arena.take<cd>(sample_count);
         device_solver_info_ = arena.take<int>(1);
-        if (err_state() != QNPEPS_E2E_OK) return;
 
         workspace_count_ = linalg_.diagonalize_workspace_count(
             CuMatrixCF64{device_solve_matrix_, sample_count_, sample_count_}, device_eigenvalues_
         );
-        if (err_state() != QNPEPS_E2E_OK) return;
         const auto workspace_count = static_cast<usize>(std::max(workspace_count_, 1));
         device_workspace_ = arena.take<cd>(workspace_count);
     }
@@ -111,18 +107,13 @@ class MinsrSolveContext
             energy_variance_output,
             ess_output
         );
-        if (not valid)
-        {
-            if (err_state() == QNPEPS_E2E_OK) set_err(QNPEPS_E2E_ERR_NULL_ARG);
-            return;
-        }
+        require(valid, Status::null_argument, "MinSR solve misses an input or output buffer");
 
         LinalgState linalg_state{};
-        if (not linalg_.enter_default_state(linalg_state)) return;
+        linalg_.enter_default_state(linalg_state);
         DEFER([&] { linalg_.restore_state(linalg_state); });
 
         download_inputs(device_log_amplitudes, device_local_energies, device_log_proposals);
-        if (err_state() != QNPEPS_E2E_OK) return;
 
         const auto statistics = compute_statistics();
         energy_mean_output[0] = statistics.energy_mean.real();
@@ -132,9 +123,8 @@ class MinsrSolveContext
 
         upload_solve_inputs();
         build_solve_matrix(device_gram);
-        if (not diagonalize()) return;
-        const auto solved = solve_coefficients(relative_cut, absolute_cut);
-        did_solve_output = solved and err_state() == QNPEPS_E2E_OK;
+        diagonalize();
+        did_solve_output = solve_coefficients(relative_cut, absolute_cut);
     }
 
   private:
@@ -151,7 +141,7 @@ class MinsrSolveContext
         const auto valid_inputs = device_log_amplitudes and device_local_energies
                                   and device_log_proposals and device_gram;
         const auto valid_outputs = energy_mean_output and energy_variance_output and ess_output;
-        return err_state() == QNPEPS_E2E_OK and valid_inputs and valid_outputs;
+        return valid_inputs and valid_outputs;
     }
 
     auto download_inputs(
@@ -169,7 +159,7 @@ class MinsrSolveContext
             linalg_, host_local_energies_.data(), device_local_energies, paired_sample_count
         );
         download_async(linalg_, host_log_proposals_.data(), device_log_proposals, sample_count);
-        CUDA_CHECK(cudaStreamSynchronize(linalg_.stream()));
+        check(cudaStreamSynchronize(linalg_.stream()));
     }
 
     [[nodiscard]] auto compute_statistics() noexcept -> SolveStatistics
@@ -292,8 +282,7 @@ class MinsrSolveContext
         );
         const auto sample_count = static_cast<usize>(sample_count_);
         download_async(linalg_, host_gram_means_.data(), device_gram_means_, sample_count);
-        CUDA_CHECK(cudaStreamSynchronize(linalg_.stream()));
-        if (err_state() != QNPEPS_E2E_OK) return;
+        check(cudaStreamSynchronize(linalg_.stream()));
         const auto total_mean = [&]
         {
             cdh mean{0.0, 0.0};
@@ -317,7 +306,7 @@ class MinsrSolveContext
         );
     }
 
-    [[nodiscard]] auto diagonalize() -> bool
+    auto diagonalize() -> void
     {
         linalg_.diagonalize(
             CuMatrixCF64{device_solve_matrix_, sample_count_, sample_count_},
@@ -328,23 +317,20 @@ class MinsrSolveContext
                 .info = device_solver_info_,
             }
         );
-        if (err_state() == QNPEPS_E2E_OK)
-        {
-            const auto status =
-                launch_canonicalize_eigenvectors(linalg_, device_solve_matrix_, sample_count_);
-            if (status != QNPEPS_OK) set_err(static_cast<qnpeps_e2e_status>(status));
-        }
+        launch_canonicalize_eigenvectors(linalg_, device_solve_matrix_, sample_count_);
 
         const auto sample_count = static_cast<usize>(sample_count_);
         download_async(linalg_, host_eigenvalues_.data(), device_eigenvalues_, sample_count);
         int solver_info{};
         download_async(linalg_, &solver_info, device_solver_info_, usize{1});
-        CUDA_CHECK(cudaStreamSynchronize(linalg_.stream()));
-        if (err_state() == QNPEPS_E2E_OK and solver_info != 0)
-        {
-            set_err(QNPEPS_E2E_ERR_INTERNAL);
-        }
-        return err_state() == QNPEPS_E2E_OK;
+        check(cudaStreamSynchronize(linalg_.stream()));
+        require(
+            solver_info == 0,
+            "zheevd info {} on the {}x{} MinSR matrix",
+            solver_info,
+            sample_count_,
+            sample_count_
+        );
     }
 
     [[nodiscard]] auto solve_coefficients(f64 relative_cut, f64 absolute_cut) -> bool
@@ -379,7 +365,7 @@ class MinsrSolveContext
         download_async(
             linalg_, host_raw_coefficients_.data(), device_raw_coefficients_, sample_count
         );
-        CUDA_CHECK(cudaStreamSynchronize(linalg_.stream()));
+        check(cudaStreamSynchronize(linalg_.stream()));
 
         const auto weighted_coefficient_sum = [&]
         {
@@ -432,27 +418,9 @@ class MinsrSolveContext
     std::vector<cd> sample_coefficients_{};
 };
 
-[[nodiscard]] auto make_solve_context(int samples, Linalg& linalg)
-    -> std::unique_ptr<MinsrSolveContext>
-{
-    try
-    {
-        std::unique_ptr<MinsrSolveContext> solve{new (std::nothrow)
-                                                     MinsrSolveContext{samples, linalg}};
-        if (not solve) set_err(QNPEPS_E2E_ERR_OOM);
-        return solve;
-    }
-    catch (const std::bad_alloc&)
-    {
-        set_err(QNPEPS_E2E_ERR_OOM);
-        return {};
-    }
-}
-
 [[nodiscard]] auto prepared_solve_create(i64 samples, Linalg& linalg) -> MinsrSolveContext*
 {
-    auto solve = make_solve_context(static_cast<int>(samples), linalg);
-    return solve.release();
+    return new MinsrSolveContext{static_cast<int>(samples), linalg};
 }
 
 auto prepared_solve_run(
@@ -482,15 +450,7 @@ auto prepared_solve_run(
         ess_output,
         did_solve_output
     );
-    try
-    {
-        coefficient_output = solve.coefficients();
-    }
-    catch (const std::bad_alloc&)
-    {
-        set_err(QNPEPS_E2E_ERR_OOM);
-        did_solve_output = false;
-    }
+    coefficient_output = solve.coefficients();
 }
 
 [[nodiscard]] auto prepared_solve_transient_arena(const MinsrSolveContext& solve)
@@ -509,7 +469,7 @@ auto prepared_solve_run(
     return solve.linalg();
 }
 
-auto prepared_solve_destroy(MinsrSolveContext* solve) noexcept -> void
+auto prepared_solve_destroy(MinsrSolveContext* solve) -> void
 {
     delete solve;
 }

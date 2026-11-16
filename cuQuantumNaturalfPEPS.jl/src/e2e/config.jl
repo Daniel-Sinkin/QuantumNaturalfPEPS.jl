@@ -106,3 +106,24 @@ function QnpepsE2eConfig(;
         Float64(local_energy_svd_cutoff),
     )
 end
+
+const DENSITY_BATCHED_WAVE_LANES = 256
+
+function _local_energy_wave_lanes(config::QnpepsE2eConfig)::Int
+    config.truncation_route in DENSITY_BATCHED_ROUTES || return Int(config.meo)
+    return max(Int(config.meo), DENSITY_BATCHED_WAVE_LANES)
+end
+
+function _local_energy_config(config::QnpepsE2eConfig)::QnpepsElocConfig
+    return QnpepsElocConfig(;
+        lx=Int(config.lx),
+        ly=Int(config.ly),
+        dim_bond=Int(config.dim_bond),
+        chi_eo=Int(config.chi_eo),
+        meo=_local_energy_wave_lanes(config),
+        dim_phys=Int(config.dim_phys),
+        route=config.truncation_route,
+        density_cutoff=config.local_energy_density_cutoff,
+        svd_cutoff=config.local_energy_svd_cutoff,
+    )
+end

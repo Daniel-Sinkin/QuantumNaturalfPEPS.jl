@@ -147,7 +147,7 @@ auto materialize_sampling_buffer(
     qnpeps_ctx& ctx, const cuFloatComplex* raw_values, cuFloatComplex* sampling_out
 ) -> void;
 auto dl_free(qnpeps_ctx& ctx) -> void;
-auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int;
+auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> void;
 }
 
 namespace qnpeps::sampler
@@ -182,7 +182,7 @@ struct CtxSampleArgs
     SampleOutputLocation output_location;
 };
 
-auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status;
+auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> void;
 }
 
 #endif

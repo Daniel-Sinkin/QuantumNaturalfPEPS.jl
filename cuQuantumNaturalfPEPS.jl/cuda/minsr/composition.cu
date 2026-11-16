@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <memory>
-#include <new>
 #include <vector>
 
 namespace qnpeps::minsr
@@ -49,7 +48,6 @@ auto minsr_solve(
         cached_solve ? nullptr : prepared_solve_create(samples, linalg), prepared_solve_destroy
     };
     auto* const solve = cached_solve ? cached_solve : owned_solve.get();
-    if (not solve or err_state() != QNPEPS_E2E_OK) return;
     prepared_solve_run(
         *solve,
         device_log_amplitudes,
@@ -83,7 +81,6 @@ auto minsr_solve(
 ) -> void
 {
     const auto session = make_session(stream);
-    if (not session) return;
     minsr_solve(
         samples,
         device_log_amplitudes,
@@ -156,7 +153,6 @@ auto minsr_run_with_solve(
         auto* const device_coefficients = arena.take<cd>(sample_count);
         auto* const device_accumulator = arena.take<cd>(dense_size);
         auto* const device_slot_sites = arena.take<i32>(compact_size);
-        if (err_state() == QNPEPS_E2E_OK)
         {
             upload_async(linalg, device_coefficients, host_coefficients.data(), sample_count);
             upload_async(linalg, device_slot_sites, slot_sites.data(), compact_size);
@@ -185,7 +181,6 @@ auto minsr_run_with_solve(
                 const auto tile_rows =
                     host_tile_rows(host_tile_bytes, compact_count, sample_count_input);
                 auto* const device_stage = arena.take<cf>(tile_rows * compact_size);
-                if (err_state() == QNPEPS_E2E_OK)
                 {
                     for (auto base = 0_uz; base < sample_count; base += tile_rows)
                     {
@@ -214,18 +209,18 @@ auto minsr_run_with_solve(
                                 .row_end = row_end,
                             }
                         );
-                        CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
+                        check(cudaStreamSynchronize(linalg.stream()));
                     }
                 }
             }
             launch_cast_accumulator(linalg, theta_output, device_accumulator, dense_count);
         }
-        CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
+        check(cudaStreamSynchronize(linalg.stream()));
         return;
     }
 
     zero_async(linalg, theta_output, dense_size);
-    CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
+    check(cudaStreamSynchronize(linalg.stream()));
 }
 
 auto qn_e2e_minsr_impl(
@@ -253,13 +248,6 @@ auto qn_e2e_minsr_impl(
         cached_solve ? nullptr : prepared_solve_create(sample_count, linalg), prepared_solve_destroy
     };
     auto* const solve = cached_solve ? cached_solve : owned_solve.get();
-    if (not solve)
-    {
-        const auto dense_size = static_cast<usize>(qn_e2e::dense_count(config));
-        zero_async(linalg, theta_output, dense_size);
-        CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
-        return;
-    }
     minsr_run_with_solve(
         *solve,
         config,
@@ -302,7 +290,6 @@ auto qn_e2e_minsr_impl(
 ) -> void
 {
     const auto session = make_session(stream);
-    if (not session) return;
     qn_e2e_minsr_impl(
         config,
         sample_count,
@@ -354,24 +341,14 @@ auto minsr_context_create_impl(
     qnpeps_e2e_minsr_ctx** output
 ) -> void
 {
-    if (not output)
-    {
-        set_err(QNPEPS_E2E_ERR_NULL_ARG);
-        return;
-    }
+    require(output != nullptr, Status::null_argument, "MinSR context output is null");
     *output = nullptr;
 
     std::unique_ptr<MinsrSolveContext, decltype(&prepared_solve_destroy)> solve{
         prepared_solve_create(samples, linalg), prepared_solve_destroy
     };
-    if (not solve or err_state() != QNPEPS_E2E_OK) return;
 
-    auto* const context = new (std::nothrow) qnpeps_e2e_minsr_ctx;
-    if (not context)
-    {
-        set_err(QNPEPS_E2E_ERR_OOM);
-        return;
-    }
+    auto* const context = new qnpeps_e2e_minsr_ctx;
     context->config = config;
     context->sample_count = samples;
     context->host_tile_bytes = host_tile_bytes;
@@ -382,20 +359,20 @@ auto minsr_context_create_impl(
     *output = context;
 }
 
-[[nodiscard]] auto _minsr_context_run_check(const qnpeps_e2e_minsr_ctx& context) noexcept -> bool
+auto validate_run_context(const qnpeps_e2e_minsr_ctx& context) -> void
 {
     int device{};
-    CUDA_CHECK(cudaGetDevice(&device));
-    if (err_state() != QNPEPS_E2E_OK) return false;
-    if (device != context.device)
-    {
-        set_err(QNPEPS_E2E_ERR_BAD_CONFIG);
-        return false;
-    }
+    check(cudaGetDevice(&device));
+    require(
+        device == context.device,
+        Status::bad_config,
+        "MinSR run on device {}, the context lives on device {}",
+        device,
+        context.device
+    );
     const auto valid_solve =
         context.solve and prepared_solve_samples(*context.solve) == context.sample_count;
-    if (not valid_solve) set_err(QNPEPS_E2E_ERR_INTERNAL);
-    return valid_solve;
+    require(valid_solve, "MinSR context solve does not match its {} samples", context.sample_count);
 }
 }
 
@@ -408,7 +385,6 @@ auto minsr_context_create(
 ) -> void
 {
     auto session = make_session(stream);
-    if (not session) return;
     auto& linalg = session->linalg();
     minsr_context_create_impl(config, samples, host_tile_bytes, std::move(session), linalg, output);
 }
@@ -441,7 +417,7 @@ auto minsr_context_run(
     f64* ess_output
 ) -> void
 {
-    if (not _minsr_context_run_check(context)) return;
+    validate_run_context(context);
     minsr_run_with_solve(
         *context.solve,
         context.config,
@@ -474,16 +450,16 @@ auto minsr_context_run(
     return context.device;
 }
 
-auto minsr_context_destroy(qnpeps_e2e_minsr_ctx* context) noexcept -> void
+auto minsr_context_destroy(qnpeps_e2e_minsr_ctx* context) -> void
 {
     if (not context) return;
     int caller_device{};
     const auto have_caller = cudaGetDevice(&caller_device) == cudaSuccess;
     const auto switched = have_caller and caller_device != context->device
                           and cudaSetDevice(context->device) == cudaSuccess;
-    cudaStreamSynchronize(context->linalg->stream());
+    unchecked(cudaStreamSynchronize(context->linalg->stream()));
     prepared_solve_destroy(context->solve);
     delete context;
-    if (switched) cudaSetDevice(caller_device);
+    if (switched) unchecked(cudaSetDevice(caller_device));
 }
 }

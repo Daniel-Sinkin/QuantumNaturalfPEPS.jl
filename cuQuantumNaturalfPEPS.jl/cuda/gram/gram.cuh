@@ -11,12 +11,10 @@ class Linalg;
 
 namespace qnpeps::gram
 {
-auto ctx_create(const QnpepsGramDesc* descriptor, void* stream, qnpeps_gram_ctx** out)
-    -> qnpeps_status;
-auto ctx_create(const QnpepsGramDesc* descriptor, Linalg& linalg, qnpeps_gram_ctx** out)
-    -> qnpeps_status;
-auto ctx_run(qnpeps_gram_ctx* ctx, const QnpepsGramArgs* args) -> qnpeps_status;
-auto ctx_footprint(const qnpeps_gram_ctx* ctx, QnpepsGramFootprint* out) -> qnpeps_status;
+auto ctx_create(const QnpepsGramDesc* descriptor, void* stream, qnpeps_gram_ctx** out) -> void;
+auto ctx_create(const QnpepsGramDesc* descriptor, Linalg& linalg, qnpeps_gram_ctx** out) -> void;
+auto ctx_run(qnpeps_gram_ctx* ctx, const QnpepsGramArgs* args) -> void;
+auto ctx_footprint(const qnpeps_gram_ctx* ctx, QnpepsGramFootprint* out) -> void;
 auto ctx_destroy(qnpeps_gram_ctx* ctx) -> void;
 }
 

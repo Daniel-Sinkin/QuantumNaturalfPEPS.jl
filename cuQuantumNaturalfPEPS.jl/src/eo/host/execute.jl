@@ -35,7 +35,6 @@ function eo_host_execute!(host::EoHost, lane_index::Int)::Int32
     lane = host.lanes[lane_index]
     binding = lane.binding
     lane.status = _EO_HOST_OK
-    lane.failure_location = ""
     lane.failure_message = ""
     _eo_host_peer_copy!(
         binding.peps,
@@ -81,8 +80,7 @@ function eo_host_execute!(host::EoHost, lane_index::Int)::Int32
     end
     lane.status = Int32(status)
     if status != 0
-        lane.failure_location = _last_error_location()
-        lane.failure_message = _last_error_message()
+        lane.failure_message = _last_error()
     end
     return lane.status
 end
@@ -96,9 +94,8 @@ function eo_host_warm!(host::EoHost, iterations::Integer=3)::EoHost
             status = eo_host_execute!(host, lane_index)
             if status != _EO_HOST_OK
                 lane = host.lanes[lane_index]
-                location = isempty(lane.failure_location) ? "" : " at $(lane.failure_location)"
-                message = isempty(lane.failure_message) ? "" : "; $(lane.failure_message)"
-                error("qnpeps_eloc_ctx_run failed with status $status$location$message")
+                message = isempty(lane.failure_message) ? "" : " $(lane.failure_message)"
+                error("[cuQuantumNaturalfPEPS] qnpeps_eloc_ctx_run failed (status $status)$message")
             end
         end
     finally
@@ -162,7 +159,6 @@ function eo_host_replace_buffers!(host::EoHost, lane_index::Int)::EoHost
     lane.handle = next_handle
     lane.binding = next_binding
     lane.status = _EO_HOST_OK
-    lane.failure_location = ""
     lane.failure_message = ""
     host.contexts_created += 1
     host.contexts_destroyed += 1

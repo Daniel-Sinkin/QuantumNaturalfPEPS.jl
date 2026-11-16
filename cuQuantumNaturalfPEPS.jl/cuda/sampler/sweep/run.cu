@@ -5,6 +5,8 @@
 #include "sampler/sweep/ket.cuh"
 #include "sampler/sweep/unsampled.cuh"
 
+#include <cstdlib>
+
 namespace qnpeps::sampler
 {
 
@@ -13,11 +15,9 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
 {
     if (not ctx.sampler.ready())
     {
-        if (not ctx.sampler.execution.host_pointers)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return;
-        }
+        require(
+            ctx.sampler.execution.host_pointers, "sampler runs before setup without host pointers"
+        );
     }
     auto& samp = ctx.sampler.samp;
     auto& cfg = samp.cfg();
@@ -26,7 +26,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
     {
         if (ctx.sampler.execution.graph)
         {
-            CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.execution.graph));
+            unchecked(cudaGraphExecDestroy(ctx.sampler.execution.graph));
             ctx.sampler.execution.graph = nullptr;
         }
         cfg.dim_batch = ctx.sampler.execution.dim_batch;
@@ -48,11 +48,8 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
     const auto dim_batch_u = static_cast<usize>(dim_batch);
     if (host_output)
     {
-        if (not host_output->samples or host_output->n_samples == 0)
-        {
-            set_err(QNPEPS_ERR_NULL_ARG);
-            return;
-        }
+        const auto has_samples = host_output->samples != nullptr and host_output->n_samples != 0;
+        require(has_samples, Status::null_argument, "sampler host output has no sample buffer");
     }
     else
     {
@@ -100,12 +97,12 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
             );
         }
         const auto expected_slots = layout_count * num_env_rows * num_cols;
-        if (pointer_slot != expected_slots)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return;
-        }
-        assert(pointer_slot == expected_slots);
+        require(
+            pointer_slot == expected_slots,
+            "sampler filled {} environment pointer slots, expected {}",
+            pointer_slot,
+            expected_slots
+        );
     }
 
     const auto ket_bonds_for_row = [&](const std::vector<int>& bond_above, usize row)
@@ -156,7 +153,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
         ctx.sampler.staging.h_seed = batch_seed;
         upload_async(la, device_seed, &ctx.sampler.staging.h_seed, 1);
 
-        const auto enqueue_batch = [&]() -> bool
+        const auto enqueue_batch = [&]
         {
             const auto batch_count = static_cast<usize>(dim_batch);
             zero_async(la, samp.logpc(), batch_count);
@@ -179,36 +176,25 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
                         const bool has_below{row + 1 < cfg.lx};
                         const auto bond_above = bond_above_cur;
                         auto ket_bonds = ket_bonds_for_row(bond_above, static_cast<usize>(row));
-                        const auto state_built =
-                            row == 0
-                            or sampler::build_density_state_row(
+                        if (row != 0)
+                        {
+                            sampler::build_density_state_row(
                                 ctx, lane_cfg, row, env_above_cur, bond_above, ket_bonds
                             );
-                        if (not state_built)
-                        {
-                            return false;
                         }
                         const auto env_bonds = environment_bonds_for_row(static_cast<usize>(row));
-                        const auto environment_built = internal::build_env_unsampled(
+                        internal::build_env_unsampled(
                             samp, lane_cfg, row, has_below, ket_bonds, env_bonds
                         );
-                        if (not environment_built)
-                        {
-                            return false;
-                        }
-                        const auto sigma_drawn = internal::draw_sigma(
+                        internal::draw_sigma(
                             samp, lane_cfg, row, has_below, ket_bonds, env_bonds, device_seed
                         );
-                        if (not sigma_drawn)
-                        {
-                            return false;
-                        }
                         if (not has_below) continue;
                         if (cfg.fast_mode or row == 0)
                         {
                             auto select_cfg = lane_cfg;
                             select_cfg.fast_mode = true;
-                            const auto environment_above_built = internal::build_env_above(
+                            internal::build_env_above(
                                 samp,
                                 select_cfg,
                                 row,
@@ -217,26 +203,18 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
                                 env_above_cur,
                                 bond_above_cur
                             );
-                            if (not environment_above_built)
-                            {
-                                return false;
-                            }
                         }
                         else
                         {
                             const auto next = 1 - env_above_cur;
-                            const auto projected_row_built = sampler::build_density_projected_row(
+                            sampler::build_density_projected_row(
                                 ctx, lane_cfg, row, env_above_cur, next, bond_above, bond_above_cur
                             );
-                            if (not projected_row_built)
-                            {
-                                return false;
-                            }
                             env_above_cur = next;
                         }
                     }
                 }
-                return err_state() == QNPEPS_OK;
+                return;
             }
 
             int env_above_cur{0};
@@ -250,95 +228,88 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
                 const auto ket_bonds = ket_bonds_for_row(bond_above, static_cast<usize>(row));
                 const auto env_bonds = environment_bonds_for_row(static_cast<usize>(row));
 
-                const auto ket_row_built = row == 0
-                                           or internal::build_ket_row(
-                                               samp, cfg, row, bond_above, ket_bonds, env_above_cur
-                                           );
-                if (not ket_row_built)
-                {
-                    return false;
-                }
-
-                if (not internal::build_env_unsampled(
-                        samp, cfg, row, has_below, ket_bonds, env_bonds
-                    ))
-                    return false;
-
-                if (not internal::draw_sigma(
-                        samp, cfg, row, has_below, ket_bonds, env_bonds, device_seed
-                    ))
-                    return false;
-
-                const auto environment_above_built = internal::build_env_above(
+                if (row != 0)
+                    internal::build_ket_row(samp, cfg, row, bond_above, ket_bonds, env_above_cur);
+                internal::build_env_unsampled(samp, cfg, row, has_below, ket_bonds, env_bonds);
+                internal::draw_sigma(samp, cfg, row, has_below, ket_bonds, env_bonds, device_seed);
+                internal::build_env_above(
                     samp, cfg, row, has_below, ket_bonds, env_above_cur, bond_above_cur
                 );
-                if (not environment_above_built)
-                {
-                    return false;
-                }
             }
-            return err_state() == QNPEPS_OK;
         };
 
         if (ctx.use_graph and ctx.sampler.execution.graph)
         {
-            CUDA_CHECK(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
+            check(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
         }
         else if (ctx.use_graph and ctx.sampler.execution.warmed)
         {
-            cudaGraph_t graph{};
-            CUDA_CHECK(cudaStreamBeginCapture(la.stream(), cudaStreamCaptureModeThreadLocal));
-            const auto enqueued = enqueue_batch();
-            const auto capture_status = cudaStreamEndCapture(la.stream(), &graph);
-            auto graph_instantiated = false;
-            if (enqueued and capture_status == cudaSuccess)
-                graph_instantiated =
-                    instantiate_graph(ctx.sampler.execution.graph, graph) == cudaSuccess;
+            const auto graph = [&]
+            {
+                StreamCapture capture{la.stream()};
+#ifdef QNPEPS_GATE_HOOKS
+                const auto* injected = std::getenv("QNPEPS_INJECT_CAPTURE_FAILURE");
+                require(
+                    injected == nullptr or injected[0] != '1',
+                    Status::internal,
+                    "injected failure inside the sampler graph capture of batch {}",
+                    batch_id
+                );
+#endif
+                enqueue_batch();
+                return capture.finish();
+            }();
+            const auto graph_instantiated =
+                graph and instantiate_graph(ctx.sampler.execution.graph, graph) == cudaSuccess;
             if (graph_instantiated)
             {
-                CUDA_CHECK(cudaGraphDestroy(graph));
-                CUDA_CHECK(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
+                check(cudaGraphDestroy(graph));
+                check(cudaGraphLaunch(ctx.sampler.execution.graph, la.stream()));
             }
             else
             {
-                if (graph) CUDA_NOCHECK(cudaGraphDestroy(graph));
-                cudaGetLastError();
+                if (graph) unchecked(cudaGraphDestroy(graph));
+                unchecked(cudaGetLastError());
                 ctx.sampler.execution.graph = nullptr;
-                if (enqueued and not enqueue_batch()) assert(err_state() != QNPEPS_OK);
+                enqueue_batch();
             }
         }
         else
         {
-            if (enqueue_batch()) ctx.sampler.execution.warmed = true;
+            enqueue_batch();
+            ctx.sampler.execution.warmed = true;
         }
-
-        if (err_state() != QNPEPS_OK) break;
 
         download_async(la, ctx.sampler.staging.h_samples, samp.samples(), lane_samples_u);
         download_async(la, ctx.sampler.staging.h_logpc, samp.logpc(), dim_batch_u);
         download_async(la, ctx.sampler.staging.h_lognorm, samp.lognorm(), dim_batch_u);
-        CUDA_CHECK(cudaStreamSynchronize(la.stream()));
+        check(cudaStreamSynchronize(la.stream()));
         int fail_host{};
         download(&fail_host, samp.fail(), 1);
-        if (fail_host != 0)
-        {
-            set_err(QNPEPS_ERR_CUDA);
-            break;
-        }
+        require(
+            fail_host == 0,
+            Status::cuda,
+            "sampler batch {} reported device failure flag {}",
+            batch_id,
+            fail_host
+        );
         if (host_output)
         {
-            if (static_cast<u64>(batch_id) < host_output->batch_origin)
-            {
-                set_err(QNPEPS_ERR_INTERNAL);
-                break;
-            }
+            require(
+                static_cast<u64>(batch_id) >= host_output->batch_origin,
+                "sampler batch {} precedes the host output origin {}",
+                batch_id,
+                host_output->batch_origin
+            );
             const auto sample_offset = (static_cast<u64>(batch_id) - host_output->batch_origin)
                                        * static_cast<u64>(dim_batch);
-            if (sample_offset >= host_output->n_samples)
-            {
-                set_err(QNPEPS_ERR_INTERNAL);
-                break;
-            }
+            require(
+                sample_offset < host_output->n_samples,
+                "sampler batch {} starts at sample {} past the {} host samples",
+                batch_id,
+                sample_offset,
+                host_output->n_samples
+            );
             const auto valid_samples = static_cast<usize>(
                 std::min<u64>(static_cast<u64>(dim_batch), host_output->n_samples - sample_offset)
             );
@@ -385,7 +356,7 @@ auto ctx_sample_run(qnpeps_ctx& ctx, std::span<const int> batch_ids, HostSampleO
         }
     }
 
-    if (err_state() == QNPEPS_OK and not host_output)
+    if (not host_output)
     {
         const auto batch_count = batch_ids.size();
         assert(all_samples.size() == lane_samples_u * batch_count);

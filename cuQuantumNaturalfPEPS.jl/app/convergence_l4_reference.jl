@@ -13,9 +13,10 @@ include(joinpath(@__DIR__, "convergence_l4_reference", "state.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "ranks.jl"))
 
 const CONVERGENCE_ROUTES = Dict(
-    "rf" => (route=:default, svd_cutoff=1.0e-13),
-    "rangefinder" => (route=:default, svd_cutoff=1.0e-13),
-    "cholqr" => (route=:default, svd_cutoff=1.0e-13),
+    "default" => (route=:default, svd_cutoff=1.0e-13),
+    "rf" => (route=:rangefinder, svd_cutoff=1.0e-13),
+    "rangefinder" => (route=:rangefinder, svd_cutoff=1.0e-13),
+    "cholqr" => (route=:rangefinder, svd_cutoff=1.0e-13),
     "householder" => (route=:householder, svd_cutoff=1.0e-13),
     "density" => (route=:density, svd_cutoff=1.0e-13),
     "svd" => (route=:svd, svd_cutoff=0.0),
@@ -52,13 +53,12 @@ const CONVERGENCE_NATIVE_SYMBOLS = (
     :qnpeps_capi_version,
     :qnpeps_e2e_version,
     :qnpeps_eloc_version,
-    :qnpeps_e2e_strerror,
+    :qnpeps_last_error,
     :qnpeps_e2e_dense_count,
     :qnpeps_e2e_compact_count,
     :qnpeps_e2e_node_create,
     :qnpeps_e2e_node_submit_theta,
     :qnpeps_e2e_node_step_euler,
-    :qnpeps_e2e_node_error_stage,
     :qnpeps_e2e_node_destroy,
 )
 
@@ -67,7 +67,7 @@ function convergence_help()
         "usage convergence_l4_reference.jl [--steps N] [--route ROUTE] [--chi N] " *
         "[--precision fp32|fp64] [--output DIR] [--figure-only]",
     )
-    println("routes rf, rangefinder, cholqr, householder, svd, and density are accepted")
+    println("routes default, rf, rangefinder, cholqr, householder, svd, and density are accepted")
     return nothing
 end
 
@@ -200,7 +200,7 @@ function convergence_dry_run(options)
     end
     println(
         "[convergence-dry-run] config=$(config.lx)x$(config.ly) D=$(config.dim_bond) " *
-        "chi=$(config.chi_s) seed=$(config.seed) terms=$(length(terms.diag)+length(terms.flip))",
+        "chi=$(config.chi_s) seed=$(config.seed) terms=$(length(terms.supports))",
     )
     println(
         "[convergence-dry-run] library=$(realpath(path)) symbols=$(length(CONVERGENCE_NATIVE_SYMBOLS))",

@@ -6,17 +6,7 @@ include("ffi_e2e/arguments.jl")
 
 e2e_version()::Cstring = ccall((:qnpeps_e2e_version, _ffi_library()), Cstring, ())
 
-e2e_strerror(status)::Cstring =
-    ccall((:qnpeps_e2e_strerror, _ffi_library()), Cstring, (Cint,), status)
-
 eloc_version()::Cstring = ccall((:qnpeps_eloc_version, _ffi_library()), Cstring, ())
-
-e2e_node_error_stage(node)::Cstring =
-    ccall((:qnpeps_e2e_node_error_stage, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
-e2e_node_error_location(node)::Cstring =
-    ccall((:qnpeps_e2e_node_error_location, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
-e2e_node_error_message(node)::Cstring =
-    ccall((:qnpeps_e2e_node_error_message, _ffi_library()), Cstring, (Ptr{Cvoid},), node)
 
 e2e_dense_count(config, out)::Cint = ccall(
     (:qnpeps_e2e_dense_count, _ffi_library()),
@@ -226,6 +216,9 @@ e2e_node_step_euler(node, args)::Cint = ccall(
     node,
     args,
 )
+
+e2e_node_wait_environment(node)::Cint =
+    ccall((:qnpeps_e2e_node_wait_environment, _ffi_library()), Cint, (Ptr{Cvoid},), node)
 
 e2e_node_destroy(node)::Cint =
     ccall((:qnpeps_e2e_node_destroy, _ffi_library()), Cint, (Ptr{Cvoid},), node)

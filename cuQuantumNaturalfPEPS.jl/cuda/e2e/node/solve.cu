@@ -2,18 +2,17 @@
 
 #include "e2e/common.cuh"
 #include "e2e/node/workers.cuh"
+#include "eo/shards.cuh"
 #include "minsr/distributed.cuh"
 #include "minsr/solve.cuh"
 
 #include <cuda_runtime.h>
+#include <format>
 
 using qn_e2e::cf;
-using qn_e2e::err_state;
-using qn_e2e::set_err;
-using qn_e2e::mg::map_local_energy_status;
 using qn_e2e::mg::Shard;
 
-NodeSolve::NodeSolve(NodeState& state) noexcept : state_{state} {}
+NodeSolve::NodeSolve(NodeState& state) : state_{state} {}
 
 NodeSolve::~NodeSolve()
 {
@@ -29,14 +28,7 @@ auto NodeSolve::cached_solve(i64 sample_count) -> qnpeps::minsr::MinsrSolveConte
         solve_cache_ = nullptr;
         solve_cache_samples_ = 0;
     }
-    auto* const created = qnpeps::minsr::prepared_solve_create(sample_count, state_.linalg0());
-    if (not created) return nullptr;
-    if (err_state() != QNPEPS_E2E_OK)
-    {
-        qnpeps::minsr::prepared_solve_destroy(created);
-        return nullptr;
-    }
-    solve_cache_ = created;
+    solve_cache_ = qnpeps::minsr::prepared_solve_create(sample_count, state_.linalg0());
     solve_cache_samples_ = sample_count;
     return solve_cache_;
 }
@@ -54,21 +46,21 @@ auto NodeSolve::solve(
 {
     auto* n{&state_};
     const i64 compact{n->compact};
-    QN_E2E_CUDA_CHECK(
+    check(
         cudaMemsetAsync(n->device_gram, 0, sizeof(cf) * static_cast<usize>(ns * ns), n->stream0())
     );
-    for (auto i = 0_uz; i < shards.size() and err_state() == QNPEPS_E2E_OK; ++i)
+    for (auto i = 0_uz; i < shards.size(); ++i)
     {
         const Shard si{shards[i]};
         if (si.count <= 0) continue;
-        QN_E2E_CUDA_CHECK(cudaMemcpyAsync(
+        check(cudaMemcpyAsync(
             n->device_stage_a,
             n->host_rows + si.base * compact,
             sizeof(cf) * static_cast<usize>(si.count * compact),
             cudaMemcpyHostToDevice,
             n->stream0()
         ));
-        for (auto j = 0_uz; j < shards.size() and err_state() == QNPEPS_E2E_OK; ++j)
+        for (auto j = 0_uz; j < shards.size(); ++j)
         {
             const Shard sj{shards[j]};
             if (sj.count <= 0) continue;
@@ -77,7 +69,7 @@ auto NodeSolve::solve(
             auto samp_b{n->device_samples + si.base * n->sites};
             if (j != i)
             {
-                QN_E2E_CUDA_CHECK(cudaMemcpyAsync(
+                check(cudaMemcpyAsync(
                     n->device_stage_b,
                     n->host_rows + sj.base * compact,
                     sizeof(cf) * shard_sample_count * static_cast<usize>(compact),
@@ -87,20 +79,25 @@ auto NodeSolve::solve(
                 rows_b = n->device_stage_b;
                 samp_b = n->device_samples + sj.base * n->sites;
             }
-            map_local_energy_status(qnpeps_eloc_gram_tile(
-                &n->lcfg,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(n->device_stage_a),
-                n->device_samples + si.base * n->sites,
-                si.count,
-                reinterpret_cast<const qnpeps_eloc_cbuf*>(rows_b),
-                samp_b,
-                sj.count,
-                reinterpret_cast<qnpeps_eloc_cbuf*>(n->device_tile),
-                n->stream0()
-            ));
-            if (err_state() == QNPEPS_E2E_OK)
+            qnpeps::collapse_to_internal(
+                {Status::bad_config, Status::cuda, Status::out_of_memory},
+                [&]
+                {
+                    qnpeps::eo::gram_tile({
+                        .config = &n->lcfg,
+                        .rows_a = n->device_stage_a,
+                        .samples_a = n->device_samples + si.base * n->sites,
+                        .count_a = si.count,
+                        .rows_b = rows_b,
+                        .samples_b = samp_b,
+                        .count_b = sj.count,
+                        .tile = n->device_tile,
+                        .stream = n->stream0(),
+                    });
+                }
+            );
             {
-                QN_E2E_CUDA_CHECK(cudaMemcpy2DAsync(
+                check(cudaMemcpy2DAsync(
                     n->device_gram + si.base * ns + sj.base,
                     sizeof(cf) * static_cast<usize>(ns),
                     n->device_tile,
@@ -113,8 +110,7 @@ auto NodeSolve::solve(
             }
         }
     }
-    QN_E2E_CUDA_CHECK(cudaStreamSynchronize(n->stream0()));
-    if (err_state() != QNPEPS_E2E_OK) return;
+    check(cudaStreamSynchronize(n->stream0()));
 
     qnpeps::minsr::qn_e2e_minsr_impl(
         n->cfg,
@@ -187,15 +183,17 @@ auto NodeSolve::solve_distributed(
         const usize gpu_index{static_cast<usize>(g)};
         n->workers_->issue(g, WorkerCmd{.mode = WorkerMode::Gram, .gram = &arguments[gpu_index]});
     }
-    qnpeps::minsr::build_gram_blockrow(arguments[0]);
-    if (err_state() != QNPEPS_E2E_OK) n->fail(err_state());
+    const auto device_zero_outcome =
+        guarded_labelled("minsr", 0, [&] { qnpeps::minsr::build_gram_blockrow(arguments[0]); });
+    if (device_zero_outcome != QNPEPS_OK)
+        n->fail(device_zero_outcome, std::move(qnpeps::last_error_message()));
     for (int g{1}; g < n->gpus; ++g)
     {
-        const auto status = n->workers_->wait(g);
-        if (status != QNPEPS_E2E_OK) n->fail(status);
+        const auto outcome = n->workers_->wait(g);
+        if (outcome != QNPEPS_OK) n->fail(outcome, std::string{});
     }
-    cudaSetDevice(0);
-    if (n->status() != QNPEPS_E2E_OK) return;
+    unchecked(cudaSetDevice(0));
+    n->raise_if_failed();
 
     std::vector<qn_e2e::cd> coefficients{};
     bool did_solve{false};
@@ -215,7 +213,6 @@ auto NodeSolve::solve_distributed(
         n->linalg0(),
         cached_solve(ns)
     );
-    if (err_state() != QNPEPS_E2E_OK) return;
 
     if (did_solve)
     {
@@ -235,21 +232,23 @@ auto NodeSolve::solve_distributed(
     }
     else
     {
-        QN_E2E_CUDA_CHECK(cudaMemsetAsync(
+        check(cudaMemsetAsync(
             theta_dot_out, 0, sizeof(cf) * static_cast<usize>(n->dense), n->stream0()
         ));
-        QN_E2E_CUDA_CHECK(cudaStreamSynchronize(n->stream0()));
+        check(cudaStreamSynchronize(n->stream0()));
     }
 }
 
 auto NodeSolve::host_pinned(usize bytes) -> void*
 {
-    if (err_state() != QNPEPS_E2E_OK) return nullptr;
     void* p{};
-    if (cudaHostAlloc(&p, bytes < 1 ? 1 : bytes, cudaHostAllocPortable) != cudaSuccess)
-    {
-        set_err(QNPEPS_E2E_ERR_OOM);
-        return nullptr;
-    }
+    const auto allocation_status = cudaHostAlloc(&p, bytes < 1 ? 1 : bytes, cudaHostAllocPortable);
+    require(
+        allocation_status == cudaSuccess,
+        Status::out_of_memory,
+        "pinned host allocation of {} bytes failed, {}",
+        bytes,
+        qnpeps::cuda_failure_text(allocation_status)
+    );
     return p;
 }

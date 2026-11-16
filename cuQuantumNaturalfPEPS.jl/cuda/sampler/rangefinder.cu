@@ -15,9 +15,9 @@ namespace trunc_svd
 {
 namespace
 {
-[[nodiscard]] auto copy_left_factors(
+auto copy_left_factors(
     Linalg& la, const cuFloatComplex* left, CuMatrixBatchedCF32 q_out, int dim_batch
-) -> bool
+) -> void
 {
     const auto rows = static_cast<usize>(q_out.rows());
     const auto rank = static_cast<usize>(q_out.cols());
@@ -32,7 +32,6 @@ namespace
         copy_width,
         static_cast<usize>(dim_batch)
     );
-    return err_state() == QNPEPS_OK;
 }
 
 [[nodiscard]] auto primary_failed(Linalg& la, const int* status, int* retry, int dim_batch) -> bool
@@ -48,11 +47,11 @@ namespace
         k_threads_per_block,
         0,
         la.stream()>>>(record_gesvda_failures_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     int host_retry{};
     download_async(la, &host_retry, retry, 1);
-    CUDA_CHECK(cudaStreamSynchronize(la.stream()));
-    return err_state() == QNPEPS_OK and host_retry != 0;
+    check(cudaStreamSynchronize(la.stream()));
+    return host_retry != 0;
 }
 }
 
@@ -98,23 +97,16 @@ auto batched_rangefinder_svd(Linalg& la, const RangefinderArgs& args) -> void
     la.matmul_batched(input, projection_matrix, sketch_matrix, dim_batch);
 
     const auto layout = la.approximate_svd_scratch(rows, rank, dim_batch);
-    if (err_state() != QNPEPS_OK) return;
     auto* scratch = la.svd_workspace().grow(layout.total());
-    if (not scratch) return;
     la.approximate_svd(sketch_matrix, scratch, layout, args.info, dim_batch);
-    if (err_state() != QNPEPS_OK) return;
 
     auto left = static_cast<const cuFloatComplex*>(layout.left(scratch));
     const auto retry = primary_failed(la, args.info, layout.retry(scratch), dim_batch);
-    if (err_state() != QNPEPS_OK) return;
     if (retry)
     {
         const auto jacobi_layout = la.jacobi_svd_scratch(rows, rank, dim_batch);
-        if (err_state() != QNPEPS_OK) return;
         auto* jacobi_scratch = la.svd_workspace().grow(jacobi_layout.total());
-        if (not jacobi_scratch) return;
         la.jacobi_svd_batched(sketch_matrix, jacobi_scratch, jacobi_layout, dim_batch);
-        if (err_state() != QNPEPS_OK) return;
         const auto pad_unconverged_lanes_args = CuPadUnconvergedLanesArgs{
             .left = jacobi_layout.left(jacobi_scratch),
             .status = jacobi_layout.status(jacobi_scratch),
@@ -128,10 +120,10 @@ auto batched_rangefinder_svd(Linalg& la, const RangefinderArgs& args) -> void
             k_tree_reduce_threads,
             0,
             la.stream()>>>(pad_unconverged_lanes_args);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         left = jacobi_layout.left(jacobi_scratch);
     }
-    if (not copy_left_factors(la, left, args.q_out, dim_batch)) return;
+    copy_left_factors(la, left, args.q_out, dim_batch);
     la.matmul_batched_left_adj(args.q_out, input, args.r_out, dim_batch);
 }
 
@@ -140,32 +132,20 @@ auto orthonormalize_panel(Linalg& la, CuMatrixCF32 panel) -> void
     const auto rows = panel.rows();
     const auto rank = panel.cols();
     const auto valid = panel.data() != nullptr and rows > 0 and rank > 0 and rank <= rows;
-    if (not valid)
-    {
-        assert(false);
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "panel orthonormalization rejects a {}x{} panel", rows, rank);
     const auto layout = la.approximate_svd_scratch(rows, rank, 1);
-    if (err_state() != QNPEPS_OK) return;
     auto* scratch = la.svd_workspace().grow(layout.total());
-    if (not scratch) return;
     const auto panel_elements = static_cast<i64>(rows) * rank;
     const CuMatrixBatchedCF32 panel_batch{panel.data(), panel_elements, rows, rank};
     la.approximate_svd(panel_batch, scratch, layout, layout.status(scratch), 1);
-    if (err_state() != QNPEPS_OK) return;
 
     auto left = static_cast<const cuFloatComplex*>(layout.left(scratch));
     const auto retry = primary_failed(la, layout.status(scratch), layout.retry(scratch), 1);
-    if (err_state() != QNPEPS_OK) return;
     if (retry)
     {
         const auto jacobi_layout = la.jacobi_svd_scratch(rows, rank, 1);
-        if (err_state() != QNPEPS_OK) return;
         auto* jacobi_scratch = la.svd_workspace().grow(jacobi_layout.total());
-        if (not jacobi_scratch) return;
         la.jacobi_svd_batched(panel_batch, jacobi_scratch, jacobi_layout, 1);
-        if (err_state() != QNPEPS_OK) return;
         const auto pad_unconverged_lanes_args = CuPadUnconvergedLanesArgs{
             .left = jacobi_layout.left(jacobi_scratch),
             .status = jacobi_layout.status(jacobi_scratch),
@@ -177,7 +157,7 @@ auto orthonormalize_panel(Linalg& la, CuMatrixCF32 panel) -> void
         cu_pad_unconverged_lanes<<<1, k_tree_reduce_threads, 0, la.stream()>>>(
             pad_unconverged_lanes_args
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
         left = jacobi_layout.left(jacobi_scratch);
     }
     copy_device_async(la, panel.data(), left, static_cast<usize>(panel_elements));

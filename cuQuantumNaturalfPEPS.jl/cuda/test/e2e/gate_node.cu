@@ -2,15 +2,21 @@
 #include "capi/qnpeps.h"
 #include "dans_qnpeps_e2e.h"
 #include "dans_qnpeps_eloc.h"
+#include "e2e/common.cuh"
 #include "gate_fixture.cuh"
+#include "term_builders.cuh"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
+#include <limits>
+#include <numbers>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace
@@ -51,32 +57,12 @@ auto bonds_nn(int lx, int ly, double j1) -> std::vector<Bond>
     return out;
 }
 
-auto diag_bonds_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocDiagBond>
+auto heisenberg_of(const std::vector<Bond>& bonds, int ly) -> eo_test::TermTableBuilder
 {
-    std::vector<QnpepsElocDiagBond> out{};
+    eo_test::TermTableBuilder terms{};
     for (const Bond& b : bonds)
-        out.push_back({site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j});
-    return out;
-}
-
-auto masked_flips_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocFlipTerm>
-{
-    std::vector<QnpepsElocFlipTerm> out{};
-    for (const Bond& b : bonds)
-    {
-        QnpepsElocFlipTerm t{};
-        t.n_flips = 2;
-        t.flip_site[0] = site0(b.ai, b.aj, ly);
-        t.flip_site[1] = site0(b.bi, b.bj, ly);
-        t.flip_value[0] = -1;
-        t.flip_value[1] = -1;
-        t.mask_a = t.flip_site[0];
-        t.mask_b = t.flip_site[1];
-        t.coeff_re = 2.0 * b.j;
-        t.coeff_im = 0.0;
-        out.push_back(t);
-    }
-    return out;
+        terms.add_heisenberg_bond(site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j);
+    return terms;
 }
 
 auto ck(cudaError_t e, const char* what) -> void
@@ -117,7 +103,8 @@ auto lcfg_of(const QnpepsE2eConfig& c) -> QnpepsElocConfig
     e.dim_phys = c.dim_phys;
     e.dim_bond = c.dim_bond;
     e.chi_eo = c.chi_eo;
-    e.meo = c.meo;
+    e.meo = qn_e2e::local_energy_wave_lanes(c);
+    e.truncation_route = c.truncation_route;
     return e;
 }
 
@@ -133,7 +120,7 @@ struct StepOut
     std::vector<double> logpsi{};
     std::vector<double> eloc{};
     std::vector<std::int64_t> epoch{};
-    qnpeps_e2e_status status{QNPEPS_E2E_OK};
+    qnpeps_status status{QNPEPS_OK};
 };
 
 auto theta_eq(const std::vector<cf32>& a, const std::vector<cf32>& b) -> bool
@@ -171,6 +158,74 @@ auto all_eq(const StepOut& a, const StepOut& b, char* note, std::size_t n) -> bo
     return th and st and sa and lq and lg and lp and el;
 }
 
+constexpr double k_wave_energy_tolerance{1.0e-5};
+constexpr double k_wave_logpsi_tolerance{1.0e-5};
+constexpr double k_wave_statistics_tolerance{1.0e-4};
+constexpr double k_wave_theta_tolerance{1.0e-3};
+
+auto relative_gap(double observed, double expected) -> double
+{
+    return std::abs(observed - expected) / std::max(1.0, std::abs(expected));
+}
+
+auto logpsi_gap(const std::vector<double>& a, const std::vector<double>& b) -> double
+{
+    if (a.size() != b.size()) return std::numeric_limits<double>::infinity();
+    double gap{};
+    for (std::size_t k{0}; k + 1 < a.size(); k += 2)
+    {
+        const double phase{std::remainder(a[k + 1] - b[k + 1], 2.0 * std::numbers::pi)};
+        gap = std::max({gap, std::abs(a[k] - b[k]), std::abs(phase)});
+    }
+    return gap;
+}
+
+auto energy_gap(const std::vector<double>& a, const std::vector<double>& b) -> double
+{
+    if (a.size() != b.size()) return std::numeric_limits<double>::infinity();
+    double gap{};
+    for (std::size_t k{0}; k + 1 < a.size(); k += 2)
+    {
+        const double scale{std::max(1.0, std::hypot(b[k], b[k + 1]))};
+        gap = std::max(gap, std::hypot(a[k] - b[k], a[k + 1] - b[k + 1]) / scale);
+    }
+    return gap;
+}
+
+auto theta_gap(const std::vector<cf32>& a, const std::vector<cf32>& b) -> double
+{
+    if (a.size() != b.size()) return std::numeric_limits<double>::infinity();
+    double difference{};
+    double norm{};
+    for (std::size_t k{0}; k < a.size(); ++k)
+    {
+        const double re{static_cast<double>(a[k].re) - static_cast<double>(b[k].re)};
+        const double im{static_cast<double>(a[k].im) - static_cast<double>(b[k].im)};
+        difference += re * re + im * im;
+        norm += static_cast<double>(b[k].re) * b[k].re + static_cast<double>(b[k].im) * b[k].im;
+    }
+    return std::sqrt(difference) / std::max(std::sqrt(norm), std::numeric_limits<double>::min());
+}
+
+auto close_eq(const StepOut& a, const StepOut& b, char* note, std::size_t n) -> bool
+{
+    const double th{theta_gap(a.theta, b.theta)};
+    const double st{std::max(
+        {relative_gap(a.e_mean[0], b.e_mean[0]),
+         relative_gap(a.e_mean[1], b.e_mean[1]),
+         relative_gap(a.e_var, b.e_var),
+         relative_gap(a.ess, b.ess)}
+    )};
+    const double lp{logpsi_gap(a.logpsi, b.logpsi)};
+    const double el{energy_gap(a.eloc, b.eloc)};
+    const bool inputs{a.samples == b.samples and a.logq == b.logq and a.loggauge == b.loggauge};
+    std::snprintf(
+        note, n, "inputs=%d theta=%.1e stats=%.1e logpsi=%.1e eloc=%.1e", inputs, th, st, lp, el
+    );
+    return inputs and th <= k_wave_theta_tolerance and st <= k_wave_statistics_tolerance
+           and lp <= k_wave_logpsi_tolerance and el <= k_wave_energy_tolerance;
+}
+
 auto set_line(const char* name, bool pass, const char* note) -> void
 {
     std::printf(
@@ -195,7 +250,7 @@ auto ref_step(
     std::int64_t compact,
     int sites,
     StepOut& out
-) -> qnpeps_e2e_status
+) -> qnpeps_status
 {
     const QnpepsConfig scfg{scfg_of(cfg)};
     const QnpepsElocConfig lcfg{lcfg_of(cfg)};
@@ -216,7 +271,7 @@ auto ref_step(
     auto gram{dmalloc<cf32>(static_cast<std::size_t>(ns) * ns)};
     auto theta{dmalloc<cf32>(static_cast<std::size_t>(dense))};
 
-    qnpeps_e2e_status rc{QNPEPS_E2E_OK};
+    qnpeps_status rc{QNPEPS_OK};
     if (qnpeps_build_dlenv(
             &scfg,
             static_cast<const qnpeps_device_peps*>(d_peps),
@@ -225,7 +280,7 @@ auto ref_step(
             nullptr
         )
         != QNPEPS_OK)
-        rc = QNPEPS_E2E_ERR_INTERNAL;
+        rc = QNPEPS_ERR_INTERNAL;
     cudaDeviceSynchronize();
     const QnpepsSampleArgs sample_args_a{
         .struct_size = sizeof(QnpepsSampleArgs),
@@ -242,9 +297,9 @@ auto ref_step(
         .dim_batch = static_cast<std::uint64_t>(dim_batch),
         .stream = nullptr
     };
-    if (rc == QNPEPS_E2E_OK and qnpeps_sample(&scfg, &sample_args_a) != QNPEPS_OK)
-        rc = QNPEPS_E2E_ERR_INTERNAL;
-    if (rc == QNPEPS_E2E_OK
+    if (rc == QNPEPS_OK and qnpeps_sample(&scfg, &sample_args_a) != QNPEPS_OK)
+        rc = QNPEPS_ERR_INTERNAL;
+    if (rc == QNPEPS_OK
         and qnpeps_eloc_run(
                 &lcfg,
                 static_cast<const qnpeps_eloc_cbuf*>(d_peps),
@@ -258,9 +313,9 @@ auto ref_step(
                 reinterpret_cast<qnpeps_eloc_cbuf*>(gram),
                 0.0,
                 nullptr
-            ) != QNPEPS_ELOC_OK)
-        rc = QNPEPS_E2E_ERR_INTERNAL;
-    if (rc == QNPEPS_E2E_OK)
+            ) != QNPEPS_OK)
+        rc = QNPEPS_ERR_INTERNAL;
+    if (rc == QNPEPS_OK)
     {
         rc = qnpeps_e2e_minsr(
             &cfg,
@@ -283,7 +338,7 @@ auto ref_step(
         );
     }
 
-    if (rc == QNPEPS_E2E_OK)
+    if (rc == QNPEPS_OK)
     {
         out.theta.assign(static_cast<std::size_t>(dense), cf32{});
         out.samples.assign(static_cast<std::size_t>(ns) * sites, 0);
@@ -340,7 +395,7 @@ auto node_step_capture(
     std::int64_t dense,
     int sites,
     StepOut& out
-) -> qnpeps_e2e_status
+) -> qnpeps_status
 {
     auto theta{dmalloc<cf32>(static_cast<std::size_t>(dense))};
     auto samp{dmalloc<std::uint8_t>(static_cast<std::size_t>(ns) * sites)};
@@ -349,7 +404,7 @@ auto node_step_capture(
     auto lp{dmalloc<double>(static_cast<std::size_t>(2 * ns))};
     auto el{dmalloc<double>(static_cast<std::size_t>(2 * ns))};
     out.epoch.assign(static_cast<std::size_t>(ns), 0);
-    const qnpeps_e2e_status st{qnpeps_e2e_node_step(
+    const qnpeps_status st{qnpeps_e2e_node_step(
         node,
         ns,
         rel,
@@ -367,7 +422,7 @@ auto node_step_capture(
         out.epoch.data()
     )};
     out.status = st;
-    if (st == QNPEPS_E2E_OK)
+    if (st == QNPEPS_OK)
     {
         out.theta.assign(static_cast<std::size_t>(dense), cf32{});
         out.samples.assign(static_cast<std::size_t>(ns) * sites, 0);
@@ -633,8 +688,7 @@ struct Fix
 {
     QnpepsE2eConfig cfg{};
     std::vector<float> hpeps0{};
-    std::vector<QnpepsElocDiagBond> diag{};
-    std::vector<QnpepsElocFlipTerm> flip{};
+    eo_test::TermTableBuilder terms{};
     QnpepsElocTermTable tt{};
     std::int64_t dense{};
     std::int64_t compact{};
@@ -653,12 +707,8 @@ auto build_fixture(int lx, int ly, int D, int chi, int meo) -> Fix
     qnpeps_e2e_dense_count(&f.cfg, &f.dense);
     qnpeps_e2e_compact_count(&f.cfg, &f.compact);
     const std::vector<Bond> bonds{bonds_nn(lx, ly, 1.0)};
-    f.diag = diag_bonds_of(bonds, ly);
-    f.flip = masked_flips_of(bonds, ly);
-    f.tt.n_diag = static_cast<int32_t>(f.diag.size());
-    f.tt.diag = f.diag.data();
-    f.tt.n_flip = static_cast<int32_t>(f.flip.size());
-    f.tt.flip = f.flip.data();
+    f.terms = heisenberg_of(bonds, ly);
+    f.tt = f.terms.table();
     return f;
 }
 
@@ -674,31 +724,31 @@ auto run_schedule(
     double lr,
     int iters,
     std::vector<StepOut>& outs
-) -> qnpeps_e2e_status
+) -> qnpeps_status
 {
     auto d_theta{dmalloc<cf32>(static_cast<std::size_t>(f.dense))};
     std::vector<float> hpeps{f.hpeps0};
 
     qnpeps_e2e_node* node{};
-    const qnpeps_e2e_status cs{
+    const qnpeps_status cs{
         qnpeps_e2e_node_create(&f.cfg, gpus, ns_cap, ns_ahead, dim_batch, 0, &f.tt, &node)
     };
-    if (cs != QNPEPS_E2E_OK)
+    if (cs != QNPEPS_OK)
     {
         cudaFree(d_theta);
         return cs;
     }
-    qnpeps_e2e_status rc{QNPEPS_E2E_OK};
-    for (int k{0}; k < iters and rc == QNPEPS_E2E_OK; ++k)
+    qnpeps_status rc{QNPEPS_OK};
+    for (int k{0}; k < iters and rc == QNPEPS_OK; ++k)
     {
         ck(cudaMemcpy(d_theta, hpeps.data(), hpeps.size() * sizeof(float), cudaMemcpyHostToDevice),
            "sched upload");
         rc = qnpeps_e2e_node_submit_theta(node, d_theta);
-        if (rc != QNPEPS_E2E_OK) break;
+        if (rc != QNPEPS_OK) break;
         StepOut o{};
         rc = node_step_capture(node, ns, rel, abs_cut, f.dense, f.sites, o);
         outs.push_back(o);
-        if (rc != QNPEPS_E2E_OK) break;
+        if (rc != QNPEPS_OK) break;
         euler_update(hpeps, o.theta, lr);
     }
     qnpeps_e2e_node_destroy(node);
@@ -706,19 +756,26 @@ auto run_schedule(
     return rc;
 }
 
-auto case_a(const Fix& f, int gpus, int ns, double rel, double abs_cut, double lr) -> int
+auto case_a(
+    const Fix& f,
+    int gpus,
+    int ns,
+    double rel,
+    double abs_cut,
+    double lr,
+    const char* name,
+    bool is_bitwise
+) -> int
 {
     int fails{0};
     const std::int64_t ns_cap{static_cast<std::int64_t>(ns) + 8};
     auto d_theta{dmalloc<cf32>(static_cast<std::size_t>(f.dense))};
     std::vector<float> hpeps{f.hpeps0};
     qnpeps_e2e_node* node{};
-    const qnpeps_e2e_status cs{
-        qnpeps_e2e_node_create(&f.cfg, gpus, ns_cap, 0, ns, 0, &f.tt, &node)
-    };
-    if (cs != QNPEPS_E2E_OK)
+    const qnpeps_status cs{qnpeps_e2e_node_create(&f.cfg, gpus, ns_cap, 0, ns, 0, &f.tt, &node)};
+    if (cs != QNPEPS_OK)
     {
-        std::printf("[gate_node] case_a create err %s\n", qnpeps_e2e_strerror(cs));
+        std::printf("[gate_node] case_a create err %s\n", qnpeps_last_error());
         cudaFree(d_theta);
         return 1;
     }
@@ -728,36 +785,33 @@ auto case_a(const Fix& f, int gpus, int ns, double rel, double abs_cut, double l
            "a upload");
         qnpeps_e2e_node_submit_theta(node, d_theta);
         StepOut nd{};
-        const qnpeps_e2e_status ns_st{
-            node_step_capture(node, ns, rel, abs_cut, f.dense, f.sites, nd)
-        };
+        const qnpeps_status ns_st{node_step_capture(node, ns, rel, abs_cut, f.dense, f.sites, nd)};
         StepOut rf{};
-        const qnpeps_e2e_status rf_st{
+        const qnpeps_status rf_st{
             ref_step(f.cfg, d_theta, ns, f.tt, rel, abs_cut, k, ns, f.dense, f.compact, f.sites, rf)
         };
         char note[160]{};
         char label[48]{};
-        std::snprintf(label, sizeof(label), "a_iter%d_base%d_vs_ref", k + 1, k);
-        if (ns_st != QNPEPS_E2E_OK or rf_st != QNPEPS_E2E_OK)
+        std::snprintf(label, sizeof(label), "%s_iter%d_base%d_vs_ref", name, k + 1, k);
+        if (ns_st != QNPEPS_OK or rf_st != QNPEPS_OK)
         {
             std::snprintf(
-                note,
-                sizeof(note),
-                "node=%s ref=%s",
-                qnpeps_e2e_strerror(ns_st),
-                qnpeps_e2e_strerror(rf_st)
+                note, sizeof(note), "node=%s ref=%s", qnpeps_last_error(), qnpeps_last_error()
             );
             set_line(label, false, note);
             ++fails;
         }
         else
         {
-            const bool pass{all_eq(nd, rf, note, sizeof(note))};
+            const bool pass{
+                is_bitwise ? all_eq(nd, rf, note, sizeof(note))
+                           : close_eq(nd, rf, note, sizeof(note))
+            };
             set_line(label, pass, note);
             if (not pass) ++fails;
             euler_update(hpeps, nd.theta, lr);
         }
-        if (ns_st != QNPEPS_E2E_OK) break;
+        if (ns_st != QNPEPS_OK) break;
     }
     qnpeps_e2e_node_destroy(node);
     cudaFree(d_theta);
@@ -779,21 +833,21 @@ auto determinism_case(
 {
     std::vector<StepOut> a{};
     std::vector<StepOut> b{};
-    const qnpeps_e2e_status ra{
+    const qnpeps_status ra{
         run_schedule(f, gpus, ns, ns_cap, ns_ahead, dim_batch, rel, abs_cut, lr, 3, a)
     };
-    const qnpeps_e2e_status rb{
+    const qnpeps_status rb{
         run_schedule(f, gpus, ns, ns_cap, ns_ahead, dim_batch, rel, abs_cut, lr, 3, b)
     };
     char note[160]{};
-    if (ra != QNPEPS_E2E_OK or rb != QNPEPS_E2E_OK or a.size() != b.size() or a.empty())
+    if (ra != QNPEPS_OK or rb != QNPEPS_OK or a.size() != b.size() or a.empty())
     {
         std::snprintf(
             note,
             sizeof(note),
             "run_status a=%s b=%s n=%zu",
-            qnpeps_e2e_strerror(ra),
-            qnpeps_e2e_strerror(rb),
+            qnpeps_last_error(),
+            qnpeps_last_error(),
             a.size()
         );
         set_line(label, false, note);
@@ -822,12 +876,12 @@ auto case_c(
     std::vector<float> hpeps{f.hpeps0};
     std::vector<std::vector<float>> theta_hist{};
     qnpeps_e2e_node* node{};
-    const qnpeps_e2e_status cs{
+    const qnpeps_status cs{
         qnpeps_e2e_node_create(&f.cfg, gpus, ns_cap, ns, dim_batch, 0, &f.tt, &node)
     };
-    if (cs != QNPEPS_E2E_OK)
+    if (cs != QNPEPS_OK)
     {
-        std::printf("[gate_node] case_c create err %s\n", qnpeps_e2e_strerror(cs));
+        std::printf("[gate_node] case_c create err %s\n", qnpeps_last_error());
         cudaFree(d_theta);
         return 1;
     }
@@ -841,7 +895,7 @@ auto case_c(
         StepOut o{};
         node_step_capture(node, ns, rel, abs_cut, f.dense, f.sites, o);
         lag1.push_back(o);
-        if (o.status != QNPEPS_E2E_OK) break;
+        if (o.status != QNPEPS_OK) break;
         euler_update(hpeps, o.theta, lr);
     }
     qnpeps_e2e_node_destroy(node);
@@ -849,7 +903,7 @@ auto case_c(
     bool ess_ok{true};
     for (const StepOut& o : lag1)
     {
-        if (o.status == QNPEPS_E2E_OK)
+        if (o.status == QNPEPS_OK)
         {
             const double e{ess_from(o.logpsi, o.logq, ns)};
             if (e != o.ess) ess_ok = false;
@@ -858,7 +912,7 @@ auto case_c(
     set_line("c_ess_recompute", ess_ok, ess_ok ? "" : "referee ess != node ess");
     if (not ess_ok) ++fails;
 
-    if (lag1.size() >= 2 and lag1[1].status == QNPEPS_E2E_OK)
+    if (lag1.size() >= 2 and lag1[1].status == QNPEPS_OK)
     {
         auto d0{dmalloc<cf32>(static_cast<std::size_t>(f.dense))};
         ck(cudaMemcpy(
@@ -941,7 +995,7 @@ auto case_c(
             StepOut o{};
             node_step_capture(n0, ns, rel, abs_cut, f.dense, f.sites, o);
             lag0.push_back(o);
-            if (o.status != QNPEPS_E2E_OK) break;
+            if (o.status != QNPEPS_OK) break;
             euler_update(hp, o.theta, lr);
         }
         qnpeps_e2e_node_destroy(n0);
@@ -974,23 +1028,23 @@ auto case_d(
     const std::int64_t ns_cap{2 * static_cast<std::int64_t>(ns) + 8};
     std::vector<StepOut> base{};
     std::vector<StepOut> delayed{};
-    const qnpeps_e2e_status rb{
+    const qnpeps_status rb{
         run_schedule(f, gpus, ns, ns_cap, ns, dim_batch, rel, abs_cut, lr, 3, base)
     };
     setenv("QNPEPS_E2E_INJECT_DELAY_GPU", "1:40", 1);
-    const qnpeps_e2e_status rd{
+    const qnpeps_status rd{
         run_schedule(f, gpus, ns, ns_cap, ns, dim_batch, rel, abs_cut, lr, 3, delayed)
     };
     unsetenv("QNPEPS_E2E_INJECT_DELAY_GPU");
     char note[160]{};
-    if (rb != QNPEPS_E2E_OK or rd != QNPEPS_E2E_OK or base.size() != delayed.size() or base.empty())
+    if (rb != QNPEPS_OK or rd != QNPEPS_OK or base.size() != delayed.size() or base.empty())
     {
         std::snprintf(
             note,
             sizeof(note),
             "run_status base=%s delay=%s",
-            qnpeps_e2e_strerror(rb),
-            qnpeps_e2e_strerror(rd)
+            qnpeps_last_error(),
+            qnpeps_last_error()
         );
         set_line("d_delay_content_invariant", false, note);
         return 1;
@@ -1017,18 +1071,17 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     qnpeps_e2e_node* granular{};
     qnpeps_e2e_node* fused_f64{};
     qnpeps_e2e_node* fused_f32{};
-    const qnpeps_e2e_status create_granular{
+    const qnpeps_status create_granular{
         qnpeps_e2e_node_create(&f.cfg, 1, ns_cap, 0, ns, 0, &f.tt, &granular)
     };
-    const qnpeps_e2e_status create_f64{
+    const qnpeps_status create_f64{
         qnpeps_e2e_node_create(&f.cfg, 1, ns_cap, 0, ns, 0, &f.tt, &fused_f64)
     };
-    const qnpeps_e2e_status create_f32{
+    const qnpeps_status create_f32{
         qnpeps_e2e_node_create(&f.cfg, 1, ns_cap, 0, ns, 0, &f.tt, &fused_f32)
     };
     const bool create_ok{
-        create_granular == QNPEPS_E2E_OK and create_f64 == QNPEPS_E2E_OK
-        and create_f32 == QNPEPS_E2E_OK
+        create_granular == QNPEPS_OK and create_f64 == QNPEPS_OK and create_f32 == QNPEPS_OK
     };
     set_line("f_one_step_create", create_ok, create_ok ? "" : "node create failed");
     if (not create_ok)
@@ -1057,15 +1110,11 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     qnpeps_e2e_node_submit_theta(fused_f32, d_initial);
 
     StepOut reference{};
-    const qnpeps_e2e_status reference_status{
+    const qnpeps_status reference_status{
         node_step_capture(granular, ns, rel, abs_cut, f.dense, f.sites, reference)
     };
-    set_line(
-        "f_granular_producer",
-        reference_status == QNPEPS_E2E_OK,
-        qnpeps_e2e_strerror(reference_status)
-    );
-    if (reference_status != QNPEPS_E2E_OK) ++fails;
+    set_line("f_granular_producer", reference_status == QNPEPS_OK, qnpeps_last_error());
+    if (reference_status != QNPEPS_OK) ++fails;
 
     qnpeps::CuArray<double, 2> e_mean_f64{};
     double e_var_f64{};
@@ -1087,14 +1136,12 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     args_f64.energy_variance_output = &e_var_f64;
     args_f64.ess_output = &ess_f64;
 
-    const qnpeps_e2e_status bad_f64{qnpeps_e2e_node_step_euler(fused_f64, &args_f64)};
-    set_line(
-        "f_wrong_f64_width", bad_f64 == QNPEPS_E2E_ERR_BAD_CONFIG, qnpeps_e2e_strerror(bad_f64)
-    );
-    if (bad_f64 != QNPEPS_E2E_ERR_BAD_CONFIG) ++fails;
+    const qnpeps_status bad_f64{qnpeps_e2e_node_step_euler(fused_f64, &args_f64)};
+    set_line("f_wrong_f64_width", bad_f64 == QNPEPS_ERR_BAD_CONFIG, qnpeps_last_error());
+    if (bad_f64 != QNPEPS_ERR_BAD_CONFIG) ++fails;
 
     args_f64.state_f64_bytes = state_bytes;
-    const qnpeps_e2e_status f64_status{qnpeps_e2e_node_step_euler(fused_f64, &args_f64)};
+    const qnpeps_status f64_status{qnpeps_e2e_node_step_euler(fused_f64, &args_f64)};
     auto theta_f64 = std::vector<cf32>(static_cast<std::size_t>(f.dense));
     auto state_f64 = std::vector<double>(initial_f64.size());
     auto peps_f64 = std::vector<float>(f.hpeps0.size());
@@ -1106,14 +1153,14 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
         layout_update_f64(f.cfg, initial_f64, reference.theta, learning_rate)
     };
     const std::vector<float> expected_f64_emit{quantize_f64(expected_f64)};
-    const bool f64_direction{f64_status == QNPEPS_E2E_OK and theta_eq(theta_f64, reference.theta)};
+    const bool f64_direction{f64_status == QNPEPS_OK and theta_eq(theta_f64, reference.theta)};
     const bool f64_stats{
-        f64_status == QNPEPS_E2E_OK and e_mean_f64[0] == reference.e_mean[0]
+        f64_status == QNPEPS_OK and e_mean_f64[0] == reference.e_mean[0]
         and e_mean_f64[1] == reference.e_mean[1] and e_var_f64 == reference.e_var
         and ess_f64 == reference.ess
     };
-    const bool f64_state{f64_status == QNPEPS_E2E_OK and bytes_equal(state_f64, expected_f64)};
-    const bool f64_emit{f64_status == QNPEPS_E2E_OK and bytes_equal(peps_f64, expected_f64_emit)};
+    const bool f64_state{f64_status == QNPEPS_OK and bytes_equal(state_f64, expected_f64)};
+    const bool f64_emit{f64_status == QNPEPS_OK and bytes_equal(peps_f64, expected_f64_emit)};
     set_line("f_f64_direction", f64_direction, "");
     set_line("f_f64_stats", f64_stats, "");
     set_line("f_f64_layout_state", f64_state, "");
@@ -1123,20 +1170,20 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     fails += not f64_state;
     fails += not f64_emit;
 
-    if (f64_status == QNPEPS_E2E_OK)
+    if (f64_status == QNPEPS_OK)
     {
         qnpeps_e2e_node_submit_theta(granular, d_peps_f64);
         StepOut granular_next{};
         StepOut fused_next{};
-        const qnpeps_e2e_status granular_next_status{
+        const qnpeps_status granular_next_status{
             node_step_capture(granular, ns, rel, abs_cut, f.dense, f.sites, granular_next)
         };
-        const qnpeps_e2e_status fused_next_status{
+        const qnpeps_status fused_next_status{
             node_step_capture(fused_f64, ns, rel, abs_cut, f.dense, f.sites, fused_next)
         };
         char note[160]{};
         const bool submitted{
-            granular_next_status == QNPEPS_E2E_OK and fused_next_status == QNPEPS_E2E_OK
+            granular_next_status == QNPEPS_OK and fused_next_status == QNPEPS_OK
             and all_eq(granular_next, fused_next, note, sizeof(note))
         };
         set_line("f_theta_next_submitted", submitted, note);
@@ -1160,14 +1207,12 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     args_f32.energy_mean_output = e_mean_f32.data();
     args_f32.energy_variance_output = &e_var_f32;
     args_f32.ess_output = &ess_f32;
-    const qnpeps_e2e_status bad_f32{qnpeps_e2e_node_step_euler(fused_f32, &args_f32)};
-    set_line(
-        "f_wrong_f32_width", bad_f32 == QNPEPS_E2E_ERR_BAD_CONFIG, qnpeps_e2e_strerror(bad_f32)
-    );
-    if (bad_f32 != QNPEPS_E2E_ERR_BAD_CONFIG) ++fails;
+    const qnpeps_status bad_f32{qnpeps_e2e_node_step_euler(fused_f32, &args_f32)};
+    set_line("f_wrong_f32_width", bad_f32 == QNPEPS_ERR_BAD_CONFIG, qnpeps_last_error());
+    if (bad_f32 != QNPEPS_ERR_BAD_CONFIG) ++fails;
 
     args_f32.theta_dot_bytes = peps_bytes;
-    const qnpeps_e2e_status f32_status{qnpeps_e2e_node_step_euler(fused_f32, &args_f32)};
+    const qnpeps_status f32_status{qnpeps_e2e_node_step_euler(fused_f32, &args_f32)};
     auto theta_f32 = std::vector<cf32>(static_cast<std::size_t>(f.dense));
     auto peps_f32 = std::vector<float>(f.hpeps0.size());
     cudaMemcpy(theta_f32.data(), d_theta_f32, peps_bytes, cudaMemcpyDeviceToHost);
@@ -1175,13 +1220,13 @@ auto case_f(const Fix& f, int ns, double rel, double abs_cut, double learning_ra
     const std::vector<float> expected_f32{
         layout_update_f32(f.cfg, f.hpeps0, reference.theta, learning_rate)
     };
-    const bool f32_direction{f32_status == QNPEPS_E2E_OK and theta_eq(theta_f32, reference.theta)};
+    const bool f32_direction{f32_status == QNPEPS_OK and theta_eq(theta_f32, reference.theta)};
     const bool f32_stats{
-        f32_status == QNPEPS_E2E_OK and e_mean_f32[0] == reference.e_mean[0]
+        f32_status == QNPEPS_OK and e_mean_f32[0] == reference.e_mean[0]
         and e_mean_f32[1] == reference.e_mean[1] and e_var_f32 == reference.e_var
         and ess_f32 == reference.ess
     };
-    const bool f32_state{f32_status == QNPEPS_E2E_OK and bytes_equal(peps_f32, expected_f32)};
+    const bool f32_state{f32_status == QNPEPS_OK and bytes_equal(peps_f32, expected_f32)};
     set_line("f_f32_direction", f32_direction, "");
     set_line("f_f32_stats", f32_stats, "");
     set_line("f_f32_layout_state", f32_state, "");
@@ -1215,12 +1260,12 @@ auto case_e(const Fix& f, int gpus, int ns, std::int64_t dim_batch, double rel, 
     for (int rep{0}; rep < 5; ++rep)
     {
         qnpeps_e2e_node* n{};
-        const qnpeps_e2e_status cs{
+        const qnpeps_status cs{
             qnpeps_e2e_node_create(&f.cfg, gpus, ns_cap, ns, dim_batch, 0, &f.tt, &n)
         };
-        if (cs != QNPEPS_E2E_OK)
+        if (cs != QNPEPS_OK)
         {
-            set_line("e_create_destroy_cycle", false, qnpeps_e2e_strerror(cs));
+            set_line("e_create_destroy_cycle", false, qnpeps_last_error());
             return 1;
         }
         qnpeps_e2e_node_destroy(n);
@@ -1249,24 +1294,166 @@ auto case_e(const Fix& f, int gpus, int ns, std::int64_t dim_batch, double rel, 
         );
         qnpeps_e2e_node_submit_theta(n, d_theta);
         StepOut o1{};
-        const qnpeps_e2e_status s1{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o1)};
+        const qnpeps_status s1{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o1)};
         StepOut o2{};
-        const qnpeps_e2e_status s2{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o2)};
-        const bool dead_ok{s1 == QNPEPS_E2E_ERR_OOM and s2 == QNPEPS_E2E_ERR_OOM};
+        const qnpeps_status s2{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o2)};
+        const bool dead_ok{s1 == QNPEPS_ERR_OOM and s2 == QNPEPS_ERR_OOM};
         std::snprintf(
-            note,
-            sizeof(note),
-            "step1=%s step2=%s",
-            qnpeps_e2e_strerror(s1),
-            qnpeps_e2e_strerror(s2)
+            note, sizeof(note), "step1=%s step2=%s", qnpeps_last_error(), qnpeps_last_error()
         );
         set_line("e_oom_step_cleanly_dead", dead_ok, note);
         if (not dead_ok) ++fails;
-        const qnpeps_e2e_status ds{qnpeps_e2e_node_destroy(n)};
-        set_line("e_destroy_after_fail", ds == QNPEPS_E2E_OK, qnpeps_e2e_strerror(ds));
-        if (ds != QNPEPS_E2E_OK) ++fails;
+        const qnpeps_status ds{qnpeps_e2e_node_destroy(n)};
+        set_line("e_destroy_after_fail", ds == QNPEPS_OK, qnpeps_last_error());
+        if (ds != QNPEPS_OK) ++fails;
         cudaFree(d_theta);
     }
+    return fails;
+}
+
+struct DeviceMemory
+{
+    std::size_t outside_free{};
+    QnpepsArenaReading arena{};
+};
+
+auto device_memory(int gpus) -> std::vector<DeviceMemory>
+{
+    std::vector<DeviceMemory> memory(static_cast<std::size_t>(gpus));
+    for (int g{0}; g < gpus; ++g)
+    {
+        auto& entry{memory[static_cast<std::size_t>(g)]};
+        std::size_t total{0};
+        cudaSetDevice(g);
+        cudaDeviceSynchronize();
+        cudaMemGetInfo(&entry.outside_free, &total);
+        entry.arena.struct_size = sizeof(QnpepsArenaReading);
+        qnpeps_device_arena_reading(g, &entry.arena);
+    }
+    cudaSetDevice(0);
+    return memory;
+}
+
+auto arena_lease_case(const Fix& f, int gpus, int ns) -> int
+{
+    constexpr std::int64_t k_lease_capacity{8192};
+    constexpr long long k_outside_growth_bound{512ll << 20};
+    const std::int64_t dim_batch{ns / 2};
+    const auto gram_bytes{
+        static_cast<unsigned long long>(k_lease_capacity * k_lease_capacity) * sizeof(cf32)
+    };
+    int fails{0};
+    char note[256]{};
+
+    const auto create = [&](std::int64_t capacity, qnpeps_e2e_node** node)
+    { return qnpeps_e2e_node_create(&f.cfg, gpus, capacity, 0, dim_batch, 0, &f.tt, node); };
+
+    {
+        qnpeps_e2e_node* warm{};
+        if (create(k_lease_capacity, &warm) != QNPEPS_OK)
+        {
+            set_line("g_lease_create", false, qnpeps_last_error());
+            return 1;
+        }
+        qnpeps_e2e_node_destroy(warm);
+    }
+
+    const auto before{device_memory(gpus)};
+    qnpeps_e2e_node* first{};
+    if (create(k_lease_capacity, &first) != QNPEPS_OK)
+    {
+        set_line("g_lease_create", false, qnpeps_last_error());
+        return 1;
+    }
+    const auto held{device_memory(gpus)};
+    qnpeps_e2e_node_destroy(first);
+    const auto released{device_memory(gpus)};
+    qnpeps_e2e_node* second{};
+    const qnpeps_status second_status{create(k_lease_capacity, &second)};
+    const auto held_again{device_memory(gpus)};
+    qnpeps_e2e_node_destroy(second);
+    const auto released_again{device_memory(gpus)};
+
+    long long worst_outside_growth{0};
+    bool leases_grow{true};
+    bool leases_return{true};
+    bool leases_repeat{second_status == QNPEPS_OK};
+    for (int g{0}; g < gpus; ++g)
+    {
+        const auto index{static_cast<std::size_t>(g)};
+        const auto& start{before[index]};
+        const long long outside_growth{
+            static_cast<long long>(start.outside_free)
+            - static_cast<long long>(held[index].outside_free)
+        };
+        worst_outside_growth = std::max(worst_outside_growth, outside_growth);
+        const auto leased_bytes{held[index].arena.in_use_bytes - start.arena.in_use_bytes};
+        const auto minimum_leased{g == 0 ? gram_bytes : 1ull};
+        if (held[index].arena.in_use_bytes < start.arena.in_use_bytes) leases_grow = false;
+        if (leased_bytes < minimum_leased) leases_grow = false;
+        for (const auto* after : {&released[index], &released_again[index]})
+        {
+            if (after->arena.in_use_bytes != start.arena.in_use_bytes) leases_return = false;
+            if (after->arena.quarantined_count != start.arena.quarantined_count)
+                leases_return = false;
+        }
+        if (held_again[index].arena.in_use_bytes != held[index].arena.in_use_bytes)
+            leases_repeat = false;
+        if (held_again[index].arena.top_bytes != held[index].arena.top_bytes) leases_repeat = false;
+    }
+    const bool outside_ok{worst_outside_growth <= k_outside_growth_bound};
+    std::snprintf(
+        note,
+        sizeof(note),
+        "worst outside-arena growth=%lld bytes, bound=%lld",
+        worst_outside_growth,
+        k_outside_growth_bound
+    );
+    set_line("g_node_outside_arena", outside_ok, note);
+    if (not outside_ok) ++fails;
+    std::snprintf(
+        note,
+        sizeof(note),
+        "gpu0 leased=%llu bytes, gram=%llu",
+        static_cast<unsigned long long>(held[0].arena.in_use_bytes - before[0].arena.in_use_bytes),
+        gram_bytes
+    );
+    set_line("g_node_leases_in_arena", leases_grow, note);
+    if (not leases_grow) ++fails;
+    set_line("g_destroy_returns_leases", leases_return, "");
+    if (not leases_return) ++fails;
+    set_line("g_create_again_same_leases", leases_repeat, qnpeps_last_error());
+    if (not leases_repeat) ++fails;
+
+    const auto oversize_capacity{static_cast<std::int64_t>(
+        std::sqrt(static_cast<double>(before[0].arena.capacity_bytes) / sizeof(cf32))
+        + k_lease_capacity
+    )};
+    qnpeps_e2e_node* oversize{};
+    const qnpeps_status oversize_status{create(oversize_capacity, &oversize)};
+    const std::string oversize_message{qnpeps_last_error()};
+    const auto after_oversize{device_memory(gpus)};
+    bool oversize_ok{oversize_status == QNPEPS_ERR_OOM and oversize == nullptr};
+    oversize_ok = oversize_ok and oversize_message.find("node buffer gram") != std::string::npos;
+    oversize_ok = oversize_ok and oversize_message.find("bytes free") != std::string::npos;
+    for (int g{0}; g < gpus; ++g)
+    {
+        const auto index{static_cast<std::size_t>(g)};
+        const auto& start{before[index].arena};
+        if (after_oversize[index].arena.in_use_bytes != start.in_use_bytes) oversize_ok = false;
+        if (after_oversize[index].arena.quarantined_count != start.quarantined_count)
+            oversize_ok = false;
+    }
+    std::snprintf(
+        note,
+        sizeof(note),
+        "capacity=%lld status=%d %s",
+        static_cast<long long>(oversize_capacity),
+        static_cast<int>(oversize_status),
+        oversize_message.c_str()
+    );
+    set_line("g_oversize_names_buffer", oversize_ok, note);
+    if (not oversize_ok) ++fails;
     return fails;
 }
 
@@ -1293,7 +1480,13 @@ auto run_case(int lx, int ly, int D, int chi, int ns, int meo, double rel, doubl
     if (auto e{std::getenv("QNPEPS_E2E_GATE_LR")}; e and e[0]) lr = std::atof(e);
     int fails{0};
 
-    fails += case_a(f, gpus, ns, rel, abs_cut, lr);
+    fails += case_a(f, gpus, ns, rel, abs_cut, lr, "a", gpus == 1);
+    {
+        Fix rangefinder{f};
+        rangefinder.cfg.truncation_route = QNPEPS_TRUNCATION_RANGEFINDER;
+        rangefinder.tt = rangefinder.terms.table();
+        fails += case_a(rangefinder, gpus, ns, rel, abs_cut, lr, "a_rangefinder", true);
+    }
     fails +=
         determinism_case(f, gpus, ns, 2 * ns + 8, ns, ns / 2, rel, abs_cut, lr, "b_lag1_twice");
     fails += determinism_case(
@@ -1308,6 +1501,7 @@ auto run_case(int lx, int ly, int D, int chi, int ns, int meo, double rel, doubl
     fails += case_c(f, gpus, ns, ns / 2, rel, abs_cut, lr);
     if (gpus >= 2) fails += case_d(f, gpus, ns, ns / 2, rel, abs_cut, lr);
     fails += case_e(f, gpus, ns, ns / 2, rel, abs_cut);
+    fails += arena_lease_case(f, gpus, ns);
     const Fix layout_fixture{build_fixture(2, 3, 2, 8, 4)};
     fails += case_f(layout_fixture, 16, rel, abs_cut, 0.0312500074505806);
 

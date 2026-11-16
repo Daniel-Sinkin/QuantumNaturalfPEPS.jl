@@ -47,10 +47,10 @@ class Axes
 
     [[nodiscard]] static auto ensure_valid(std::vector<int> values) -> std::vector<int>
     {
-        if (is_axes(values)) return values;
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
+        require(
+            is_axes(values), "axis list of length {} repeats or negates an axis", values.size()
+        );
+        return values;
     }
 
     std::vector<int> axes_{};
@@ -81,12 +81,9 @@ class Permutation
     template <typename T>
     [[nodiscard]] auto apply(const std::vector<T>& xs) const -> std::vector<T>
     {
-        if (not can_apply_to(xs))
-        {
-            assert(false);
-            qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-            return {};
-        }
+        require(
+            can_apply_to(xs), "permutation of rank {} applied to {} values", perm_.size(), xs.size()
+        );
         std::vector<T> out{};
         out.reserve(perm_.size());
         for (const auto p : perm_)
@@ -129,10 +126,10 @@ class Permutation
   private:
     [[nodiscard]] static auto ensure_valid(std::vector<int> values) -> std::vector<int>
     {
-        if (is_permutation(values)) return values;
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
+        require(
+            is_permutation(values), "axis order of length {} is not a permutation", values.size()
+        );
+        return values;
     }
 
     std::vector<int> perm_{};

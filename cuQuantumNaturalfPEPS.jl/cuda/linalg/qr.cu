@@ -5,7 +5,6 @@
 #include "linalg/scratch.cuh"
 
 #include <algorithm>
-#include <cassert>
 #include <cusolverDn.h>
 
 namespace qnpeps
@@ -14,11 +13,9 @@ namespace qnpeps
 auto Linalg::qr_workspace_count(int rows, int cols) -> int
 {
     int factor_count{};
-    CUSOLVER_CHECK(
-        cusolverDnCgeqrf_bufferSize(solver_->get(), rows, cols, nullptr, rows, &factor_count)
-    );
+    check(cusolverDnCgeqrf_bufferSize(solver_->get(), rows, cols, nullptr, rows, &factor_count));
     int form_count{};
-    CUSOLVER_CHECK(cusolverDnCungqr_bufferSize(
+    check(cusolverDnCungqr_bufferSize(
         solver_->get(), rows, cols, cols, nullptr, rows, nullptr, &form_count
     ));
     return std::max({factor_count, form_count, 1});
@@ -26,12 +23,8 @@ auto Linalg::qr_workspace_count(int rows, int cols) -> int
 
 auto Linalg::qr_scratch(int rows, int cols) -> QrScratch
 {
-    if (rows <= 0 or cols <= 0 or rows < cols)
-    {
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    const auto valid_shape = rows > 0 and cols > 0 and rows >= cols;
+    require(valid_shape, "QR scratch rejects a {}x{} matrix", rows, cols);
     const auto workspace_count = qr_workspace_count(rows, cols);
     const auto num_cols = static_cast<usize>(cols);
     const auto workspace_size = static_cast<usize>(workspace_count);
@@ -55,19 +48,14 @@ auto Linalg::qr(CuMatrixCF32 matrix, void* scratch, const QrScratch& layout) -> 
     const auto valid_matrix = matrix.data() != nullptr;
     const auto valid_scratch = scratch and layout.total() > 0;
     const auto valid = valid_dimensions and valid_matrix and valid_scratch;
-    if (not valid)
-    {
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "QR rejects a {}x{} matrix", rows, cols);
     auto* reflector_scalars = byte_offset<cuFloatComplex>(scratch, 0);
     auto* device_status = byte_offset<int>(scratch, layout.reflector_bytes);
     const auto workspace_offset = layout.reflector_bytes + layout.status_bytes;
     auto* solver_workspace = byte_offset<cuFloatComplex>(scratch, workspace_offset);
     const auto workspace_elements = layout.workspace_bytes / sizeof(cuFloatComplex);
     const auto workspace_size = static_cast<int>(workspace_elements);
-    CUSOLVER_CHECK(cusolverDnCgeqrf(
+    check(cusolverDnCgeqrf(
         solver_->get(),
         rows,
         cols,
@@ -78,7 +66,7 @@ auto Linalg::qr(CuMatrixCF32 matrix, void* scratch, const QrScratch& layout) -> 
         workspace_size,
         device_status
     ));
-    CUSOLVER_CHECK(cusolverDnCungqr(
+    check(cusolverDnCungqr(
         solver_->get(),
         rows,
         cols,
@@ -94,7 +82,7 @@ auto Linalg::qr(CuMatrixCF32 matrix, void* scratch, const QrScratch& layout) -> 
 
 auto Linalg::qr_factor(CuMatrixCF32 matrix, const QrStageConfig& config) -> void
 {
-    CUSOLVER_CHECK(cusolverDnCgeqrf(
+    check(cusolverDnCgeqrf(
         solver_->get(),
         matrix.rows(),
         matrix.cols(),
@@ -109,7 +97,7 @@ auto Linalg::qr_factor(CuMatrixCF32 matrix, const QrStageConfig& config) -> void
 
 auto Linalg::qr_form(CuMatrixCF32 matrix, const QrStageConfig& config) -> void
 {
-    CUSOLVER_CHECK(cusolverDnCungqr(
+    check(cusolverDnCungqr(
         solver_->get(),
         matrix.rows(),
         matrix.cols(),

@@ -2,11 +2,11 @@
 #define QNPEPS_SESSION_CUH
 
 #include "core/cuda_utils.cuh"
+#include "core/defer.cuh"
 #include "linalg/linalg.cuh"
 
 #include <cuda_runtime.h>
 #include <memory>
-#include <new>
 #include <utility>
 
 namespace qnpeps
@@ -21,8 +21,8 @@ class Session
         const auto switched = have_caller and device_ >= 0 and caller_device != device_
                               and cudaSetDevice(device_) == cudaSuccess;
         linalg_.reset();
-        if (owns_stream_ and stream_) CUDA_NOCHECK(cudaStreamDestroy(stream_));
-        if (switched) CUDA_NOCHECK(cudaSetDevice(caller_device));
+        if (owns_stream_ and stream_) unchecked(cudaStreamDestroy(stream_));
+        if (switched) unchecked(cudaSetDevice(caller_device));
     }
 
     Session(const Session&) = delete;
@@ -53,35 +53,28 @@ class Session
     cudaStream_t stream, unsigned stream_flags = cudaStreamDefault
 ) -> std::unique_ptr<Session>
 {
-    if (err_state() != QNPEPS_OK) return nullptr;
     int device{};
-    CUDA_CHECK(cudaGetDevice(&device));
-    if (err_state() != QNPEPS_OK) return nullptr;
+    check(cudaGetDevice(&device));
 
     auto stream_use = stream;
     auto owns_stream = false;
     if (not stream_use)
     {
-        CUDA_CHECK(cudaStreamCreateWithFlags(&stream_use, stream_flags));
-        if (err_state() != QNPEPS_OK) return nullptr;
+        check(cudaStreamCreateWithFlags(&stream_use, stream_flags));
         owns_stream = true;
     }
+    auto stream_adopted = false;
+    const Defer stream_cleanup{[&]
+                               {
+                                   if (owns_stream and not stream_adopted)
+                                       unchecked(cudaStreamDestroy(stream_use));
+                               }};
 
     auto linalg = make_linalg(stream_use);
-    if (not linalg)
-    {
-        if (owns_stream) CUDA_NOCHECK(cudaStreamDestroy(stream_use));
-        return nullptr;
-    }
     std::unique_ptr<Session> session{
-        new (std::nothrow) Session{device, stream_use, owns_stream, std::move(linalg)}
+        new Session{device, stream_use, owns_stream, std::move(linalg)}
     };
-    if (not session)
-    {
-        linalg.reset();
-        if (owns_stream) CUDA_NOCHECK(cudaStreamDestroy(stream_use));
-        set_err(QNPEPS_ERR_OOM);
-    }
+    stream_adopted = true;
     return session;
 }
 }

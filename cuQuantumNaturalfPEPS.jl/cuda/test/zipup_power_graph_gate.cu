@@ -66,19 +66,20 @@ auto main() -> int
     const auto lane_zero_captured = context->dlenv.lanes[0].graph != nullptr;
     const auto build_count_before_failure = context->dlenv.build_count;
     const auto failure = qnpeps_ctx_build_dlenv(context, overflow, nullptr);
-    const auto failure_message = std::string{qnpeps_last_error_message()};
+    const auto failure_message = std::string{qnpeps_last_error()};
     const auto build_count_after_failure = context->dlenv.build_count;
     const auto recovery = qnpeps_ctx_build_dlenv(context, normal, nullptr);
     const auto recovery_lane = context->dlenv.active_lane;
     const auto large_scale = qnpeps_ctx_build_dlenv(context, scaled, nullptr);
 
-    const auto passed = first == QNPEPS_OK and second == QNPEPS_OK and third == QNPEPS_OK
-                        and lane_one_captured and lane_zero_captured
-                        and build_count_before_failure == 3 and failure == QNPEPS_ERR_INTERNAL
-                        and failure_message == "nonfinite zipup power intermediate"
-                        and build_count_after_failure == build_count_before_failure
-                        and recovery == QNPEPS_OK and recovery_lane == 1
-                        and context->dlenv.build_count == 5 and large_scale == QNPEPS_OK;
+    const auto passed =
+        first == QNPEPS_OK and second == QNPEPS_OK and third == QNPEPS_OK and lane_one_captured
+        and lane_zero_captured and build_count_before_failure == 3
+        and failure == QNPEPS_ERR_INTERNAL
+        and failure_message.find("] nonfinite zipup power intermediate, failure flags ")
+                != std::string::npos
+        and build_count_after_failure == build_count_before_failure and recovery == QNPEPS_OK
+        and recovery_lane == 1 and context->dlenv.build_count == 5 and large_scale == QNPEPS_OK;
     std::printf(
         "case,status,passed,build_count,lane_zero_graph,lane_one_graph,message\n"
         "graph_failure_recovery,%d,%d,%d,%d,%d,%s\n",

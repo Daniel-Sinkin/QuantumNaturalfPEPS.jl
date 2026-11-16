@@ -1,6 +1,6 @@
 #include "core/complex.cuh"
 #include "core/cuda_utils.cuh"
-#include "core/error.cuh"
+#include "core/error.hpp"
 #include "core/predicates.cuh"
 #include "linalg/linalg.cuh"
 #include "minsr/kernels.cuh"
@@ -168,15 +168,14 @@ __global__ auto cu_cast_accumulator(cf* output, const cd* accumulator, i64 count
     }
 }
 
-[[nodiscard]] auto launch_canonicalize_eigenvectors(Linalg& linalg, cd* matrix, int order)
-    -> qnpeps_status
+auto launch_canonicalize_eigenvectors(Linalg& linalg, cd* matrix, int order) -> void
 {
     const auto order_bound = static_cast<u32>(order);
     const auto blocks = (order_bound + k_eigenvector_threads - 1) / k_eigenvector_threads;
     cu_canonicalize_eigenvectors<<<blocks, k_eigenvector_threads, 0, linalg.stream()>>>(
         matrix, order
     );
-    return qnpeps::cuda_status(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_beta(Linalg& linalg, const BetaArgs& args) -> void
@@ -184,7 +183,7 @@ auto launch_beta(Linalg& linalg, const BetaArgs& args) -> void
     cu_beta<<<grid_blocks_exact(args.sample_count), k_threads_per_block, 0, linalg.stream()>>>(
         args
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_build_matrix(Linalg& linalg, const BuildMatrixArgs& args) -> void
@@ -194,7 +193,7 @@ auto launch_build_matrix(Linalg& linalg, const BuildMatrixArgs& args) -> void
     const auto block_count = (sample_count + k_matrix_block_width - 1) / k_matrix_block_width;
     const dim3 grid{block_count, block_count};
     cu_build_matrix<<<grid, block, 0, linalg.stream()>>>(args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_apply_inverse(Linalg& linalg, const ApplyInverseArgs& args) -> void
@@ -204,7 +203,7 @@ auto launch_apply_inverse(Linalg& linalg, const ApplyInverseArgs& args) -> void
         k_threads_per_block,
         0,
         linalg.stream()>>>(args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_scatter(Linalg& linalg, const ScatterArgs& args) -> void
@@ -212,7 +211,7 @@ auto launch_scatter(Linalg& linalg, const ScatterArgs& args) -> void
     cu_scatter<<<grid_blocks_exact(args.compact_count), k_threads_per_block, 0, linalg.stream()>>>(
         args
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto launch_cast_accumulator(Linalg& linalg, cf* output, const cd* accumulator, i64 count) -> void
@@ -220,6 +219,6 @@ auto launch_cast_accumulator(Linalg& linalg, cf* output, const cd* accumulator, 
     cu_cast_accumulator<<<grid_blocks_exact(count), k_threads_per_block, 0, linalg.stream()>>>(
         output, accumulator, count
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 }

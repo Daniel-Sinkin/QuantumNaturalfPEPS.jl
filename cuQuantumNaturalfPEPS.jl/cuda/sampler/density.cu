@@ -182,7 +182,7 @@ auto product(
         k_threads_per_block,
         0,
         linalg.stream()>>>(product_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto apply_row(
@@ -198,7 +198,7 @@ auto apply_row(
     cuFloatComplex* output,
     i64 output_site_stride,
     bool normalize
-) -> bool
+) -> void
 {
     auto& sampler = ctx.sampler.samp;
     auto& storage = ctx.sampler.density;
@@ -238,8 +238,14 @@ auto apply_row(
         );
         state_offset += input_count;
     }
-    CUDA_CHECK(cudaGetLastError());
-    if (state_offset > storage.state_value_count or err_state() != QNPEPS_OK) return false;
+    check(cudaGetLastError());
+    require(
+        state_offset <= storage.state_value_count,
+        "sampler density row {} needs {} state values, {} reserved",
+        row,
+        state_offset,
+        storage.state_value_count
+    );
     const ProductContext context{&sampler, &config, row, projected};
     densitymatrix::apply(
         ctx.linalg(),
@@ -267,12 +273,10 @@ auto apply_row(
          .product = product,
          .product_context = &context}
     );
-    if (err_state() != QNPEPS_OK) return false;
     download_async(
         ctx.linalg(), storage.host_dimensions.data(), storage.result_dimensions, 3 * sites
     );
-    CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
-    if (err_state() != QNPEPS_OK) return false;
+    check(cudaStreamSynchronize(ctx.linalg().stream()));
     output_bonds.assign(sites + 1, 1);
     for (auto site_index = 0_uz; site_index < sites; ++site_index)
     {
@@ -280,7 +284,16 @@ auto apply_row(
         const auto physical = static_cast<i64>(storage.host_dimensions[dimension_offset]);
         const auto right = static_cast<i64>(storage.host_dimensions[dimension_offset + 1]);
         const auto left = static_cast<i64>(storage.host_dimensions[dimension_offset + 2]);
-        if (left < 1 or right < 1 or physical < 1) return set_err(QNPEPS_ERR_INTERNAL), false;
+        const auto positive = left >= 1 and right >= 1 and physical >= 1;
+        require(
+            positive,
+            "sampler density row {} site {} produced extents {}x{}x{}",
+            row,
+            site_index,
+            left,
+            physical,
+            right
+        );
         output_bonds[site_index] = static_cast<int>(left);
         output_bonds[site_index + 1] = static_cast<int>(right);
         const auto pack_args = PackArgs{
@@ -302,8 +315,7 @@ auto apply_row(
             storage.normalization_log, sampler.lognorm()
         );
     }
-    CUDA_CHECK(cudaGetLastError());
-    return err_state() == QNPEPS_OK;
+    check(cudaGetLastError());
 }
 }
 
@@ -324,9 +336,9 @@ auto build_density_state_row(
     int environment_index,
     std::span<const int> input_bonds,
     std::vector<int>& output_bonds
-) -> bool
+) -> void
 {
-    return apply_row(
+    apply_row(
         ctx,
         config,
         row,
@@ -350,9 +362,9 @@ auto build_density_projected_row(
     int output_environment_index,
     std::span<const int> input_bonds,
     std::vector<int>& output_bonds
-) -> bool
+) -> void
 {
-    return apply_row(
+    apply_row(
         ctx,
         config,
         row,

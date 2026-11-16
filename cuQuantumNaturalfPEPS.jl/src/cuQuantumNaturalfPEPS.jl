@@ -15,13 +15,15 @@ include("capi/ffi_extensions.jl")
 
 export QnpepsConfig
 export TRUNCATION_DEFAULT, TRUNCATION_SVD, TRUNCATION_HOUSEHOLDER, TRUNCATION_DENSITY
+export TRUNCATION_DENSITY_BATCHED, TRUNCATION_RANGEFINDER
 export QnpepsElocConfig
-export QnpepsElocDiagBond, QnpepsElocFlipTerm, QnpepsElocTermTable, HeisenbergTerms
-export ELOC_DIAG_ONE_SITE_Z, ELOC_CAP_ONE_SITE_Z
+export QnpepsElocDiagonalTerm, QnpepsElocOffDiagonalPiece, QnpepsElocTermTable
+export OperatorTerms, add_operator!, ELOC_CAP_LOCAL_OPERATORS
 export QnpepsZipupPepsRowArgs, QnpepsZipupMpoMpsDesc, QnpepsZipupMpoMpsArgs
 export QnpepsDensitySettings, QnpepsDensityRankRecord, QnpepsDensityFilterArgs
 export QnpepsDensityWorkspaceSizes
 export QnpepsGramDesc, QnpepsGramArgs, QnpepsGramFootprint
+export QnpepsArenaReading, device_arena_reading
 export QnpepsMinsrDesc, QnpepsMinsrArgs
 export Peps, CuPeps, CuDlenv, CuDlenvBuilt, ZipupWorkspace, DlenvArenaPlan, DlenvHost
 export SamplerContext
@@ -51,14 +53,14 @@ export plan_sampler_host, refresh_sampler!, sample_multigpu!
 export FFI
 export heisenberg_terms, truncated_rydberg_terms, local_energies
 export EoHost, EoHostArguments, EoHostBindingState, EoHostLifecycleState
-export EoFlipClassification, EoTermClassification, EoTermTable
+export EoTermTable
 export eo_term_table, eo_host_term_table
 export eo_host_execute!, eo_host_warm!, bind_eo_host!, seal_eo_host!
 export eo_host_replace_buffers!, eo_host_binding_state
 export eo_host_row_pointers, eo_host_lifecycle_state
 export QnpepsE2eConfig
 export vmc_step!
-export VMCContext, submit_peps!, vmc_direction!, vmc_euler_step!
+export VMCContext, submit_peps!, vmc_direction!, vmc_euler_step!, wait_environment
 export NodeStepHost, NodeStepTelemetry, node_step!, bind_node_peps!
 export reset_node_step_schedule!
 export MinsrHost, MinsrHostInputs, MinsrHostStats, MinsrHostError
@@ -67,7 +69,7 @@ export minsr_host_run!, minsr_host_try_run!
 export dense_count, compact_count, eloc_compact_count
 export minsr_scratch_bytes
 export node_footprint_bytes
-export e2e_version, e2e_strerror, eloc_version, sampler_version
+export e2e_version, eloc_version, sampler_version
 export AbstractRunAdapter, IterationResult, RunNotice
 export RunEvent, RunnerConfig, RunnerControl, RunnerResult
 export AbstractEventSink, StreamEventSink, JsonlEventSink, TeeEventSink, CallbackEventSink

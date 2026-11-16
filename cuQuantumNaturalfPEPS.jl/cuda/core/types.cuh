@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cuda/std/array>
 #include <cuComplex.h>
+#include <format>
 #include <type_traits>
 
 namespace qnpeps
@@ -90,8 +91,8 @@ struct CuSpan
 
     CuSpan() = default;
     CuSpan(const CuSpan&) = default;
-    CuSpan(T* p_, i64 stride_) noexcept : p(p_), stride(stride_) {}
-    CuSpan(const CuSpan<std::remove_const_t<T>>& buffer) noexcept
+    CuSpan(T* p_, i64 stride_) : p(p_), stride(stride_) {}
+    CuSpan(const CuSpan<std::remove_const_t<T>>& buffer)
         requires std::is_const_v<T>
         : p(buffer.p), stride(buffer.stride)
     {
@@ -106,8 +107,8 @@ class CuMatrix
 {
   public:
     CuMatrix(const CuMatrix&) = default;
-    CuMatrix(T* data, int rows, int cols) noexcept : data_(data), rows_(rows), cols_(cols) {}
-    CuMatrix(const CuMatrix<std::remove_const_t<T>>& matrix) noexcept
+    CuMatrix(T* data, int rows, int cols) : data_(data), rows_(rows), cols_(cols) {}
+    CuMatrix(const CuMatrix<std::remove_const_t<T>>& matrix)
         requires std::is_const_v<T>
         : data_(matrix.data()), rows_(matrix.rows()), cols_(matrix.cols())
     {
@@ -129,20 +130,20 @@ class CuMatrixBatched
   public:
     CuMatrixBatched() = default;
     CuMatrixBatched(const CuMatrixBatched&) = default;
-    CuMatrixBatched(T* data, i64 stride, int rows, int cols) noexcept
+    CuMatrixBatched(T* data, i64 stride, int rows, int cols)
         : data_(data), stride_(stride), rows_(rows), cols_(cols)
     {
     }
-    CuMatrixBatched(const CuSpan<T>& buffer, int rows, int cols) noexcept
+    CuMatrixBatched(const CuSpan<T>& buffer, int rows, int cols)
         : CuMatrixBatched(buffer.p, buffer.stride, rows, cols)
     {
     }
-    CuMatrixBatched(const CuSpan<std::remove_const_t<T>>& buffer, int rows, int cols) noexcept
+    CuMatrixBatched(const CuSpan<std::remove_const_t<T>>& buffer, int rows, int cols)
         requires std::is_const_v<T>
         : CuMatrixBatched(buffer.p, buffer.stride, rows, cols)
     {
     }
-    CuMatrixBatched(const CuMatrixBatched<std::remove_const_t<T>>& matrix) noexcept
+    CuMatrixBatched(const CuMatrixBatched<std::remove_const_t<T>>& matrix)
         requires std::is_const_v<T>
         : data_(matrix.data()), stride_(matrix.stride()), rows_(matrix.rows()), cols_(matrix.cols())
     {
@@ -170,6 +171,36 @@ using CuMatrixBatchedCF32 = CuMatrixBatched<cuFloatComplex>;
 using CuMatrixBatchedCF32Const = CuMatrixBatched<const cuFloatComplex>;
 using CuSpanCF32 = CuSpan<cuFloatComplex>;
 using CuSpanCF32Const = CuSpan<const cuFloatComplex>;
+
+struct PlainFormatter
+{
+    constexpr auto parse(std::format_parse_context& context) -> std::format_parse_context::iterator
+    {
+        return context.begin();
+    }
+};
 }
+
+template <typename T>
+struct std::formatter<qnpeps::CuMatrix<T>> : qnpeps::PlainFormatter
+{
+    auto format(const qnpeps::CuMatrix<T>& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(context.out(), "{}x{}", value.rows(), value.cols());
+    }
+};
+
+template <typename T>
+struct std::formatter<qnpeps::CuMatrixBatched<T>> : qnpeps::PlainFormatter
+{
+    auto format(const qnpeps::CuMatrixBatched<T>& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(
+            context.out(), "{}x{} stride={}", value.rows(), value.cols(), value.stride()
+        );
+    }
+};
 
 #endif

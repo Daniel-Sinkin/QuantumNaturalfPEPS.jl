@@ -11,14 +11,10 @@ inline auto Linalg::gemv(
 {
     const auto valid =
         a.data() != nullptr and x != nullptr and y != nullptr and a.rows() > 0 and a.cols() > 0;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "gemv rejects a {}x{} operand", a.rows(), a.cols());
     const cuDoubleComplex alpha{cfg.alpha_real, cfg.alpha_imag};
     const cuDoubleComplex beta{cfg.beta_real, cfg.beta_imag};
-    CUBLAS_CHECK(cublasZgemv(
+    check(cublasZgemv(
         blas_->get(),
         to_cublas(cfg.op),
         a.rows(),
@@ -40,14 +36,10 @@ inline auto Linalg::matmul(
 {
     const auto shape = matmul_shape(cfg, a, b, c);
     const auto valid = shape.has_value() and a.data() and b.data() and c.data();
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "gemm rejects operands {}, {}, {}", a, b, c);
     const cuFloatComplex alpha{cfg.alpha_real, cfg.alpha_imag};
     const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
-    CUBLAS_CHECK(cublasCgemm(
+    check(cublasCgemm(
         blas_->get(),
         to_cublas(cfg.op_a),
         to_cublas(cfg.op_b),
@@ -71,14 +63,10 @@ inline auto Linalg::matmul(
 {
     const auto shape = matmul_shape(cfg, a, b, c);
     const auto valid = shape.has_value() and a.data() and b.data() and c.data();
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "gemm rejects operands {}, {}, {}", a, b, c);
     const cuDoubleComplex alpha{static_cast<f64>(cfg.alpha_real), static_cast<f64>(cfg.alpha_imag)};
     const cuDoubleComplex beta{static_cast<f64>(cfg.beta_real), static_cast<f64>(cfg.beta_imag)};
-    CUBLAS_CHECK(cublasZgemm(
+    check(cublasZgemm(
         blas_->get(),
         to_cublas(cfg.op_a),
         to_cublas(cfg.op_b),
@@ -119,14 +107,10 @@ inline auto Linalg::matmul_batched(
     const auto valid_b = b.data() and (b.stride() == 0 or b.stride() >= stored_elements(b));
     const auto valid_c = c.data() and c.stride() >= stored_elements(c);
     const auto valid = valid_shape and valid_batch and valid_a and valid_b and valid_c;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(valid, "batched gemm rejects operands {}, {}, {} over {} lanes", a, b, c, batch_size);
     const cuFloatComplex alpha{cfg.alpha_real, cfg.alpha_imag};
     const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
-    CUBLAS_CHECK(cublasCgemmStridedBatched(
+    check(cublasCgemmStridedBatched(
         blas_->get(),
         to_cublas(cfg.op_a),
         to_cublas(cfg.op_b),
@@ -153,6 +137,46 @@ inline auto Linalg::matmul_batched(
 ) -> void
 {
     matmul_batched(a, b, c, batch_size, MatmulConfig{});
+}
+
+inline auto Linalg::matmul_batched(
+    CuMatrixBatchedCF64Const a,
+    CuMatrixBatchedCF64Const b,
+    CuMatrixBatchedCF64 c,
+    int batch_size,
+    const MatmulConfig& cfg
+) -> void
+{
+    const auto shape = matmul_shape(cfg, a, b, c);
+    const auto stored_elements = [](const auto& x) -> i64
+    { return static_cast<i64>(x.rows()) * x.cols(); };
+    const auto valid_a = a.data() and (a.stride() == 0 or a.stride() >= stored_elements(a));
+    const auto valid_b = b.data() and (b.stride() == 0 or b.stride() >= stored_elements(b));
+    const auto valid_c = c.data() and c.stride() >= stored_elements(c);
+    const auto valid = shape.has_value() and batch_size > 0 and valid_a and valid_b and valid_c;
+    require(valid, "batched gemm rejects operands {}, {}, {} over {} lanes", a, b, c, batch_size);
+    const cuDoubleComplex alpha{static_cast<f64>(cfg.alpha_real), static_cast<f64>(cfg.alpha_imag)};
+    const cuDoubleComplex beta{static_cast<f64>(cfg.beta_real), static_cast<f64>(cfg.beta_imag)};
+    check(cublasZgemmStridedBatched(
+        blas_->get(),
+        to_cublas(cfg.op_a),
+        to_cublas(cfg.op_b),
+        shape->m,
+        shape->n,
+        shape->k,
+        &alpha,
+        a.data(),
+        a.ld(),
+        a.stride(),
+        b.data(),
+        b.ld(),
+        b.stride(),
+        &beta,
+        c.data(),
+        c.ld(),
+        c.stride(),
+        batch_size
+    ));
 }
 
 inline auto Linalg::matmul_batched_left_adj(
@@ -195,14 +219,20 @@ inline auto Linalg::matmul_batched_ptr(
     const CuMatrixCF32 c{nullptr, c_rows, c_cols};
     const auto shape = matmul_shape(cfg, a, b, c);
     const auto valid = shape.has_value() and batch_size > 0 and a_array and b_array and c_array;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        valid,
+        "pointer-batched gemm rejects operands {}x{}, {}x{}, {}x{} over {} lanes",
+        a_rows,
+        a_cols,
+        b_rows,
+        b_cols,
+        c_rows,
+        c_cols,
+        batch_size
+    );
     const cuFloatComplex alpha{cfg.alpha_real, cfg.alpha_imag};
     const cuFloatComplex beta{cfg.beta_real, cfg.beta_imag};
-    CUBLAS_CHECK(cublasCgemmBatched(
+    check(cublasCgemmBatched(
         blas_->get(),
         to_cublas(cfg.op_a),
         to_cublas(cfg.op_b),

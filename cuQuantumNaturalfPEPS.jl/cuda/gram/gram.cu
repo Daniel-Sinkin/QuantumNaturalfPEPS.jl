@@ -1,7 +1,8 @@
+#include "capi/internal/format.cuh"
 #include "core/arena_cursor.cuh"
 #include "core/cuda_utils.cuh"
 #include "core/defer.cuh"
-#include "core/error.cuh"
+#include "core/error.hpp"
 #include "core/session.cuh"
 #include "gram/gram.cuh"
 #include "gram/gram_cublas.cuh"
@@ -14,15 +15,16 @@
 #include <climits>
 #include <limits>
 #include <mutex>
-#include <new>
 #include <vector>
 
 namespace
 {
-using qnpeps::cublas_status;
-using qnpeps::cuda_status;
+using qnpeps::check;
 using qnpeps::Dims;
 using qnpeps::i64;
+using qnpeps::require;
+using qnpeps::require_struct_size;
+using qnpeps::Status;
 using qnpeps::u64;
 using qnpeps::usize;
 
@@ -35,33 +37,32 @@ constexpr i64 k_row_chunk_bytes{static_cast<i64>(1) << 30};
     return bytes <= std::numeric_limits<usize>::max();
 }
 
-[[nodiscard]] auto save_blas_state(qnpeps::Linalg& linalg, qnpeps::BlasState& state)
-    -> qnpeps_status
+auto validate_descriptor(const QnpepsGramDesc* descriptor) -> void
 {
-    return qnpeps::cublas_status(linalg.blas_state(state));
-}
-
-auto restore_blas_state(qnpeps::Linalg& linalg, const qnpeps::BlasState& state) -> void
-{
-    CUBLAS_CHECK(linalg.set_blas_state(state));
-}
-
-auto establish_gram_blas_state(qnpeps::Linalg& linalg) -> qnpeps_status
-{
-    return qnpeps::cublas_status(linalg.set_gram_state());
-}
-
-[[nodiscard]] auto check_descriptor(const QnpepsGramDesc* descriptor) -> qnpeps_status
-{
-    if (not descriptor) return QNPEPS_ERR_NULL_ARG;
-    if (descriptor->struct_size != sizeof(QnpepsGramDesc)) return QNPEPS_ERR_BAD_VERSION;
-    if (descriptor->reserved != 0) return QNPEPS_ERR_BAD_CONFIG;
+    require(descriptor != nullptr, Status::null_argument, "Gram descriptor is null");
+    require_struct_size(*descriptor, "Gram descriptor");
+    require(
+        descriptor->reserved == 0,
+        Status::bad_config,
+        "Gram descriptor reserved field is {}",
+        descriptor->reserved
+    );
     const auto invalid_dimensions = descriptor->lx < 2 or descriptor->ly < 2
                                     or descriptor->dim_phys != 2 or descriptor->dim_bond < 1;
-    if (invalid_dimensions) return QNPEPS_ERR_BAD_CONFIG;
-    if (descriptor->consumer != QNPEPS_GRAM_CONSUMER_SLAB) return QNPEPS_ERR_BAD_CONFIG;
-    if (descriptor->n_samples < 2 or descriptor->n_samples > INT_MAX) return QNPEPS_ERR_BAD_CONFIG;
-    return QNPEPS_OK;
+    require(not invalid_dimensions, Status::bad_config, "Gram descriptor rejects {}", *descriptor);
+    require(
+        descriptor->consumer == QNPEPS_GRAM_CONSUMER_SLAB,
+        Status::bad_config,
+        "Gram descriptor is not for the slab consumer, {}",
+        *descriptor
+    );
+    require(
+        descriptor->n_samples >= 2 and descriptor->n_samples <= INT_MAX,
+        Status::bad_config,
+        "Gram sample count outside 2 to {}, {}",
+        INT_MAX,
+        *descriptor
+    );
 }
 
 struct VirtualShard
@@ -116,7 +117,7 @@ struct qnpeps_gram_ctx
 
 namespace
 {
-[[nodiscard]] auto fill_geometry(qnpeps_gram_ctx& context) -> qnpeps_status
+auto fill_geometry(qnpeps_gram_ctx& context) -> void
 {
     const Dims dims{context.desc.lx, context.desc.ly, context.desc.dim_phys, context.desc.dim_bond};
     const auto sites = static_cast<usize>(context.sites);
@@ -131,7 +132,16 @@ namespace
         for (int column{}; column < context.desc.ly; ++column)
         {
             const i64 slice{qnpeps::minsr::site_slice(dims, row, column)};
-            if (slice < 1 or slice > INT_MAX or offset > INT_MAX) return QNPEPS_ERR_BAD_CONFIG;
+            const auto fits = slice >= 1 and slice <= INT_MAX and offset <= INT_MAX;
+            require(
+                fits,
+                Status::bad_config,
+                "Gram site ({}, {}) slice {} at offset {} exceeds the int range",
+                row,
+                column,
+                slice,
+                offset
+            );
             context.offsets.push_back(static_cast<int>(offset));
             context.slices.push_back(static_cast<int>(slice));
             context.max_slice = std::max(context.max_slice, static_cast<int>(slice));
@@ -141,7 +151,14 @@ namespace
             ++site;
         }
     }
-    return offset == context.compact and site == context.sites ? QNPEPS_OK : QNPEPS_ERR_INTERNAL;
+    require(
+        offset == context.compact and site == context.sites,
+        "Gram geometry covers {} slots over {} sites, expected {} over {}",
+        offset,
+        site,
+        context.compact,
+        context.sites
+    );
 }
 
 auto carve_context(qnpeps::ArenaCursor& cursor, qnpeps_gram_ctx& context) -> void
@@ -159,42 +176,35 @@ auto carve_context(qnpeps::ArenaCursor& cursor, qnpeps_gram_ctx& context) -> voi
     context.dense_b = cursor.take<cuFloatComplex>(dense_b);
 }
 
-[[nodiscard]] auto upload_geometry(qnpeps_gram_ctx& context) -> qnpeps_status
+auto upload_geometry(qnpeps_gram_ctx& context) -> void
 {
     const auto sites = static_cast<usize>(context.sites);
     const auto compact = static_cast<usize>(context.compact);
-    qnpeps_status status{cuda_status(cudaMemcpyAsync(
+    check(cudaMemcpyAsync(
         context.offsets_device,
         context.offsets.data(),
         sizeof(int) * sites,
         cudaMemcpyHostToDevice,
         context.stream()
-    ))};
-    if (status == QNPEPS_OK)
-    {
-        status = cuda_status(cudaMemcpyAsync(
-            context.slices_device,
-            context.slices.data(),
-            sizeof(int) * sites,
-            cudaMemcpyHostToDevice,
-            context.stream()
-        ));
-    }
-    if (status == QNPEPS_OK)
-    {
-        status = cuda_status(cudaMemcpyAsync(
-            context.slot_device,
-            context.slot.data(),
-            sizeof(int) * compact,
-            cudaMemcpyHostToDevice,
-            context.stream()
-        ));
-    }
-    if (status == QNPEPS_OK) status = cuda_status(cudaStreamSynchronize(context.stream()));
-    return status;
+    ));
+    check(cudaMemcpyAsync(
+        context.slices_device,
+        context.slices.data(),
+        sizeof(int) * sites,
+        cudaMemcpyHostToDevice,
+        context.stream()
+    ));
+    check(cudaMemcpyAsync(
+        context.slot_device,
+        context.slot.data(),
+        sizeof(int) * compact,
+        cudaMemcpyHostToDevice,
+        context.stream()
+    ));
+    check(cudaStreamSynchronize(context.stream()));
 }
 
-[[nodiscard]] auto build_footprint(qnpeps_gram_ctx& context, u64 arena_bytes) -> qnpeps_status
+auto build_footprint(qnpeps_gram_ctx& context, u64 arena_bytes) -> void
 {
     QnpepsGramFootprint footprint{};
     footprint.struct_size = sizeof(footprint);
@@ -238,7 +248,12 @@ auto carve_context(qnpeps::ArenaCursor& cursor, qnpeps_gram_ctx& context) -> voi
             sizeof(cuFloatComplex),
             gram_bytes
         );
-    if (not valid_bytes) return QNPEPS_ERR_BAD_CONFIG;
+    require(
+        valid_bytes,
+        Status::bad_config,
+        "Gram footprint for {} samples overflows the byte range",
+        context.desc.n_samples
+    );
     footprint.geometry_device_bytes = sites_bytes + slot_bytes;
     footprint.dense_a_device_bytes = dense_a_bytes;
     footprint.dense_b_device_bytes = dense_b_bytes;
@@ -247,26 +262,42 @@ auto carve_context(qnpeps::ArenaCursor& cursor, qnpeps_gram_ctx& context) -> voi
     footprint.caller_rows_bytes = rows_bytes;
     footprint.caller_gram_bytes = gram_bytes;
     context.footprint = footprint;
-    return QNPEPS_OK;
 }
 
-[[nodiscard]] auto check_args(const qnpeps_gram_ctx& context, const QnpepsGramArgs* args)
-    -> qnpeps_status
+auto validate_args(const qnpeps_gram_ctx& context, const QnpepsGramArgs* args) -> void
 {
-    if (not args) return QNPEPS_ERR_NULL_ARG;
-    if (args->struct_size != sizeof(QnpepsGramArgs)) return QNPEPS_ERR_BAD_VERSION;
-    if (args->reserved != 0) return QNPEPS_ERR_BAD_CONFIG;
-    if (not args->samples or not args->o_rows or not args->gram_out) return QNPEPS_ERR_NULL_ARG;
-    if (args->stream and static_cast<cudaStream_t>(args->stream) != context.stream())
-        return QNPEPS_ERR_BAD_CONFIG;
+    require(args != nullptr, Status::null_argument, "Gram arguments are null");
+    require_struct_size(*args, "Gram arguments");
+    require(
+        args->reserved == 0,
+        Status::bad_config,
+        "Gram arguments reserved field is {}",
+        args->reserved
+    );
+    const auto has_buffers = args->samples and args->o_rows and args->gram_out;
+    require(has_buffers, Status::null_argument, "Gram arguments miss a buffer");
+    const auto foreign_stream =
+        args->stream and static_cast<cudaStream_t>(args->stream) != context.stream();
+    require(
+        not foreign_stream, Status::bad_config, "Gram run stream differs from the context stream"
+    );
     const auto insufficient_bytes = args->samples_bytes < context.footprint.caller_samples_bytes
                                     or args->o_rows_bytes < context.footprint.caller_rows_bytes
                                     or args->gram_out_bytes < context.footprint.caller_gram_bytes;
-    if (insufficient_bytes) return QNPEPS_ERR_BAD_CONFIG;
-    return QNPEPS_OK;
+    require(
+        not insufficient_bytes,
+        Status::bad_config,
+        "Gram buffers hold {}, {}, {} bytes, need {}, {}, {}",
+        args->samples_bytes,
+        args->o_rows_bytes,
+        args->gram_out_bytes,
+        context.footprint.caller_samples_bytes,
+        context.footprint.caller_rows_bytes,
+        context.footprint.caller_gram_bytes
+    );
 }
 
-[[nodiscard]] auto validate_schedule(qnpeps_gram_ctx& context) -> qnpeps_status
+auto validate_schedule(qnpeps_gram_ctx& context) -> void
 {
     const qnpeps::gram_slab::Geometry geometry{
         context.sites,
@@ -297,8 +328,13 @@ auto carve_context(qnpeps::ArenaCursor& cursor, qnpeps_gram_ctx& context) -> voi
                 static_cast<int>((source.count + context.chunk_rows - 1) / context.chunk_rows);
         }
     }
-    if (slabs < 1 or virtual_shard_count < 1 or block_calls < 1) return QNPEPS_ERR_INTERNAL;
-    return QNPEPS_OK;
+    require(
+        slabs >= 1 and virtual_shard_count >= 1 and block_calls >= 1,
+        "Gram schedule has {} slabs, {} shards, {} block calls",
+        slabs,
+        virtual_shard_count,
+        block_calls
+    );
 }
 }
 
@@ -309,19 +345,23 @@ auto ctx_create_impl(
     std::unique_ptr<Session> session,
     Linalg& linalg,
     qnpeps_gram_ctx** out
-) -> qnpeps_status
+) -> void
 {
-    auto* context = new (std::nothrow) qnpeps_gram_ctx;
-    if (not context) return set_err(QNPEPS_ERR_OOM);
+    auto* context = new qnpeps_gram_ctx;
+    context->device = linalg.device();
+    context->execution = &linalg;
+    context->session = std::move(session);
+    auto created = false;
+    const Defer destroy_after_failure{[&]
+                                      {
+                                          if (not created) ctx_destroy(context);
+                                      }};
     context->desc = *descriptor;
     context->sites = static_cast<i64>(descriptor->lx) * descriptor->ly;
     context->compact = minsr::compact_count(
         Dims{descriptor->lx, descriptor->ly, descriptor->dim_phys, descriptor->dim_bond}
     );
-    context->device = linalg.device();
-    context->execution = &linalg;
-    context->session = std::move(session);
-    auto status = fill_geometry(*context);
+    fill_geometry(*context);
     context->virtual_rows =
         (descriptor->n_samples + gram_slab::k_virtual_shards - 1) / gram_slab::k_virtual_shards;
     const i64 row_bytes{context->compact * static_cast<i64>(sizeof(cuFloatComplex))};
@@ -332,79 +372,62 @@ auto ctx_create_impl(
     context->slab_width =
         gram_slab::default_width(context->compact, context->max_slice, descriptor->n_samples);
 
-    usize context_arena_bytes{};
-    if (status == QNPEPS_OK)
-    {
-        auto& context_arena = linalg.persistent_arena();
-        const auto context_arena_start = context_arena.total();
-        carve_context(context_arena, *context);
-        if (err_state() != QNPEPS_OK) status = err_state();
-        context_arena_bytes = context_arena.total() - context_arena_start;
-    }
-    if (status == QNPEPS_OK) status = upload_geometry(*context);
-    if (status == QNPEPS_OK)
-    {
-        status = establish_gram_blas_state(context->linalg());
-    }
-    if (status == QNPEPS_OK) status = build_footprint(*context, context_arena_bytes);
-    if (status == QNPEPS_OK) status = validate_schedule(*context);
-    if (status != QNPEPS_OK)
-    {
-        ctx_destroy(context);
-        return set_err(status);
-    }
+    auto& context_arena = linalg.persistent_arena();
+    const auto context_arena_start = context_arena.total();
+    carve_context(context_arena, *context);
+    const auto context_arena_bytes = context_arena.total() - context_arena_start;
+    upload_geometry(*context);
+    context->linalg().set_gram_state();
+    build_footprint(*context, context_arena_bytes);
+    validate_schedule(*context);
     *out = context;
-    return QNPEPS_OK;
+    created = true;
 }
 
-auto ctx_create(const QnpepsGramDesc* descriptor, void* stream, qnpeps_gram_ctx** out)
-    -> qnpeps_status
+auto ctx_create(const QnpepsGramDesc* descriptor, void* stream, qnpeps_gram_ctx** out) -> void
 {
-    if (not out) return set_err(QNPEPS_ERR_NULL_ARG);
+    require(out != nullptr, Status::null_argument, "Gram context output is null");
     *out = nullptr;
-    const auto descriptor_status = check_descriptor(descriptor);
-    if (descriptor_status != QNPEPS_OK) return set_err(descriptor_status);
-
+    validate_descriptor(descriptor);
     auto session = make_session(static_cast<cudaStream_t>(stream));
-    if (not session) return err_state();
     auto& linalg = session->linalg();
-    return ctx_create_impl(descriptor, std::move(session), linalg, out);
+    ctx_create_impl(descriptor, std::move(session), linalg, out);
 }
 
-auto ctx_create(const QnpepsGramDesc* descriptor, Linalg& linalg, qnpeps_gram_ctx** out)
-    -> qnpeps_status
+auto ctx_create(const QnpepsGramDesc* descriptor, Linalg& linalg, qnpeps_gram_ctx** out) -> void
 {
-    if (not out) return set_err(QNPEPS_ERR_NULL_ARG);
+    require(out != nullptr, Status::null_argument, "Gram context output is null");
     *out = nullptr;
-    const auto descriptor_status = check_descriptor(descriptor);
-    if (descriptor_status != QNPEPS_OK) return set_err(descriptor_status);
-    return ctx_create_impl(descriptor, nullptr, linalg, out);
+    validate_descriptor(descriptor);
+    ctx_create_impl(descriptor, nullptr, linalg, out);
 }
 
-auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> qnpeps_status
+auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> void
 {
-    if (not context) return set_err(QNPEPS_ERR_NULL_ARG);
+    require(context != nullptr, Status::null_argument, "Gram run without a context");
     const std::lock_guard<std::mutex> lock{context->mutex};
-    const auto args_status = check_args(*context, args);
-    if (args_status != QNPEPS_OK) return set_err(args_status);
+    validate_args(*context, args);
 
     int caller{};
-    auto status = cuda_status(cudaGetDevice(&caller));
-    if (status != QNPEPS_OK) return status;
-    if (caller != context->device) return set_err(QNPEPS_ERR_BAD_CONFIG);
+    check(cudaGetDevice(&caller));
+    require(
+        caller == context->device,
+        Status::bad_config,
+        "Gram run on device {}, the context lives on device {}",
+        caller,
+        context->device
+    );
 
-    qnpeps::BlasState blas_state{};
-    status = save_blas_state(context->linalg(), blas_state);
-    if (status != QNPEPS_OK) return status;
-    DEFER([&] { restore_blas_state(context->linalg(), blas_state); });
-    status = establish_gram_blas_state(context->linalg());
-    if (status != QNPEPS_OK) return status;
+    BlasState blas_state{};
+    context->linalg().blas_state(blas_state);
+    const Defer restore_blas{[&] { context->linalg().restore_blas_state(blas_state); }};
+    context->linalg().set_gram_state();
 
     const auto samples = static_cast<i64>(context->desc.n_samples);
     auto* gram = static_cast<cuFloatComplex*>(args->gram_out);
     const auto* rows = static_cast<const cuFloatComplex*>(args->o_rows);
     const auto* device_samples = static_cast<const std::uint8_t*>(args->samples);
-    status = cuda_status(cudaMemsetAsync(
+    check(cudaMemsetAsync(
         gram, 0, sizeof(cuFloatComplex) * static_cast<usize>(samples * samples), context->stream()
     ));
 
@@ -424,15 +447,15 @@ auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> qnpeps_sta
 
     for (const VirtualShard& destination : shards)
     {
-        if (destination.count < 1 or status != QNPEPS_OK) continue;
+        if (destination.count < 1) continue;
         auto rows_a{rows + destination.base * context->compact};
         auto blockrow{gram + destination.base * samples};
         for (const VirtualShard& source : shards)
         {
-            if (source.count < 1 or status != QNPEPS_OK) continue;
+            if (source.count < 1) continue;
             if (source.base == destination.base)
             {
-                status = gram_slab::accumulate_block(
+                gram_slab::accumulate_block(
                     workspace,
                     geometry,
                     device_samples,
@@ -446,16 +469,14 @@ auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> qnpeps_sta
                     static_cast<int>(samples),
                     true
                 );
-                if (status == QNPEPS_OK)
-                    status = cuda_status(cudaStreamSynchronize(context->stream()));
+                check(cudaStreamSynchronize(context->stream()));
                 continue;
             }
             for (i64 local{}; local < source.count; local += context->chunk_rows)
             {
-                if (status != QNPEPS_OK) break;
                 const i64 count{std::min(context->chunk_rows, source.count - local)};
                 auto rows_b{rows + (source.base + local) * context->compact};
-                status = gram_slab::accumulate_block(
+                gram_slab::accumulate_block(
                     workspace,
                     geometry,
                     device_samples,
@@ -469,33 +490,30 @@ auto ctx_run(qnpeps_gram_ctx* context, const QnpepsGramArgs* args) -> qnpeps_sta
                     static_cast<int>(samples),
                     false
                 );
-                if (status == QNPEPS_OK)
-                    status = cuda_status(cudaStreamSynchronize(context->stream()));
+                check(cudaStreamSynchronize(context->stream()));
             }
         }
-        if (status == QNPEPS_OK)
-        {
-            status = gram_slab::finalize_block(
-                blockrow,
-                static_cast<int>(samples),
-                static_cast<int>(destination.count),
-                static_cast<int>(destination.base),
-                static_cast<int>(samples),
-                context->stream()
-            );
-        }
-        if (status == QNPEPS_OK) status = cuda_status(cudaStreamSynchronize(context->stream()));
+        gram_slab::finalize_block(
+            blockrow,
+            static_cast<int>(samples),
+            static_cast<int>(destination.count),
+            static_cast<int>(destination.base),
+            static_cast<int>(samples),
+            context->stream()
+        );
+        check(cudaStreamSynchronize(context->stream()));
     }
-    if (status != QNPEPS_OK) return set_err(status);
-    return QNPEPS_OK;
 }
 
-auto ctx_footprint(const qnpeps_gram_ctx* context, QnpepsGramFootprint* out) -> qnpeps_status
+auto ctx_footprint(const qnpeps_gram_ctx* context, QnpepsGramFootprint* out) -> void
 {
-    if (not context or not out) return set_err(QNPEPS_ERR_NULL_ARG);
-    if (out->struct_size != sizeof(QnpepsGramFootprint)) return set_err(QNPEPS_ERR_BAD_VERSION);
+    require(
+        context != nullptr and out != nullptr,
+        Status::null_argument,
+        "Gram footprint query without a context or output"
+    );
+    require_struct_size(*out, "Gram footprint");
     *out = context->footprint;
-    return QNPEPS_OK;
 }
 
 auto ctx_destroy(qnpeps_gram_ctx* context) -> void
@@ -506,8 +524,8 @@ auto ctx_destroy(qnpeps_gram_ctx* context) -> void
     const bool switched{
         have_caller and caller != context->device and cudaSetDevice(context->device) == cudaSuccess
     };
-    CUDA_NOCHECK(cudaStreamSynchronize(context->stream()));
-    if (switched) CUDA_NOCHECK(cudaSetDevice(caller));
+    unchecked(cudaStreamSynchronize(context->stream()));
+    if (switched) unchecked(cudaSetDevice(caller));
     delete context;
 }
 }

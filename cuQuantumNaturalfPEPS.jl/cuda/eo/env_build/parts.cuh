@@ -5,11 +5,13 @@
 #include "core/complex.cuh"
 #include "core/defer.cuh"
 #include "core/session.cuh"
+#include "densitymatrix/batched.cuh"
 #include "density.cuh"
 #include "eloc_kernels.cuh"
 #include "../linalg/eo.cuh"
 #include "capi/qnpeps.h"
 #include "tensor/permutation.cuh"
+#include "terms.cuh"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -78,6 +80,7 @@ struct Shape
     f64 density_cutoff{};
     RangefinderRoute rangefinder{};
     f64 svd_cutoff{};
+    bool density_batched{};
 };
 
 inline auto shape_for(const QnpepsElocConfig& cfg, int lanes, bool transposed) -> Shape
@@ -96,23 +99,24 @@ inline auto shape_for(const QnpepsElocConfig& cfg, int lanes, bool transposed) -
         cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY,
         cfg.density_cutoff,
         route,
-        cfg.svd_cutoff
+        cfg.svd_cutoff,
+        is_density_batched_route(cfg.truncation_route)
     };
 }
 
-auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> bool;
+auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> void;
 
-auto arena_sum(usize left, usize right, usize& result) -> bool;
+auto arena_sum(usize left, usize right, usize& result) -> void;
 
-auto arena_accumulate(usize& total, usize term) -> bool;
+auto arena_accumulate(usize& total, usize term) -> void;
 
-auto arena_align(usize value, usize& result) -> bool;
+auto arena_align(usize value, usize& result) -> void;
 
-auto arena_slot(std::initializer_list<std::uint64_t> factors, i64& result) -> bool;
+auto arena_slot(std::initializer_list<std::uint64_t> factors, i64& result) -> void;
 
-auto arena_int(std::initializer_list<std::uint64_t> factors, int& result) -> bool;
+auto arena_int(std::initializer_list<std::uint64_t> factors, int& result) -> void;
 
-auto arena_i64_sum(i64 left, i64 right, i64& result) -> bool;
+auto arena_i64_sum(i64 left, i64 right, i64& result) -> void;
 
 using Carver = qnpeps::ArenaCursor;
 
@@ -131,6 +135,7 @@ struct Worker
     Carver scratch{};
     std::map<i64, cf*> omegas{};
     qn_eloc::density::Context* density{};
+    qnpeps::densitymatrix::BatchedWorkspace density_rows{};
 
     const cf* peps{};
     const u8* samples{};
@@ -195,9 +200,8 @@ inline auto omega_host(int n, int k) -> std::vector<cf>
     auto rng = std::mt19937_64(seed);
     auto gauss = std::normal_distribution<f32>(0.0f, 1.0f);
     usize count{};
-    if (n < 1 or k < 1
-        or not arena_product({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(k)}, count))
-        return {};
+    if (n < 1 or k < 1) return {};
+    arena_product({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(k)}, count);
     auto host = std::vector<cf>(count);
     for (auto& z : host)
         z = cf{gauss(rng), gauss(rng)};
@@ -214,7 +218,7 @@ inline auto omega_for(Worker& w, int n, int k) -> cf*
     if (not w.arena) return nullptr;
     const auto bytes = host.size() * sizeof(cf);
     auto* d = w.arena->take<cf>(host.size());
-    CUDA_CHECK(cudaMemcpy(d, host.data(), bytes, cudaMemcpyHostToDevice));
+    check(cudaMemcpy(d, host.data(), bytes, cudaMemcpyHostToDevice));
     w.omegas[key] = d;
     return d;
 }
@@ -296,9 +300,8 @@ inline auto bt_elems(const std::vector<int>& dim) -> i64
     auto n = i64{1};
     for (const int d : dim)
     {
-        if (d < 0
-            or not arena_slot({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(d)}, n))
-            return 0;
+        if (d < 0) return 0;
+        arena_slot({static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(d)}, n);
     }
     return n;
 }
@@ -465,116 +468,6 @@ auto build_fb_rails(Worker& w, int i) -> void;
 
 auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void;
 
-enum class Bucket
-{
-    horizontal,
-    fourbody,
-    longer_horizontal
-};
-
-struct FlipInst
-{
-    Bucket bucket{};
-    int active_slot{-1};
-    int n_flips{};
-    qnpeps::CuArray<int, 4> site{};
-    qnpeps::CuArray<int, 4> value{};
-    int mask_a{};
-    int mask_b{};
-    f64 coeff_re{};
-    f64 coeff_im{};
-};
-
-struct ActiveLists
-{
-    int slots{};
-    int max_lanes{};
-    int* masks{};
-    int* counts{};
-    int* indices{};
-    bool owns_device{};
-    std::vector<int> host_counts{};
-};
-
-auto assign_active_slots(std::vector<FlipInst>& terms, bool enabled) -> int;
-
-__global__ auto cu_build_active_lists(
-    const u8* samples,
-    i64 lane_stride,
-    const int* mask_a,
-    const int* mask_b,
-    int slots,
-    int lanes,
-    int max_lanes,
-    int* indices,
-    int* counts
-) -> void;
-
-auto active_lists_setup(
-    ActiveLists& lists,
-    const std::vector<FlipInst>& terms,
-    int slots,
-    int max_lanes,
-    ContextArena& context_arena
-) -> void;
-
-auto active_lists_teardown(ActiveLists& lists) -> void;
-
-auto prepare_active_lists(
-    ActiveLists& lists, const u8* samples, i64 lane_stride, int lanes, cudaStream_t stream
-) -> void;
-
-__global__ auto cu_project_site_val_indexed(
-    const cf* site,
-    const u8* samples,
-    i64 lane_stride,
-    const int* active_indices,
-    int site_idx,
-    i64 slab,
-    int value_mode,
-    int fixed_val,
-    int dim_phys,
-    cf* out,
-    i64 out_stride,
-    int active
-) -> void;
-
-__global__ auto cu_compact_lanes(
-    cf* out,
-    i64 out_stride,
-    const cf* in,
-    i64 in_stride,
-    const int* active_indices,
-    i64 elems,
-    int active
-) -> void;
-
-__global__ auto cu_diagonal(
-    f64* e_loc,
-    const u8* samples,
-    i64 lane_stride,
-    const int* site_a,
-    const int* site_b,
-    const f64* coeff,
-    int n_diag,
-    int lanes
-) -> void;
-
-__global__ auto cu_reduce_term_indexed(
-    f64* e_loc,
-    const cf* value,
-    const f64* f_top,
-    const f64* f_down,
-    const f64* f_rail_l,
-    const f64* f_rail_r,
-    const f64* f_chain,
-    const f64* logpsi,
-    const int* active_indices,
-    f64 coeff_re,
-    f64 coeff_im,
-    int active
-) -> void;
-
 inline auto top_bt(Worker& w, int i, int c) -> BT
 {
     return (i > 0) ? BT{etf_site(w, i - 1, c), w.slot_env, top_dims(w, i, c)} : unit3(w);
@@ -614,7 +507,7 @@ inline auto hr_o_dims(Worker& w, int i, int c) -> std::vector<int>
 
 auto reduce_term_indexed(
     Worker& w,
-    const FlipInst& term,
+    const TermPiece& piece,
     const cf* value,
     const f64* f_chain,
     const int* active_indices,
@@ -627,9 +520,7 @@ auto reduce_term_indexed(
     const f64* logpsi
 ) -> void;
 
-auto launch_diagonal(
-    Worker& w, f64* e_loc, const int* site_a, const int* site_b, const f64* coeff, int n_diag
-) -> void;
+auto launch_diagonal(Worker& w, f64* e_loc, const DeviceTermPools& pools, int term_count) -> void;
 
 __global__ auto cu_fourbody(
     int lanes, int mid, const cf* cl, i64 stride_l, const cf* cr, i64 stride_r, cf* out
@@ -668,13 +559,11 @@ inline auto fb_right_dims(Worker& w, int upper, int k) -> std::vector<int>
     return {t.dim[0], pi[0], pj[0], b.dim[0]};
 }
 
-auto corner_mode(const FlipInst& t, int r, int c, int ly) -> int;
-
 auto project_corner_indexed(
     Worker& w,
+    const TermPiece& piece,
     int r,
     int c,
-    int mode,
     const int* active_indices,
     int active,
     cf* out,
@@ -687,16 +576,16 @@ auto chain_normalize_batch(Worker& w, cf* x, i64 n, i64 stride, f64* f_chain, in
     -> void;
 
 auto eval_horizontal_compact(
-    Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
+    Worker& w, const TermPiece& piece, const int* active_indices, int active, cf* value_out
 ) -> f64*;
 
 auto eval_fourbody_compact(
-    Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
+    Worker& w, const TermPiece& piece, const int* active_indices, int active, cf* value_out
 ) -> f64*;
 
-auto eval_flip_inst(
+auto eval_term_piece(
     Worker& w,
-    const FlipInst& t,
+    const TermPiece& piece,
     cf* value_buf,
     f64* e_loc,
     const f64* logpsi,
@@ -749,34 +638,26 @@ auto build_transposed_peps(
     const QnpepsElocConfig& cfg, const cf* peps, cf* peps_t, cudaStream_t stream
 ) -> void;
 
-auto classify_route(
-    const QnpepsElocConfig& cfg, const QnpepsElocFlipTerm& ft, FlipInst& out, int& pass
-) -> bool;
-
 struct RunCache
 {
-    explicit RunCache(Linalg& linalg) : w(linalg), wt(linalg) {}
+    explicit RunCache(Linalg& linalg)
+        : w(linalg), wt(linalg), last_wave(linalg), last_wave_transposed(linalg)
+    {
+    }
 
     QnpepsElocConfig cfg{};
     i64 n_samples{};
     uint32_t flags{};
     cudaStream_t stream{};
-    std::vector<QnpepsElocDiagBond> diag_terms{};
-    std::vector<QnpepsElocFlipTerm> flip_terms{};
-    QnpepsElocTermTable term_table{};
     std::vector<i64> ok_off{};
     std::vector<int> ok_slice{};
     i64 compact_count{};
-    std::vector<FlipInst> orig_terms{};
-    std::vector<FlipInst> tr_terms{};
-    bool active_compact{};
+    TermPlan plan{};
+    DeviceTermPools pools{};
     ActiveLists orig_active{};
     ActiveLists tr_active{};
     cf* peps_t{};
     u8* samples_t{};
-    int* d_a{};
-    int* d_b{};
-    f64* d_j{};
     cf* value_buf{};
     f64* logpsi_tr{};
     cf* gscratch{};
@@ -789,6 +670,8 @@ struct RunCache
     bool orig_h{};
     Worker w;
     Worker wt;
+    Worker last_wave;
+    Worker last_wave_transposed;
     std::vector<std::pair<i64, int>> wave_ranges{};
     ContextArena* context_arena{};
     bool ready{};
@@ -815,8 +698,7 @@ auto run_cache_setup(
 
 inline auto report_rangefinder_failure(int fail) -> void
 {
-    if (fail > 0)
-        qn::set_backend_err(QNPEPS_ELOC_ERR_CUDA, "rangefinder", fail, __FILE__, __LINE__);
+    require(fail <= 0, Status::cuda, "local energy rangefinder reported failure flags {}", fail);
 }
 
 auto qn_eloc_envs_logpsi(

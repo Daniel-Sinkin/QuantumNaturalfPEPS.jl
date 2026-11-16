@@ -34,7 +34,6 @@ struct ContractPlan
     int m{1};
     int k{1};
     int n{1};
-    bool valid{};
 };
 
 [[nodiscard]] auto contract_plan(const ContractSpec& spec) -> ContractPlan;
@@ -52,14 +51,14 @@ struct ContractOut
     cuFloatComplex* const* ptrs{};
 };
 
-[[nodiscard]] auto contract(
+auto contract(
     ArenaCursor& arena,
     Linalg& la,
     const ContractSpec& spec,
     const DeviceTensor& tensor_a,
     const DeviceTensor& tensor_b,
     DeviceTensor& output
-) -> bool;
+) -> void;
 
 [[nodiscard]] auto contract(
     ArenaCursor& arena,
@@ -69,7 +68,7 @@ struct ContractOut
     const DeviceTensor& tensor_b
 ) -> DeviceTensor;
 
-[[nodiscard]] auto contract_batched(
+auto contract_batched(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -77,9 +76,9 @@ struct ContractOut
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> bool;
+) -> void;
 
-[[nodiscard]] auto contract_strided(
+auto contract_strided(
     Linalg& la,
     PermutationCache& cache,
     const ContractSpec& spec,
@@ -87,7 +86,7 @@ struct ContractOut
     const ContractOperand& b,
     const ContractOut& out,
     int batch_count
-) -> bool;
+) -> void;
 }
 
 #endif

@@ -1,4 +1,4 @@
-#include "core/error.cuh"
+#include "core/error.hpp"
 #include "gram/gram_cublas.cuh"
 #include "gram/gram_slab.cuh"
 #include "linalg/linalg.cuh"
@@ -83,35 +83,88 @@ auto accumulate_block(
     cuFloatComplex* output,
     int output_ld,
     bool diagonal
-) -> qnpeps_status
+) -> void
 {
     const auto invalid_args =
         not valid_geometry(geometry) or not workspace.dense_a or not workspace.linalg or not samples
         or not rows_a or not output or workspace.slab_width < 1 or count_a < 1 or count_a > INT_MAX
         or count_b < 1 or count_b > INT_MAX or base_a < 0 or base_b < 0 or output_ld < 1;
-    if (invalid_args) return QNPEPS_ERR_BAD_CONFIG;
+    require(
+        not invalid_args,
+        Status::bad_config,
+        "Gram block rejects rows {} at {} and {} at {}, slab width {}, leading dimension {}",
+        count_a,
+        base_a,
+        count_b,
+        base_b,
+        workspace.slab_width,
+        output_ld
+    );
     if (diagonal)
     {
-        if (rows_a != rows_b or base_a != base_b or count_a != count_b)
-            return QNPEPS_ERR_BAD_CONFIG;
+        const auto same_block = rows_a == rows_b and base_a == base_b and count_a == count_b;
+        require(
+            same_block,
+            Status::bad_config,
+            "diagonal Gram block pairs rows {} at {} with rows {} at {}",
+            count_a,
+            base_a,
+            count_b,
+            base_b
+        );
     }
-    else if (not workspace.dense_b or not rows_b)
-        return QNPEPS_ERR_NULL_ARG;
+    else
+    {
+        const auto has_second_operand = workspace.dense_b != nullptr and rows_b != nullptr;
+        require(
+            has_second_operand,
+            Status::null_argument,
+            "off-diagonal Gram block has no second operand"
+        );
+    }
 
     auto& linalg{*workspace.linalg};
     const auto stream = linalg.stream();
-    qnpeps_status status{QNPEPS_OK};
-    for (int first{}; first < geometry.sites and status == QNPEPS_OK;)
+    for (int first{}; first < geometry.sites;)
     {
         const Slab slab{next_slab(geometry, workspace.slab_width, first)};
-        status = cuda_status(
-            gram_cublas::expand(
+        gram_cublas::expand(
+            workspace.dense_a,
+            rows_a,
+            samples,
+            count_a,
+            geometry.compact,
+            base_a,
+            static_cast<int>(geometry.sites),
+            slab.first_site,
+            slab.compact_begin,
+            slab.compact_count,
+            slab.dense_width,
+            geometry.slot_device,
+            geometry.offsets_device,
+            geometry.slices_device,
+            stream
+        );
+        if (diagonal)
+        {
+            gram_cublas::accumulate_diagonal_block(
+                linalg,
+                static_cast<int>(count_a),
+                slab.dense_width,
                 workspace.dense_a,
-                rows_a,
+                output,
+                output_ld
+            );
+        }
+        else
+        {
+            gram_cublas::expand(
+                workspace.dense_b,
+                rows_b,
                 samples,
-                count_a,
+                count_b,
                 geometry.compact,
-                base_a,
+                base_b,
                 static_cast<int>(geometry.sites),
                 slab.first_site,
                 slab.compact_begin,
@@ -121,61 +174,20 @@ auto accumulate_block(
                 geometry.offsets_device,
                 geometry.slices_device,
                 stream
-            )
-        );
-        if (status == QNPEPS_OK and diagonal)
-        {
-            status = cublas_status(
-                gram_cublas::accumulate_diagonal_block(
-                    linalg,
-                    static_cast<int>(count_a),
-                    slab.dense_width,
-                    workspace.dense_a,
-                    output,
-                    output_ld
-                )
             );
-        }
-        if (status == QNPEPS_OK and not diagonal)
-        {
-            status = cuda_status(
-                gram_cublas::expand(
-                    workspace.dense_b,
-                    rows_b,
-                    samples,
-                    count_b,
-                    geometry.compact,
-                    base_b,
-                    static_cast<int>(geometry.sites),
-                    slab.first_site,
-                    slab.compact_begin,
-                    slab.compact_count,
-                    slab.dense_width,
-                    geometry.slot_device,
-                    geometry.offsets_device,
-                    geometry.slices_device,
-                    stream
-                )
-            );
-        }
-        if (status == QNPEPS_OK and not diagonal)
-        {
-            status = cublas_status(
-                gram_cublas::accumulate_offdiagonal_block(
-                    linalg,
-                    static_cast<int>(count_a),
-                    static_cast<int>(count_b),
-                    slab.dense_width,
-                    workspace.dense_a,
-                    workspace.dense_b,
-                    output,
-                    output_ld
-                )
+            gram_cublas::accumulate_offdiagonal_block(
+                linalg,
+                static_cast<int>(count_a),
+                static_cast<int>(count_b),
+                slab.dense_width,
+                workspace.dense_a,
+                workspace.dense_b,
+                output,
+                output_ld
             );
         }
         first = slab.next_site;
     }
-    return status;
 }
 
 auto finalize_block(
@@ -185,12 +197,19 @@ auto finalize_block(
     int global_base,
     int samples,
     cudaStream_t stream
-) -> qnpeps_status
+) -> void
 {
-    if (not output or output_ld < 1 or row_count < 1 or global_base < 0 or samples < 1)
-        return QNPEPS_ERR_BAD_CONFIG;
-    return cuda_status(
-        gram_cublas::finalize(output, output_ld, row_count, global_base, samples, stream)
+    const auto valid =
+        output and output_ld >= 1 and row_count >= 1 and global_base >= 0 and samples >= 1;
+    require(
+        valid,
+        Status::bad_config,
+        "Gram finalize rejects {} rows at {} of {} samples, leading dimension {}",
+        row_count,
+        global_base,
+        samples,
+        output_ld
     );
+    gram_cublas::finalize(output, output_ld, row_count, global_base, samples, stream);
 }
 }

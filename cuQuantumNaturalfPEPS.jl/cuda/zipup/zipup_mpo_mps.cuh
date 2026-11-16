@@ -67,7 +67,7 @@ auto normalize_factor(Linalg& la, ArenaCursor& scratch, DeviceTensor factor, f64
     -> void;
 auto accumulate_log_scales(const State& state, usize count, f64& log_scale) -> void;
 auto release_omegas(State& state) -> void;
-auto set_rangefinder_failure(int failure) -> qnpeps_status;
+auto raise_rangefinder_failure(int failure) -> void;
 auto fused_peps_row(State& state, Linalg& la, const Arenas& arenas, const FusedPepsRowArgs& args)
     -> std::vector<DeviceTensor>;
 
@@ -82,16 +82,15 @@ auto sweep(
 
     for (auto site = 0_uz; site < args.num_sites; ++site)
     {
-        if (err_state() != QNPEPS_OK) return output;
         ArenaCursor column_scratch{arenas.scratch};
         const Arenas column_arenas{arenas.known, arenas.rolling_r, column_scratch};
         const auto panel = provider.make_panel(site, carried_factor, column_scratch, la);
-        if (err_state() != QNPEPS_OK) return output;
-        if (panel.dim.rank() != 4)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return output;
-        }
+        require(
+            panel.dim.rank() == 4,
+            "zipup panel at site {} has rank {}, expected 4",
+            site,
+            panel.dim.rank()
+        );
 
         const int output_left{panel.dim[0]};
         const int physical_out{panel.dim[1]};
@@ -117,10 +116,8 @@ auto sweep(
                 .r = &r_factor,
             }
         );
-        if (err_state() != QNPEPS_OK) return output;
 
         normalize_factor(la, column_scratch, r_factor, state.device_scales + site);
-        if (err_state() != QNPEPS_OK) return output;
 
         output[site] = DeviceTensor{{output_left, physical_out, rank}, q.d};
         const DeviceTensor reshaped_r{{rank, mps_right, mpo_right}, r_factor.d};
@@ -130,7 +127,7 @@ auto sweep(
 
     auto& last = output[args.num_sites - 1];
     DeviceTensor folded{};
-    const auto folded_ok = contract(
+    contract(
         arenas.known,
         la,
         {
@@ -143,14 +140,12 @@ auto sweep(
         carried_factor,
         folded
     );
-    if (not folded_ok) return output;
     last = DeviceTensor{{folded.dim[0], folded.dim[1], 1}, folded.d};
     return output;
 }
 
 auto output_bytes(const QnpepsZipupMpoMpsDesc* descriptor) -> i64;
-auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArgs* args)
-    -> qnpeps_status;
+auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArgs* args) -> void;
 }
 
 #endif

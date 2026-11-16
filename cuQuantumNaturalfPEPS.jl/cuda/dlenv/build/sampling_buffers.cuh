@@ -50,9 +50,8 @@ auto ensure_sampling_buffers(qnpeps_ctx& ctx) -> void
     {
         if (lane.sampling) continue;
         if (ctx.sampler.execution.host_managed) continue;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&lane.sampling), sampling_bytes));
+        check(cudaMalloc(reinterpret_cast<void**>(&lane.sampling), sampling_bytes));
         lane.sampling_owned = true;
-        if (err_state() != QNPEPS_OK) return;
     }
 }
 

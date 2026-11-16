@@ -6,7 +6,7 @@
 namespace qnpeps::sampler::internal
 {
 
-[[nodiscard]] inline auto build_env_above(
+inline auto build_env_above(
     Sampler& samp,
     const SamplerConfig& cfg,
     int row,
@@ -14,9 +14,9 @@ namespace qnpeps::sampler::internal
     const std::vector<int>& ket_bonds,
     int& env_above_cur,
     std::vector<int>& bond_above_cur
-) -> bool
+) -> void
 {
-    if (not has_below) return true;
+    if (not has_below) return;
     const auto dim_batch = cfg.dim_batch;
     const auto dim_bond = cfg.dim_bond;
     const auto dim_phys = cfg.dim_phys;
@@ -128,7 +128,7 @@ namespace qnpeps::sampler::internal
             const auto environment_offset = col_i * samp.max_env_above_site();
             const auto* environment_site = environment.p + environment_offset;
             {
-                const auto res = contract_strided(
+                contract_strided(
                     la,
                     samp.permutation_cache(),
                     {
@@ -142,11 +142,10 @@ namespace qnpeps::sampler::internal
                     {.view = samp.reduce_input()},
                     dim_batch
                 );
-                if (not res) return false;
             }
 
             {
-                const auto res = contract_strided(
+                contract_strided(
                     la,
                     samp.permutation_cache(),
                     {
@@ -160,7 +159,6 @@ namespace qnpeps::sampler::internal
                     {.view = samp.reduce_input()},
                     dim_batch
                 );
-                if (not res) return false;
             }
 
             permute_batched(
@@ -174,7 +172,6 @@ namespace qnpeps::sampler::internal
                 },
                 la.stream()
             );
-            if (err_state() != QNPEPS_OK) return false;
             const auto reduce_rows = full_left * bond_down;
             const auto reduce_cols = env_right * bond_right;
             auto* out = samp.env_above()[static_cast<usize>(env_above_next)].p
@@ -189,7 +186,6 @@ namespace qnpeps::sampler::internal
                 {samp.rfactor_next(), full_right, reduce_cols},
                 dim_batch
             );
-            if (err_state() != QNPEPS_OK) return false;
             const CuNormalizeLogArgs norm_args{
                 .x = samp.rfactor_next().p,
                 .n = full_right * reduce_cols,
@@ -208,7 +204,6 @@ namespace qnpeps::sampler::internal
         bond_above_cur = std::move(full_bonds);
     }
     env_above_cur = env_above_next;
-    return err_state() == QNPEPS_OK;
 }
 
 }

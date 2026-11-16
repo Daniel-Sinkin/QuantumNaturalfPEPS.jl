@@ -24,7 +24,6 @@ auto qn_eloc_run_impl(
     if (o_rows_dev) flags |= QNPEPS_ELOC_CTX_O_ROWS;
     if (T_dev) flags |= QNPEPS_ELOC_CTX_GRAM;
     run_cache_setup(state, cfg, n_samples, *tt, flags, context_arena);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
     run_cache_execute(
         state, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
@@ -40,21 +39,18 @@ auto qn_eloc_ctx_create_impl(
 ) -> void
 {
     using namespace qn_eloc::env;
-    auto* ctx{new (std::nothrow) qnpeps_eloc_ctx{std::move(session)}};
-    if (not ctx)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        return;
-    }
+    auto* ctx{new qnpeps_eloc_ctx{std::move(session)}};
+    auto created = false;
+    const qnpeps::Defer release_after_failure{[&]
+                                              {
+                                                  if (created) return;
+                                                  run_cache_teardown(ctx->state);
+                                                  delete ctx;
+                                              }};
     auto& context_arena = ctx->session->linalg().persistent_arena();
     run_cache_setup(ctx->state, cfg, n_samples, terms, flags, context_arena);
-    if (qn::err_state() != QNPEPS_ELOC_OK)
-    {
-        run_cache_teardown(ctx->state);
-        delete ctx;
-        return;
-    }
     *out = ctx;
+    created = true;
 }
 
 auto qn_eloc_ctx_destroy_impl(qnpeps_eloc_ctx* ctx) -> void
@@ -78,19 +74,17 @@ auto qn_eloc_ctx_run_async_impl(
 {
     using namespace qn_eloc::env;
     auto& state{ctx.state};
-    if (not state.ready)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return;
-    }
+    require(state.ready, "local energy context runs before setup finished");
     const auto want_o = bool{(state.flags & QNPEPS_ELOC_CTX_O_ROWS) != 0};
     const auto want_gram = bool{(state.flags & QNPEPS_ELOC_CTX_GRAM) != 0};
-    if (want_o != (o_rows_dev != nullptr) or want_gram != (T_dev != nullptr)
-        or (not want_o and o_rows_host))
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return;
-    }
+    const auto outputs_match = want_o == (o_rows_dev != nullptr) and want_gram == (T_dev != nullptr)
+                               and (want_o or not o_rows_host);
+    require(
+        outputs_match,
+        Status::bad_config,
+        "local energy context flags {} disagree with the requested row and Gram outputs",
+        state.flags
+    );
     run_cache_execute(
         state, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
@@ -111,9 +105,8 @@ auto qn_eloc_ctx_run_impl(
     qn_eloc_ctx_run_async_impl(
         ctx, peps, samples, logpsi_out, e_loc_out, o_rows_dev, o_rows_host, T_dev, lambda
     );
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
     auto& state{ctx.state};
-    CUDA_CHECK(cudaStreamSynchronize(state.stream));
+    check(cudaStreamSynchronize(state.stream));
 }
 
 auto qn_eloc_gram_tile_impl(
@@ -134,18 +127,15 @@ auto qn_eloc_gram_tile_impl(
     int ns_b_int{};
     i64 spins_a_count{};
     i64 spins_b_count{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, n_blocks
-        )
-        or not arena_int({static_cast<std::uint64_t>(ns_a)}, ns_a_int)
-        or not arena_int({static_cast<std::uint64_t>(ns_b)}, ns_b_int)
-        or not arena_slot(
-            {static_cast<std::uint64_t>(ns_a), static_cast<std::uint64_t>(n_blocks)}, spins_a_count
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(ns_b), static_cast<std::uint64_t>(n_blocks)}, spins_b_count
-        ))
-        return;
+    arena_int({static_cast<std::uint64_t>(cfg.lx), static_cast<std::uint64_t>(cfg.ly)}, n_blocks);
+    arena_int({static_cast<std::uint64_t>(ns_a)}, ns_a_int);
+    arena_int({static_cast<std::uint64_t>(ns_b)}, ns_b_int);
+    arena_slot(
+        {static_cast<std::uint64_t>(ns_a), static_cast<std::uint64_t>(n_blocks)}, spins_a_count
+    );
+    arena_slot(
+        {static_cast<std::uint64_t>(ns_b), static_cast<std::uint64_t>(n_blocks)}, spins_b_count
+    );
     const auto sites = i64{n_blocks};
 
     const auto osh = qn_eloc::env::Shape{cfg.lx, cfg.ly, cfg.dim_phys, cfg.dim_bond, cfg.chi_eo, 1};
@@ -153,9 +143,8 @@ auto qn_eloc_gram_tile_impl(
     std::vector<int> ok_slice{};
     const auto compact_count = i64{ok_layout(osh, ok_off, ok_slice)};
     int compact_count_int{};
-    if (qn::err_state() != QNPEPS_ELOC_OK or compact_count < 1
-        or not arena_int({static_cast<std::uint64_t>(compact_count)}, compact_count_int))
-        return;
+    if (compact_count < 1) return;
+    arena_int({static_cast<std::uint64_t>(compact_count)}, compact_count_int);
 
     int* d_boff{};
     int* d_bslice{};
@@ -174,43 +163,32 @@ auto qn_eloc_gram_tile_impl(
     usize block_bytes{};
     usize spins_a_bytes{};
     usize spins_b_bytes{};
-    if (not arena_product({sizeof(int), static_cast<std::uint64_t>(n_blocks)}, block_bytes)
-        or not arena_product(
-            {sizeof(int), static_cast<std::uint64_t>(spins_a_count)}, spins_a_bytes
-        )
-        or not arena_product(
-            {sizeof(int), static_cast<std::uint64_t>(spins_b_count)}, spins_b_bytes
-        ))
-        return;
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_boff), block_bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_bslice), block_bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&spins_a), spins_a_bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&spins_b), spins_b_bytes));
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
+    arena_product({sizeof(int), static_cast<std::uint64_t>(n_blocks)}, block_bytes);
+    arena_product({sizeof(int), static_cast<std::uint64_t>(spins_a_count)}, spins_a_bytes);
+    arena_product({sizeof(int), static_cast<std::uint64_t>(spins_b_count)}, spins_b_bytes);
+    check(cudaMalloc(reinterpret_cast<void**>(&d_boff), block_bytes));
+    check(cudaMalloc(reinterpret_cast<void**>(&d_bslice), block_bytes));
+    check(cudaMalloc(reinterpret_cast<void**>(&spins_a), spins_a_bytes));
+    check(cudaMalloc(reinterpret_cast<void**>(&spins_b), spins_b_bytes));
 
     auto hoff = std::vector<int>(static_cast<usize>(n_blocks));
     for (auto b = int{0}; b < n_blocks; ++b)
         hoff[static_cast<usize>(b)] = static_cast<int>(ok_off[static_cast<usize>(b)]);
-    CUDA_CHECK(cudaMemcpy(d_boff, hoff.data(), block_bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_bslice, ok_slice.data(), block_bytes, cudaMemcpyHostToDevice));
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
+    check(cudaMemcpy(d_boff, hoff.data(), block_bytes, cudaMemcpyHostToDevice));
+    check(cudaMemcpy(d_bslice, ok_slice.data(), block_bytes, cudaMemcpyHostToDevice));
 
     const auto threads = int{256};
     const auto convert = [&](int* dst, const u8* src, i64 count) -> void
     {
         i64 total{};
-        if (not arena_slot(
-                {static_cast<std::uint64_t>(count), static_cast<std::uint64_t>(sites)}, total
-            ))
-            return;
+        arena_slot({static_cast<std::uint64_t>(count), static_cast<std::uint64_t>(sites)}, total);
         const auto blocks =
             int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
         cu_u8_to_i32<<<blocks, threads, 0, stream>>>(dst, src, total);
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     };
     convert(spins_a, samples_a, ns_a);
     convert(spins_b, samples_b, ns_b);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
 
     qn_eloc::launch_gram_tile(
         tile_out,
@@ -229,7 +207,7 @@ auto qn_eloc_gram_tile_impl(
         ns_b_int,
         stream
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto qn_eloc_compact_count(const QnpepsElocConfig& cfg) -> i64

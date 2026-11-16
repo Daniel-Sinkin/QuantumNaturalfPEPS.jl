@@ -10,18 +10,14 @@ staggered_field(row, col) = isodd(row + col) ? -FIELD_STRENGTH : FIELD_STRENGTH
 
 pauli_z(spin) = spin == 0 ? 1.0 : -1.0
 
-site_index(row, col, ly) = Int32((row - 1) * ly + (col - 1))
+const PAULI_Z = ComplexF64[1 0; 0 -1]
 
-function heisenberg_with_field(lx, ly)::HeisenbergTerms
-    heisenberg = heisenberg_terms(lx, ly; J1=1.0, J2=0.0)
-    field = [
-        QnpepsElocDiagBond(
-            site_index(row, col, ly),
-            ELOC_DIAG_ONE_SITE_Z,
-            staggered_field(row, col),
-        ) for row in 1:lx for col in 1:ly
-    ]
-    return HeisenbergTerms(vcat(heisenberg.diag, field), heisenberg.flip)
+function heisenberg_with_field(lx, ly)::OperatorTerms
+    terms = heisenberg_terms(lx, ly; J1=1.0, J2=0.0)
+    for row in 1:lx, col in 1:ly
+        add_operator!(terms, (row, col), staggered_field(row, col) .* PAULI_Z)
+    end
+    return terms
 end
 
 function field_energy(config)::Float64

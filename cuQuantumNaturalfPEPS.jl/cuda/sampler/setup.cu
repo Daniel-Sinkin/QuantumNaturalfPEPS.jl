@@ -8,18 +8,16 @@
 #include "sampler/trunc_svd.cuh"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
 namespace qnpeps
 {
-[[nodiscard]] static auto prepare_density_storage(
-    qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg
-) -> bool
+static auto prepare_density_storage(qnpeps_ctx::SamplerState& state, const SamplerConfig& cfg)
+    -> void
 {
-    if (not cfg.density_route) return true;
+    if (not cfg.density_route) return;
     auto& density = state.density;
     const auto input_bond = std::max({cfg.chi_s, cfg.chi_c, cfg.dim_bond});
     const auto upper_bond = std::max(cfg.chi_s, cfg.chi_c);
@@ -31,7 +29,6 @@ namespace qnpeps
                                  * static_cast<usize>(upper_bond);
     density.result_value_count = static_cast<usize>(cfg.ly) * density.result_site_stride;
     density.host_dimensions.resize(3_uz * static_cast<usize>(cfg.ly));
-    return true;
 }
 
 [[nodiscard]] static auto fixed_pointer_slots(usize num_rows, usize num_cols) noexcept -> usize
@@ -215,9 +212,9 @@ static auto carve_sampler_arena(
     };
 }
 
-[[nodiscard]] static auto initialize_sampler_arena(
+static auto initialize_sampler_arena(
     qnpeps_ctx& ctx, const SamplerConfig& cfg, void* scratch, usize scratch_bytes
-) -> bool
+) -> void
 {
     auto capacity_cfg = cfg;
     auto& allocation = ctx.sampler.allocation;
@@ -225,7 +222,7 @@ static auto carve_sampler_arena(
     capacity_cfg.dim_batch = allocation.dim_batch_capacity;
     capacity_cfg.row_spin_stride = allocation.dim_batch_capacity;
 
-    if (not prepare_density_storage(ctx.sampler, capacity_cfg)) return false;
+    prepare_density_storage(ctx.sampler, capacity_cfg);
 
     ArenaCursor* active_cursor{};
     if (scratch)
@@ -236,23 +233,20 @@ static auto carve_sampler_arena(
     else
     {
         allocation.leased_arena = LeasedArena{ctx.linalg().device(), ctx.linalg().stream()};
-        if (err_state() != QNPEPS_OK) return false;
         active_cursor = &allocation.leased_arena.cursor();
     }
 
     allocation.active_cursor = active_cursor;
     ctx.sampler.samp.bind_linalg(ctx.linalg());
     carve_sampler_arena(ctx.sampler, capacity_cfg, *active_cursor);
-    if (err_state() != QNPEPS_OK) return false;
 
     ctx.sampler.samp.bind_arena(*active_cursor);
     ctx.linalg().svd_workspace().bind_arena(*active_cursor);
-    return true;
 }
 
-[[nodiscard]] static auto initialize_dlenv(
+static auto initialize_dlenv(
     qnpeps_ctx& ctx, const DlEnvView& dlenv_view, usize num_rows, usize num_cols
-) -> bool
+) -> void
 {
     auto& host_rows = ctx.sampler.samp.dlenv_host();
     const auto num_env_rows = num_rows - 1;
@@ -275,42 +269,36 @@ static auto carve_sampler_arena(
     }
 
     dlenv::ensure_sampling_buffers(ctx);
-    if (err_state() != QNPEPS_OK) return false;
     auto& active_lane = ctx.dlenv.lanes[ctx.dlenv.active_lane];
     dlenv::materialize_sampling_buffer(ctx, dlenv_view.values, active_lane.sampling);
-    return err_state() == QNPEPS_OK;
 }
 
-[[nodiscard]] static auto initialize_unit_tensor(qnpeps_ctx::SamplerState& state) -> bool
+static auto initialize_unit_tensor(qnpeps_ctx::SamplerState& state) -> void
 {
     HostTensor unit{Shape{1, 1, 1, 1}};
     unit.values()[0] = cf32{1.0f, 0.0f};
     upload_to_device(state.allocation.unit, unit);
-    return err_state() == QNPEPS_OK;
 }
 
-[[nodiscard]] static auto upload_rangefinder_pointer_arrays(Sampler& samp, usize lane_capacity)
-    -> bool
+static auto upload_rangefinder_pointer_arrays(Sampler& samp, usize lane_capacity) -> void
 {
     std::vector<cuFloatComplex*> host_pointers{};
     host_pointers.resize(lane_capacity);
 
-    const auto upload_pointers = [&](cuFloatComplex** device_pointers,
-                                     const CuSpanCF32& array) -> bool
+    const auto upload_pointers = [&](cuFloatComplex** device_pointers, const CuSpanCF32& array)
     {
         for (auto lane = 0_uz; lane < lane_capacity; ++lane)
             host_pointers[lane] = array.p + static_cast<i64>(lane) * array.stride;
         upload(device_pointers, host_pointers.data(), lane_capacity);
-        return err_state() == QNPEPS_OK;
     };
 
-    if (not upload_pointers(samp.gram_ptrs(), samp.gram())) return false;
-    return upload_pointers(samp.sketch_ptrs(), samp.sketch());
+    upload_pointers(samp.gram_ptrs(), samp.gram());
+    upload_pointers(samp.sketch_ptrs(), samp.sketch());
 }
 
-[[nodiscard]] static auto initialize_contraction_pointer_arrays(
+static auto initialize_contraction_pointer_arrays(
     qnpeps_ctx::SamplerState& state, usize num_rows, usize num_cols, usize lane_capacity
-) -> bool
+) -> void
 {
     auto& samp = state.samp;
     const auto num_env_rows = num_rows - 1;
@@ -379,7 +367,6 @@ static auto carve_sampler_arena(
     fill_broadcast_pointers(place_pointer_array(samp.dl_unit_ptrs()), state.allocation.unit);
 
     upload(device_pointer_region, host_pointers.data(), fixed_slots * lane_capacity);
-    if (err_state() != QNPEPS_OK) return false;
 
     samp.dlenv_env_ptrs().assign(num_env_rows, std::vector<cuFloatComplex**>(num_cols, nullptr));
     for (auto row = 0_uz; row < num_env_rows; ++row)
@@ -396,30 +383,26 @@ static auto carve_sampler_arena(
     }
 
     const auto expected_slots = pointer_slots(num_rows, num_cols);
-    if (pointer_slot != expected_slots)
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return false;
-    }
-    assert(pointer_slot == expected_slots);
-    return true;
+    require(
+        pointer_slot == expected_slots,
+        "sampler placed {} pointer slots, expected {}",
+        pointer_slot,
+        expected_slots
+    );
 }
 
-[[nodiscard]] static auto allocate_sampler_staging(
+static auto allocate_sampler_staging(
     qnpeps_ctx::SamplerState& state, usize lane_capacity, int num_sites
-) -> bool
+) -> void
 {
     const auto sample_capacity = lane_capacity * static_cast<usize>(num_sites);
-    CUDA_CHECK(
+    check(
         cudaHostAlloc(&state.staging.h_samples, sample_capacity * sizeof(u8), cudaHostAllocDefault)
     );
-    CUDA_CHECK(
-        cudaHostAlloc(&state.staging.h_logpc, lane_capacity * sizeof(f64), cudaHostAllocDefault)
-    );
-    CUDA_CHECK(
+    check(cudaHostAlloc(&state.staging.h_logpc, lane_capacity * sizeof(f64), cudaHostAllocDefault));
+    check(
         cudaHostAlloc(&state.staging.h_lognorm, lane_capacity * sizeof(f64), cudaHostAllocDefault)
     );
-    return err_state() == QNPEPS_OK;
 }
 
 namespace sampler
@@ -428,39 +411,32 @@ auto ctx_sampler_setup(qnpeps_ctx& ctx, const DlEnvView* dlenv, void* scratch, u
     -> void
 {
     if (ctx.sampler.allocation.allocated) return;
-    if (not dlenv or not dlenv->values)
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    const auto has_dlenv = dlenv != nullptr and dlenv->values != nullptr;
+    require(has_dlenv, "sampler setup without double-layer environment values");
 
     auto& state = ctx.sampler;
     auto& samp = state.samp;
     const auto cfg = make_sampler_config(ctx);
     samp.cfg() = cfg;
 
-    if (not initialize_sampler_arena(ctx, cfg, scratch, scratch_bytes)) return;
+    initialize_sampler_arena(ctx, cfg, scratch, scratch_bytes);
     const auto lane_capacity = static_cast<usize>(state.allocation.dim_batch_capacity);
     const auto num_rows = static_cast<usize>(cfg.lx);
     const auto num_cols = static_cast<usize>(cfg.ly);
 
-    if (not initialize_dlenv(ctx, *dlenv, num_rows, num_cols)) return;
-    if (not initialize_unit_tensor(state)) return;
+    initialize_dlenv(ctx, *dlenv, num_rows, num_cols);
+    initialize_unit_tensor(state);
 
-    if (not upload_rangefinder_pointer_arrays(samp, lane_capacity)) return;
-    if (not initialize_contraction_pointer_arrays(state, num_rows, num_cols, lane_capacity)) return;
+    upload_rangefinder_pointer_arrays(samp, lane_capacity);
+    initialize_contraction_pointer_arrays(state, num_rows, num_cols, lane_capacity);
 
-    if (not allocate_sampler_staging(state, lane_capacity, cfg.num_sites())) return;
+    allocate_sampler_staging(state, lane_capacity, cfg.num_sites());
     const auto graph_capturable = ctx.cfg.sampler_truncation_route == QNPEPS_TRUNCATION_DEFAULT
                                   and ctx.cfg.dlenv_truncation_route != QNPEPS_TRUNCATION_SVD;
     ctx.use_graph = graph_capturable;
 
     ctx.sampler.allocation.allocated = true;
-    if (not ctx.sampler.ready())
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(ctx.sampler.ready(), "sampler setup finished in a state that is not ready");
 }
 
 auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
@@ -476,8 +452,7 @@ auto ctx_sampler_free(qnpeps_ctx& ctx) -> void
     maybe_free_host(ctx.sampler.staging.h_samples);
     maybe_free_host(ctx.sampler.staging.h_logpc);
     maybe_free_host(ctx.sampler.staging.h_lognorm);
-    if (ctx.sampler.execution.graph)
-        CUDA_NOCHECK(cudaGraphExecDestroy(ctx.sampler.execution.graph));
+    if (ctx.sampler.execution.graph) unchecked(cudaGraphExecDestroy(ctx.sampler.execution.graph));
     if (ctx.sampler.allocation.active_cursor) ctx.linalg().svd_workspace() = DeviceBuffer{};
 
     ctx.sampler.allocation = {};

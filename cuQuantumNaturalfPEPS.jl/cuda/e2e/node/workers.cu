@@ -4,12 +4,13 @@
 #include "eo/shards.cuh"
 #include "sampler/draw.cuh"
 
+#include "core/defer.cuh"
+
 #include <chrono>
 #include <cuda_runtime.h>
+#include <string_view>
 
 using qn_e2e::cf;
-using qn_e2e::err_state;
-using qn_e2e::mg::map_sampler_status;
 using qn_e2e::mg::pin_thread_to_gpu_numa;
 using qn_e2e::mg::Shard;
 
@@ -25,43 +26,79 @@ auto copy_in(
 ) -> void
 {
     if (n->use_p2p)
-        QN_E2E_CUDA_CHECK(
-            cudaMemcpyPeer(destination, destination_device, source, source_device, bytes)
-        );
+        check(cudaMemcpyPeer(destination, destination_device, source, source_device, bytes));
     else
     {
         std::vector<u8> h{};
         h.resize(bytes);
-        QN_E2E_CUDA_CHECK(cudaMemcpy(h.data(), source, bytes, cudaMemcpyDeviceToHost));
+        check(cudaMemcpy(h.data(), source, bytes, cudaMemcpyDeviceToHost));
         const int save{[]
                        {
                            int d{};
-                           cudaGetDevice(&d);
+                           unchecked(cudaGetDevice(&d));
                            return d;
                        }()};
-        cudaSetDevice(destination_device);
-        QN_E2E_CUDA_CHECK(cudaMemcpy(destination, h.data(), bytes, cudaMemcpyHostToDevice));
-        cudaSetDevice(save);
+        unchecked(cudaSetDevice(destination_device));
+        const qnpeps::Defer restore_device{[&] { unchecked(cudaSetDevice(save)); }};
+        check(cudaMemcpy(destination, h.data(), bytes, cudaMemcpyHostToDevice));
     }
+}
+
+auto copy_to_ring(void* destination, const void* source, usize bytes) -> void
+{
+    const auto copy_status = cudaMemcpy(destination, source, bytes, cudaMemcpyDeviceToHost);
+    require(
+        copy_status == cudaSuccess,
+        Status::cuda,
+        "sample ring copy of {} bytes failed, {}",
+        bytes,
+        qnpeps::cuda_failure_text(copy_status)
+    );
+}
+
+auto require_epoch_alive(const NodeState* n, i64 epoch) -> void
+{
+    require(
+        n->status() == QNPEPS_OK,
+        "sampling for epoch {} stopped because the node already failed",
+        epoch
+    );
+}
+
+[[nodiscard]] auto command_stage(WorkerMode mode) -> std::string_view
+{
+    switch (mode)
+    {
+        case WorkerMode::Sample:
+            return "sampling";
+        case WorkerMode::Eo:
+            return "eo";
+        case WorkerMode::Gram:
+            return "minsr";
+        case WorkerMode::Idle:
+            return "idle";
+        case WorkerMode::Exit:
+            return "exit";
+    }
+    return "unknown";
 }
 }
 
 auto wait_epoch_ready(NodeState* n, i64 e) -> void
 {
     std::unique_lock<std::mutex> lock{n->epoch_m};
-    n->epoch_cv.wait(lock, [&] { return n->epoch_ready >= e or n->status() != QNPEPS_E2E_OK; });
+    n->epoch_cv.wait(lock, [&] { return n->epoch_ready >= e or n->status() != QNPEPS_OK; });
 }
 
 auto draw_fill(NodeState* n, GpuCtx& g, i64 first_batch, i64 nbatch, i64 ring_off, i64 epoch)
-    -> qnpeps_e2e_status
+    -> void
 {
-    if (nbatch <= 0) return QNPEPS_E2E_OK;
+    if (nbatch <= 0) return;
     wait_epoch_ready(n, epoch);
-    if (n->status() != QNPEPS_E2E_OK) return QNPEPS_E2E_ERR_INTERNAL;
+    require_epoch_alive(n, epoch);
 
     const i64 count{nbatch * n->dim_batch};
     const usize count_u{static_cast<usize>(count)};
-    qnpeps_status ss{QNPEPS_OK};
     {
         std::lock_guard<std::mutex> lk{n->sampler_m};
         const qnpeps::sampler::SampleArgs sample_args{
@@ -78,50 +115,27 @@ auto draw_fill(NodeState* n, GpuCtx& g, i64 first_batch, i64 nbatch, i64 ring_of
             .stream = g.stream(),
             .output_location = qnpeps::sampler::SampleOutputLocation::device
         };
-        ss = qnpeps::sampler::sample(n->scfg, sample_args, g.linalg());
-        if (ss == QNPEPS_OK) cudaStreamSynchronize(g.stream());
-    }
-    if (ss != QNPEPS_OK)
-    {
-        return ss == QNPEPS_ERR_OOM    ? QNPEPS_E2E_ERR_OOM
-               : ss == QNPEPS_ERR_CUDA ? QNPEPS_E2E_ERR_CUDA
-                                       : QNPEPS_E2E_ERR_INTERNAL;
+        qnpeps::collapse_to_internal(
+            {Status::out_of_memory, Status::cuda},
+            [&] { qnpeps::sampler::sample(n->scfg, sample_args, g.linalg()); }
+        );
+        unchecked(cudaStreamSynchronize(g.stream()));
     }
 
-    cudaError_t e{cudaSuccess};
-    e = cudaMemcpy(
+    copy_to_ring(
         n->ring_cfg + ring_off * n->sites,
         g.device_draw_samples,
-        count_u * static_cast<usize>(n->sites),
-        cudaMemcpyDeviceToHost
+        count_u * static_cast<usize>(n->sites)
     );
-    if (e == cudaSuccess)
-    {
-        e = cudaMemcpy(
-            n->ring_logq + ring_off,
-            g.device_draw_log_proposals,
-            sizeof(f64) * count_u,
-            cudaMemcpyDeviceToHost
-        );
-    }
-    if (e == cudaSuccess)
-    {
-        e = cudaMemcpy(
-            n->ring_lgauge + ring_off,
-            g.device_draw_log_gauges,
-            sizeof(f64) * count_u,
-            cudaMemcpyDeviceToHost
-        );
-    }
-    return e == cudaSuccess ? QNPEPS_E2E_OK : QNPEPS_E2E_ERR_CUDA;
+    copy_to_ring(n->ring_logq + ring_off, g.device_draw_log_proposals, sizeof(f64) * count_u);
+    copy_to_ring(n->ring_lgauge + ring_off, g.device_draw_log_gauges, sizeof(f64) * count_u);
 }
 
-auto draw_fill_multigpu(NodeState* n, i64 first_batch, i64 nbatch, i64 ring_off, i64 epoch)
-    -> qnpeps_e2e_status
+auto draw_fill_multigpu(NodeState* n, i64 first_batch, i64 nbatch, i64 ring_off, i64 epoch) -> void
 {
-    if (nbatch <= 0) return QNPEPS_E2E_OK;
+    if (nbatch <= 0) return;
     wait_epoch_ready(n, epoch);
-    if (n->status() != QNPEPS_E2E_OK) return QNPEPS_E2E_ERR_INTERNAL;
+    require_epoch_alive(n, epoch);
 
     const usize gpu_count{static_cast<usize>(n->gpus)};
     std::vector<qnpeps::Linalg*> linalg{gpu_count};
@@ -132,36 +146,37 @@ auto draw_fill_multigpu(NodeState* n, i64 first_batch, i64 nbatch, i64 ring_off,
     }
 
     const i64 count{nbatch * n->dim_batch};
-    qnpeps_status status{QNPEPS_OK};
-    {
-        std::lock_guard<std::mutex> lock{n->sampler_m};
-        status = qnpeps::sampler::sample_multigpu(
-            n->scfg,
-            qnpeps::sampler::SampleMultigpuArgs{
-                .device_peps = n->ctx[0].device_peps_slots[epoch & 1],
-                .device_dlenv = n->ctx[0].device_dlenv_slots[epoch & 1],
-                .gpus = n->gpus,
-                .output = n->ring_cfg + ring_off * n->sites,
-                .logpc_out = n->ring_logq + ring_off,
-                .lognorm_out = n->ring_lgauge + ring_off,
-                .n_samples = static_cast<u64>(count),
-                .batch_base = static_cast<u64>(first_batch),
-                .dim_batch = static_cast<u64>(n->dim_batch),
-                .output_location = qnpeps::sampler::SampleOutputLocation::host
-            },
-            linalg
-        );
-    }
-    return status == QNPEPS_OK         ? QNPEPS_E2E_OK
-           : status == QNPEPS_ERR_OOM  ? QNPEPS_E2E_ERR_OOM
-           : status == QNPEPS_ERR_CUDA ? QNPEPS_E2E_ERR_CUDA
-                                       : QNPEPS_E2E_ERR_INTERNAL;
+    std::lock_guard<std::mutex> lock{n->sampler_m};
+    qnpeps::collapse_to_internal(
+        {Status::out_of_memory, Status::cuda},
+        [&]
+        {
+            qnpeps::sampler::sample_multigpu(
+                n->scfg,
+                qnpeps::sampler::SampleMultigpuArgs{
+                    .device_peps = n->ctx[0].device_peps_slots[epoch & 1],
+                    .device_dlenv = n->ctx[0].device_dlenv_slots[epoch & 1],
+                    .gpus = n->gpus,
+                    .output = n->ring_cfg + ring_off * n->sites,
+                    .logpc_out = n->ring_logq + ring_off,
+                    .lognorm_out = n->ring_lgauge + ring_off,
+                    .n_samples = static_cast<u64>(count),
+                    .batch_base = static_cast<u64>(first_batch),
+                    .dim_batch = static_cast<u64>(n->dim_batch),
+                    .output_location = qnpeps::sampler::SampleOutputLocation::host
+                },
+                linalg
+            );
+        }
+    );
 }
 
-auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e_status
+auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> void
 {
-    if (sh.count <= 0) return QNPEPS_E2E_OK;
-    if (g == n->inject_oom_gpu) return QNPEPS_E2E_ERR_OOM;
+    if (sh.count <= 0) return;
+    require(
+        g != n->inject_oom_gpu, Status::out_of_memory, "injected out-of-memory failure on GPU {}", g
+    );
     const usize gpu_index{static_cast<usize>(g)};
     auto& c{n->ctx[gpu_index]};
     const bool is0{g == 0};
@@ -174,7 +189,7 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
         const i64 copy_count{n->use_distributed_minsr ? n->active_samples : sh.count};
         if (n->use_p2p)
         {
-            QN_E2E_CUDA_CHECK(cudaMemcpyPeer(
+            check(cudaMemcpyPeer(
                 c.device_eo_samples,
                 g,
                 n->device_samples + copy_base * n->sites,
@@ -183,7 +198,7 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
             ));
         }
         else
-            QN_E2E_CUDA_CHECK(cudaMemcpy(
+            check(cudaMemcpy(
                 c.device_eo_samples,
                 n->host_samples.data() + copy_base * n->sites,
                 static_cast<usize>(copy_count * n->sites),
@@ -191,7 +206,6 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
             ));
         samples = c.device_eo_samples + (sh.base - copy_base) * n->sites;
     }
-    if (err_state() != QNPEPS_E2E_OK) return err_state();
 
     auto lp{is0 ? n->device_log_amplitudes + 2 * sh.base : c.device_eo_log_amplitudes};
     auto el{is0 ? n->device_local_energies + 2 * sh.base : c.device_eo_local_energies};
@@ -209,7 +223,6 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
             .linalg = &c.linalg()
         }
     );
-    if (err_state() != QNPEPS_E2E_OK) return err_state();
 
     if (not is0)
     {
@@ -217,14 +230,14 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
         const usize scalar_bytes{sizeof(f64) * scalar_count};
         if (n->use_p2p)
         {
-            QN_E2E_CUDA_CHECK(cudaMemcpyPeer(
+            check(cudaMemcpyPeer(
                 n->device_log_amplitudes + 2 * sh.base,
                 0,
                 c.device_eo_log_amplitudes,
                 g,
                 scalar_bytes
             ));
-            QN_E2E_CUDA_CHECK(cudaMemcpyPeer(
+            check(cudaMemcpyPeer(
                 n->device_local_energies + 2 * sh.base,
                 0,
                 c.device_eo_local_energies,
@@ -238,19 +251,18 @@ auto eo_run_shard(NodeState* n, int g, const Shard& sh, i64 epoch) -> qnpeps_e2e
             auto& he{n->host_local_energies[gpu_index]};
             hl.resize(scalar_count);
             he.resize(scalar_count);
-            QN_E2E_CUDA_CHECK(cudaMemcpy(
+            check(cudaMemcpy(
                 hl.data(), c.device_eo_log_amplitudes, scalar_bytes, cudaMemcpyDeviceToHost
             ));
-            QN_E2E_CUDA_CHECK(cudaMemcpy(
+            check(cudaMemcpy(
                 he.data(), c.device_eo_local_energies, scalar_bytes, cudaMemcpyDeviceToHost
             ));
         }
     }
-    QN_E2E_CUDA_CHECK(cudaStreamSynchronize(c.stream()));
-    return err_state();
+    check(cudaStreamSynchronize(c.stream()));
 }
 
-NodeWorkers::NodeWorkers(NodeState& state) noexcept : state_{state} {}
+NodeWorkers::NodeWorkers(NodeState& state) : state_{state} {}
 
 NodeWorkers::~NodeWorkers()
 {
@@ -269,7 +281,7 @@ auto NodeWorkers::start() -> void
     dlbuild_ = std::thread{&NodeWorkers::dlbuild_main, this};
 }
 
-auto NodeWorkers::stop() noexcept -> void
+auto NodeWorkers::stop() -> void
 {
     const int worker_count{static_cast<int>(sync_.size())};
     const auto has_pending_worker = state_.predraw_pending and state_.gpus >= 2
@@ -305,11 +317,26 @@ auto NodeWorkers::stop() noexcept -> void
 
 auto NodeWorkers::worker_main(int g) -> void
 {
+    auto& s{*sync_[static_cast<usize>(g)]};
+    const qnpeps::Defer close_on_exit{[&]
+                                      {
+                                          {
+                                              std::lock_guard<std::mutex> lock{s.mutex};
+                                              s.closed = true;
+                                          }
+                                          s.command_done.notify_all();
+                                      }};
+    const auto outcome = guarded_labelled("worker", g, [&] { serve_commands(g); });
+    if (outcome != QNPEPS_OK) state_.fail(outcome, std::move(qnpeps::last_error_message()));
+}
+
+auto NodeWorkers::serve_commands(int g) -> void
+{
     auto* n{&state_};
     const usize gpu_index{static_cast<usize>(g)};
     auto& s{*sync_[gpu_index]};
     pin_thread_to_gpu_numa(g);
-    cudaSetDevice(g);
+    unchecked(cudaSetDevice(g));
     i64 seen{0};
     while (true)
     {
@@ -321,27 +348,36 @@ auto NodeWorkers::worker_main(int g) -> void
             seen = s.command_generation;
         }
         if (cmd.mode == WorkerMode::Exit) break;
+        auto outcome = QNPEPS_ERR_INTERNAL;
+        const qnpeps::Defer publish_done{[&]
+                                         {
+                                             {
+                                                 std::lock_guard<std::mutex> lock{s.mutex};
+                                                 s.status = outcome;
+                                                 s.done_generation = seen;
+                                             }
+                                             s.command_done.notify_all();
+                                         }};
         if (g == n->inject_delay_gpu and n->inject_delay_ms > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(n->inject_delay_ms));
-        qn_e2e::clear_err();
-        qnpeps_e2e_status st{QNPEPS_E2E_OK};
-        if (cmd.mode == WorkerMode::Sample)
-        {
-            st = draw_fill(
-                n, n->ctx[gpu_index], cmd.first_batch, cmd.nbatch, cmd.ring_off, cmd.epoch
-            );
-        }
-        else if (cmd.mode == WorkerMode::Eo)
-            st = eo_run_shard(n, g, cmd.shard, cmd.epoch);
-        else if (cmd.mode == WorkerMode::Gram)
-            st = static_cast<qnpeps_e2e_status>(qnpeps::minsr::build_gram_blockrow(*cmd.gram));
-        if (st != QNPEPS_E2E_OK) n->fail(st);
-        {
-            std::lock_guard<std::mutex> lock{s.mutex};
-            s.status = st;
-            s.done_generation = seen;
-        }
-        s.command_done.notify_all();
+        outcome = guarded_labelled(
+            command_stage(cmd.mode),
+            g,
+            [&]
+            {
+                if (cmd.mode == WorkerMode::Sample)
+                {
+                    draw_fill(
+                        n, n->ctx[gpu_index], cmd.first_batch, cmd.nbatch, cmd.ring_off, cmd.epoch
+                    );
+                }
+                else if (cmd.mode == WorkerMode::Eo)
+                    eo_run_shard(n, g, cmd.shard, cmd.epoch);
+                else if (cmd.mode == WorkerMode::Gram)
+                    qnpeps::minsr::build_gram_blockrow(*cmd.gram);
+            }
+        );
+        if (outcome != QNPEPS_OK) n->fail(outcome, std::move(qnpeps::last_error_message()));
     }
 }
 
@@ -356,12 +392,14 @@ auto NodeWorkers::issue(int g, const WorkerCmd& cmd) -> void
     s.command_ready.notify_all();
 }
 
-auto NodeWorkers::wait(int g) -> qnpeps_e2e_status
+auto NodeWorkers::wait(int g) -> qnpeps_status
 {
     auto& s{*sync_[static_cast<usize>(g)]};
     std::unique_lock<std::mutex> lock{s.mutex};
-    s.command_done.wait(lock, [&] { return s.done_generation == s.command_generation; });
-    return s.status;
+    s.command_done.wait(
+        lock, [&] { return s.done_generation == s.command_generation or s.closed; }
+    );
+    return s.done_generation == s.command_generation ? s.status : QNPEPS_ERR_INTERNAL;
 }
 
 auto NodeWorkers::run_dlbuild(i64 epoch) -> void
@@ -376,9 +414,18 @@ auto NodeWorkers::run_dlbuild(i64 epoch) -> void
 
 auto NodeWorkers::dlbuild_main() -> void
 {
+    const auto outcome = guarded_labelled("dlenv", [&] { serve_builds(); });
+    if (outcome == QNPEPS_OK) return;
+    state_.fail(outcome, std::move(qnpeps::last_error_message()));
+    std::lock_guard<std::mutex> lock{state_.epoch_m};
+    state_.epoch_cv.notify_all();
+}
+
+auto NodeWorkers::serve_builds() -> void
+{
     auto* n{&state_};
     pin_thread_to_gpu_numa(0);
-    cudaSetDevice(0);
+    unchecked(cudaSetDevice(0));
     i64 seen{0};
     while (true)
     {
@@ -390,46 +437,53 @@ auto NodeWorkers::dlbuild_main() -> void
             e = build_epoch_;
             seen = build_request_;
         }
-        qn_e2e::clear_err();
         const int slot{static_cast<int>(e & 1)};
         auto& g0{n->ctx[0]};
-        {
-            std::lock_guard<std::mutex> lk{n->sampler_m};
-            const qnpeps_status dlenv_status{qnpeps::dlenv::build_dlenv_packed(
-                n->scfg,
-                g0.device_peps_slots[slot],
-                g0.device_dlenv_slots[slot],
-                g0.device_row_logs,
-                g0.linalg()
-            )};
-            map_sampler_status(dlenv_status);
-            if (err_state() == QNPEPS_E2E_OK) cudaStreamSynchronize(g0.stream());
-        }
-        if (err_state() == QNPEPS_E2E_OK)
-        {
-            for (int w{1}; w < n->gpus; ++w)
+        const auto outcome = guarded_labelled(
+            "dlenv",
+            [&]
             {
-                auto& gw{n->ctx[static_cast<usize>(w)]};
-                copy_in(
-                    n,
-                    gw.device_peps_slots[slot],
-                    w,
-                    g0.device_peps_slots[slot],
-                    0,
-                    static_cast<usize>(n->peps_bytes)
-                );
-                copy_in(
-                    n,
-                    gw.device_dlenv_slots[slot],
-                    w,
-                    g0.device_dlenv_slots[slot],
-                    0,
-                    static_cast<usize>(n->dlenv_bytes)
-                );
+                {
+                    std::lock_guard<std::mutex> lk{n->sampler_m};
+                    qnpeps::collapse_to_internal(
+                        {Status::bad_config, Status::cuda, Status::out_of_memory},
+                        [&]
+                        {
+                            qnpeps::dlenv::build_dlenv_packed(
+                                n->scfg,
+                                g0.device_peps_slots[slot],
+                                g0.device_dlenv_slots[slot],
+                                g0.device_row_logs,
+                                g0.linalg()
+                            );
+                        }
+                    );
+                    unchecked(cudaStreamSynchronize(g0.stream()));
+                }
+                for (int w{1}; w < n->gpus; ++w)
+                {
+                    auto& gw{n->ctx[static_cast<usize>(w)]};
+                    copy_in(
+                        n,
+                        gw.device_peps_slots[slot],
+                        w,
+                        g0.device_peps_slots[slot],
+                        0,
+                        static_cast<usize>(n->peps_bytes)
+                    );
+                    copy_in(
+                        n,
+                        gw.device_dlenv_slots[slot],
+                        w,
+                        g0.device_dlenv_slots[slot],
+                        0,
+                        static_cast<usize>(n->dlenv_bytes)
+                    );
+                }
             }
-        }
-        cudaSetDevice(0);
-        if (err_state() != QNPEPS_E2E_OK) n->fail(err_state());
+        );
+        unchecked(cudaSetDevice(0));
+        if (outcome != QNPEPS_OK) n->fail(outcome, std::move(qnpeps::last_error_message()));
         {
             std::lock_guard<std::mutex> lk{n->epoch_m};
             n->epoch_ready = e;

@@ -9,8 +9,8 @@ namespace qnpeps::dlenv
 class BuildAllocation
 {
   public:
-    explicit BuildAllocation(qnpeps_ctx& ctx) noexcept : ctx_(&ctx), dl_(ctx.dl) {}
-    explicit BuildAllocation(BuildState& state) noexcept : dl_(state) {}
+    explicit BuildAllocation(qnpeps_ctx& ctx) : ctx_(&ctx), dl_(ctx.dl) {}
+    explicit BuildAllocation(BuildState& state) : dl_(state) {}
 
     auto carve(
         Linalg& la,
@@ -109,19 +109,17 @@ class BuildAllocation
             peps_total += peps_row_elems(dims, row, row + 1);
         if (not ctx.dl.peps_buf)
         {
-            CUDA_CHECK(cudaMalloc(
+            check(cudaMalloc(
                 reinterpret_cast<void**>(&ctx.dl.peps_buf),
                 static_cast<usize>(peps_total) * sizeof(cuFloatComplex)
             ));
         }
-        if (err_state() != QNPEPS_OK) return;
 
         const int chi_c{std::min(cfg.chi_dl, dim_bond * dim_bond)};
         const auto num_env_rows = static_cast<usize>(lx - 1);
         const auto num_cols = static_cast<usize>(ly);
         const usize scales_count{num_env_rows * num_cols};
         ctx.dl.leased_arena = LeasedArena{la.device(), la.stream()};
-        if (err_state() != QNPEPS_OK) return;
         carve(
             la, dims, chi_c, num_env_rows, density_route, scales_count, ctx.dl.leased_arena.cursor()
         );
@@ -130,8 +128,7 @@ class BuildAllocation
         for (auto& lane : ctx.dlenv.lanes)
         {
             if (lane.packed) continue;
-            CUDA_CHECK(cudaMalloc(&lane.packed, static_cast<usize>(dlenv_bytes)));
-            if (err_state() != QNPEPS_OK) return;
+            check(cudaMalloc(&lane.packed, static_cast<usize>(dlenv_bytes)));
         }
 
         init_dl_units(la, ctx.dl.unit_environment, ctx.dl.initial_factor);
@@ -139,16 +136,16 @@ class BuildAllocation
         ctx.dl.allocated = true;
     }
 
-    auto release() noexcept -> void
+    auto release() -> void
     {
         if (dl_.peps_buf)
         {
-            CUDA_NOCHECK(cudaFree(dl_.peps_buf));
+            unchecked(cudaFree(dl_.peps_buf));
             dl_.peps_buf = nullptr;
         }
         for (auto& entry : dl_.omegas)
         {
-            if (entry.second) CUDA_NOCHECK(cudaFree(entry.second));
+            if (entry.second) unchecked(cudaFree(entry.second));
         }
         dl_.omegas.clear();
         dl_.leased_arena = LeasedArena{};
@@ -158,12 +155,12 @@ class BuildAllocation
         {
             if (lane.packed)
             {
-                CUDA_NOCHECK(cudaFree(lane.packed));
+                unchecked(cudaFree(lane.packed));
                 lane.packed = nullptr;
             }
             if (lane.graph)
             {
-                CUDA_NOCHECK(cudaGraphExecDestroy(lane.graph));
+                unchecked(cudaGraphExecDestroy(lane.graph));
                 lane.graph = nullptr;
             }
         }

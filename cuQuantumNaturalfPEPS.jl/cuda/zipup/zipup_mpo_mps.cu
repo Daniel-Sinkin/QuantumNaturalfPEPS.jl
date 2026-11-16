@@ -1,3 +1,4 @@
+#include "capi/internal/format.cuh"
 #include "core/arena_cursor.cuh"
 #include "core/cuda_utils.cuh"
 #include "core/defer.cuh"
@@ -94,14 +95,15 @@ struct Layout
     return true;
 }
 
-[[nodiscard]] auto validate_descriptor(const QnpepsZipupMpoMpsDesc* descriptor, Layout& layout)
-    -> qnpeps_status
+auto validate_descriptor(const QnpepsZipupMpoMpsDesc* descriptor, Layout& layout) -> void
 {
-    if (not descriptor) return QNPEPS_ERR_NULL_ARG;
-    if (descriptor->struct_size != sizeof(QnpepsZipupMpoMpsDesc)) return QNPEPS_ERR_BAD_VERSION;
-    if (descriptor->reserved != 0 or descriptor->num_sites < 1 or descriptor->maxdim < 1)
-        return QNPEPS_ERR_BAD_CONFIG;
-    if (not descriptor->mpo_dims or not descriptor->mps_dims) return QNPEPS_ERR_NULL_ARG;
+    require(descriptor != nullptr, Status::null_argument, "zipup descriptor is null");
+    require_struct_size(*descriptor, "zipup descriptor");
+    const auto valid_counts =
+        descriptor->reserved == 0 and descriptor->num_sites >= 1 and descriptor->maxdim >= 1;
+    require(valid_counts, Status::bad_config, "zipup descriptor rejects {}", *descriptor);
+    const auto has_dims = descriptor->mpo_dims != nullptr and descriptor->mps_dims != nullptr;
+    require(has_dims, Status::null_argument, "zipup descriptor misses the MPO or MPS dimensions");
 
     const auto num_sites = static_cast<usize>(descriptor->num_sites);
     layout = {};
@@ -124,10 +126,27 @@ struct Layout
         const auto positive = mpo_left > 0 and physical_in > 0 and physical_out > 0
                               and mpo_right > 0 and mps_left > 0 and mps_physical > 0
                               and mps_right > 0;
-        if (not positive) return QNPEPS_ERR_BAD_CONFIG;
-        if (mpo_left != previous_mpo_right or mps_left != previous_mps_right)
-            return QNPEPS_ERR_BAD_CONFIG;
-        if (physical_in != mps_physical) return QNPEPS_ERR_BAD_CONFIG;
+        require(positive, Status::bad_config, "zipup site {} has a nonpositive extent", site);
+        const auto bonds_chain = mpo_left == previous_mpo_right and mps_left == previous_mps_right;
+        require(
+            bonds_chain,
+            Status::bad_config,
+            "zipup site {} left bonds MPO {} and MPS {} do not match the previous right bonds {} "
+            "and {}",
+            site,
+            mpo_left,
+            mps_left,
+            previous_mpo_right,
+            previous_mps_right
+        );
+        require(
+            physical_in == mps_physical,
+            Status::bad_config,
+            "zipup site {} MPO input dimension {} differs from MPS physical dimension {}",
+            site,
+            physical_in,
+            mps_physical
+        );
 
         const auto valid_integer_products = product_fits_int({output_left, physical_out})
                                             and product_fits_int({mps_right, mpo_right})
@@ -135,10 +154,12 @@ struct Layout
                                             and product_fits_int({physical_in, mps_right})
                                             and product_fits_int({mpo_left, physical_in})
                                             and product_fits_int({physical_out, mpo_right});
-        if (not valid_integer_products)
-        {
-            return QNPEPS_ERR_BAD_CONFIG;
-        }
+        require(
+            valid_integer_products,
+            Status::bad_config,
+            "zipup site {} matrix extents exceed the int range",
+            site
+        );
 
         const int rows{output_left * physical_out};
         const int cols{mps_right * mpo_right};
@@ -150,10 +171,12 @@ struct Layout
             and element_product_fits_bytes({output_left, mpo_left, mps_left})
             and element_product_fits_bytes({output_left, mpo_left, physical_in, mps_right})
             and element_product_fits_bytes({output_left, mps_right, physical_out, mpo_right});
-        if (not valid_byte_products)
-        {
-            return QNPEPS_ERR_BAD_CONFIG;
-        }
+        require(
+            valid_byte_products,
+            Status::bad_config,
+            "zipup site {} tensor bytes exceed the i64 range",
+            site
+        );
         SiteLayout site_layout{
             .mpo = Shape{mpo_left, physical_in, physical_out, mpo_right},
             .mps = Shape{mps_left, mps_physical, mps_right},
@@ -165,18 +188,25 @@ struct Layout
         const auto appended_mpo = append_elements(layout.mpo_elements, site_layout.mpo);
         const auto appended_mps = append_elements(layout.mps_elements, site_layout.mps);
         const auto appended_output = append_elements(layout.output_elements, site_layout.output);
-        if (not appended_mpo or not appended_mps or not appended_output)
-        {
-            return QNPEPS_ERR_BAD_CONFIG;
-        }
+        require(
+            appended_mpo and appended_mps and appended_output,
+            Status::bad_config,
+            "zipup element totals overflow at site {}",
+            site
+        );
         layout.sites.push_back(std::move(site_layout));
         output_left = output_right;
         previous_mpo_right = mpo_right;
         previous_mps_right = mps_right;
     }
 
-    if (previous_mpo_right != 1 or previous_mps_right != 1) return QNPEPS_ERR_BAD_CONFIG;
-    return QNPEPS_OK;
+    require(
+        previous_mpo_right == 1 and previous_mps_right == 1,
+        Status::bad_config,
+        "zipup chain ends in right bonds MPO {} and MPS {}, expected 1 and 1",
+        previous_mpo_right,
+        previous_mps_right
+    );
 }
 
 [[nodiscard]] auto elements_to_bytes(usize elements, usize& bytes) -> bool
@@ -185,14 +215,18 @@ struct Layout
            and bytes <= static_cast<usize>(std::numeric_limits<i64>::max());
 }
 
-[[nodiscard]] auto validate_args(const Layout& layout, const QnpepsZipupMpoMpsArgs* args)
-    -> qnpeps_status
+auto validate_args(const Layout& layout, const QnpepsZipupMpoMpsArgs* args) -> void
 {
-    if (not args) return QNPEPS_ERR_NULL_ARG;
-    if (args->struct_size != sizeof(QnpepsZipupMpoMpsArgs)) return QNPEPS_ERR_BAD_VERSION;
-    if (args->reserved != 0) return QNPEPS_ERR_BAD_CONFIG;
-    if (not args->mpo or not args->mps or not args->output or not args->log_gauge)
-        return QNPEPS_ERR_NULL_ARG;
+    require(args != nullptr, Status::null_argument, "zipup arguments are null");
+    require_struct_size(*args, "zipup arguments");
+    require(
+        args->reserved == 0,
+        Status::bad_config,
+        "zipup arguments reserved field is {}",
+        args->reserved
+    );
+    const auto has_buffers = args->mpo and args->mps and args->output and args->log_gauge;
+    require(has_buffers, Status::null_argument, "zipup arguments miss a buffer");
 
     usize mpo_bytes{};
     usize mps_bytes{};
@@ -201,17 +235,28 @@ struct Layout
     const auto valid_mps_bytes = elements_to_bytes(layout.mps_elements, mps_bytes);
     const auto valid_output_bytes =
         elements_to_bytes(layout.output_elements, output_bytes_required);
-    if (not valid_mpo_bytes or not valid_mps_bytes or not valid_output_bytes)
-    {
-        return QNPEPS_ERR_BAD_CONFIG;
-    }
+    require(
+        valid_mpo_bytes and valid_mps_bytes and valid_output_bytes,
+        Status::bad_config,
+        "zipup byte totals exceed the i64 range"
+    );
     const auto valid_input_bytes = args->mpo_bytes == mpo_bytes and args->mps_bytes == mps_bytes;
-    const auto valid_output_capacity = args->output_bytes >= output_bytes_required;
-    if (not valid_input_bytes or not valid_output_capacity)
-    {
-        return QNPEPS_ERR_BAD_CONFIG;
-    }
-    return QNPEPS_OK;
+    require(
+        valid_input_bytes,
+        Status::bad_config,
+        "zipup inputs hold {} MPO and {} MPS bytes, the descriptor needs {} and {}",
+        args->mpo_bytes,
+        args->mps_bytes,
+        mpo_bytes,
+        mps_bytes
+    );
+    require(
+        args->output_bytes >= output_bytes_required,
+        Status::bad_config,
+        "zipup output holds {} bytes, needs {}",
+        args->output_bytes,
+        output_bytes_required
+    );
 }
 
 class MaterializedPanelProvider
@@ -229,7 +274,7 @@ class MaterializedPanelProvider
     ) const -> DeviceTensor
     {
         DeviceTensor left_mps{};
-        const auto left_ok = contract(
+        contract(
             scratch,
             la,
             {
@@ -242,10 +287,9 @@ class MaterializedPanelProvider
             mps_[site],
             left_mps
         );
-        if (not left_ok) return {};
 
         DeviceTensor unpermuted_panel{};
-        const auto panel_ok = contract(
+        contract(
             scratch,
             la,
             {
@@ -258,7 +302,6 @@ class MaterializedPanelProvider
             mpo_[site],
             unpermuted_panel
         );
-        if (not panel_ok) return {};
         return permute_axes(scratch, unpermuted_panel, {0, 2, 1, 3}, false, la.stream());
     }
 
@@ -293,7 +336,7 @@ class FusedPepsPanelProvider
         };
 
         DeviceTensor left_environment{};
-        const auto environment_ok = contract(
+        contract(
             scratch,
             la,
             {
@@ -306,10 +349,9 @@ class FusedPepsPanelProvider
             environment,
             left_environment
         );
-        if (not environment_ok) return {};
 
         DeviceTensor left_environment_ket{};
-        const auto ket_ok = contract(
+        contract(
             scratch,
             la,
             {
@@ -322,10 +364,9 @@ class FusedPepsPanelProvider
             ket,
             left_environment_ket
         );
-        if (not ket_ok) return {};
 
         DeviceTensor column_tensor{};
-        const auto bra_ok = contract(
+        contract(
             scratch,
             la,
             {
@@ -339,7 +380,6 @@ class FusedPepsPanelProvider
             ket,
             column_tensor
         );
-        if (not bra_ok) return {};
 
         const auto column_matrix =
             permute_axes(scratch, column_tensor, {0, 2, 4, 1, 3, 5}, false, la.stream());
@@ -366,7 +406,7 @@ auto analyze_power_input(CuMatrixCF32 input, int* exponent, int* fail_flag, cuda
     cu_input_exponent<<<1, k_tree_reduce_threads, 0, stream>>>(
         {input.data(), static_cast<i64>(input.rows()) * input.cols(), exponent, fail_flag}
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto scale_power_intermediate(
@@ -384,19 +424,19 @@ auto scale_power_intermediate(
          next_inner_dimension,
          fail_flag}
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }
 
-auto set_rangefinder_failure(int failure) -> qnpeps_status
+auto raise_rangefinder_failure(int failure) -> void
 {
-    if ((failure & k_power_nonfinite_flag) != 0)
-        return set_err_at(
-            QNPEPS_ERR_INTERNAL, __FILE__, __LINE__, "nonfinite zipup power intermediate"
-        );
-    if (failure != 0) return set_err(QNPEPS_ERR_CUDA);
-    return QNPEPS_OK;
+    require(
+        (failure & k_power_nonfinite_flag) == 0,
+        "nonfinite zipup power intermediate, failure flags {}",
+        failure
+    );
+    require(failure == 0, Status::cuda, "zipup rangefinder QR reported failure flags {}", failure);
 }
 
 auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const RangefinderArgs& args)
@@ -410,12 +450,9 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
 
     auto sketch = alloc(arenas.scratch, {args.rows, rank});
     auto projection = alloc(arenas.scratch, {args.cols, rank});
-    if (err_state() != QNPEPS_OK) return;
-    if (not state.power_input_exponent)
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        state.power_input_exponent != nullptr, "zipup rangefinder has no power exponent buffer"
+    );
 
     const std::pair key{args.cols, rank};
     auto omega_it = state.omegas->find(key);
@@ -425,15 +462,15 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
         host_omega.resize(static_cast<usize>(args.cols) * rank_u);
         state.rangefinder_rng->fill_complex_normal(std::span{host_omega});
         cuFloatComplex* device_omega{};
-        CUDA_CHECK(cudaMalloc(&device_omega, host_omega.size() * sizeof(cuFloatComplex)));
-        if (err_state() != QNPEPS_OK) return;
+        check(cudaMalloc(&device_omega, host_omega.size() * sizeof(cuFloatComplex)));
+        auto stored = false;
+        const Defer free_after_failure{[&]
+                                       {
+                                           if (not stored) unchecked(cudaFree(device_omega));
+                                       }};
         upload(device_omega, host_omega.data(), host_omega.size());
-        if (err_state() != QNPEPS_OK)
-        {
-            CUDA_NOCHECK(cudaFree(device_omega));
-            return;
-        }
         omega_it = state.omegas->emplace(key, device_omega).first;
+        stored = true;
     }
 
     const CuMatrixCF32 omega_matrix{omega_it->second, args.cols, rank};
@@ -464,7 +501,6 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
     if (state.svd_route)
     {
         trunc_svd::orthonormalize_panel(la, sketch_matrix);
-        if (err_state() != QNPEPS_OK) return;
     }
     else
     {
@@ -475,7 +511,7 @@ auto rangefinder(State& state, Linalg& la, const Arenas& arenas, const Rangefind
         {
             const auto* qr_status = byte_offset<int>(qr_scratch, qr_layout.reflector_bytes);
             cu_or_status<<<1, 1, 0, la.stream()>>>(qr_status, state.fail_flag);
-            CUDA_CHECK(cudaGetLastError());
+            check(cudaGetLastError());
         }
     }
 
@@ -493,12 +529,12 @@ auto normalize_factor(Linalg& la, ArenaCursor& scratch, DeviceTensor factor, f64
     auto* device_inverse_scale = scratch.take<f32>(1);
     const AbsmaxInverseArgs args{factor.d, elements, device_inverse_scale, device_scale};
     cu_absmax_inverse<<<1, k_tree_reduce_threads, 0, la.stream()>>>(args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     const auto blocks = static_cast<u32>(ceil_div(elements, k_tree_reduce_threads));
     cu_apply_inverse_scale<<<blocks, k_tree_reduce_threads, 0, la.stream()>>>(
         factor.d, elements, device_inverse_scale
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto accumulate_log_scales(const State& state, usize count, f64& log_scale) -> void
@@ -508,11 +544,7 @@ auto accumulate_log_scales(const State& state, usize count, f64& log_scale) -> v
     download(scales.data(), state.device_scales, count);
     for (const auto scale : scales)
     {
-        if (not std::isfinite(scale))
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return;
-        }
+        require(std::isfinite(scale), "zipup site scale {} is not finite", scale);
         if (scale > 0.0) log_scale += std::log(scale);
     }
 }
@@ -528,11 +560,8 @@ auto release_omegas(State& state) -> void
 auto fused_peps_row(State& state, Linalg& la, const Arenas& arenas, const FusedPepsRowArgs& args)
     -> std::vector<DeviceTensor>
 {
-    if (not args.row_ket or args.row_ket->empty())
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    const auto has_row = args.row_ket != nullptr and not args.row_ket->empty();
+    require(has_row, "fused zipup row has no ket tensors");
     FusedPepsPanelProvider provider{*args.row_ket, args.environment, args.unit_environment};
     return sweep(
         state,
@@ -549,23 +578,24 @@ auto fused_peps_row(State& state, Linalg& la, const Arenas& arenas, const FusedP
 auto output_bytes(const QnpepsZipupMpoMpsDesc* descriptor) -> i64
 {
     Layout layout{};
-    if (validate_descriptor(descriptor, layout) != QNPEPS_OK) return -1;
+    validate_descriptor(descriptor, layout);
     usize bytes{};
-    if (not elements_to_bytes(layout.output_elements, bytes)) return -1;
+    require(
+        elements_to_bytes(layout.output_elements, bytes),
+        Status::bad_config,
+        "zipup output of {} elements exceeds the i64 byte range",
+        layout.output_elements
+    );
     return static_cast<i64>(bytes);
 }
 
-auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArgs* args)
-    -> qnpeps_status
+auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArgs* args) -> void
 {
     Layout layout{};
-    const auto descriptor_status = validate_descriptor(descriptor, layout);
-    if (descriptor_status != QNPEPS_OK) return set_err(descriptor_status);
-    const auto args_status = validate_args(layout, args);
-    if (args_status != QNPEPS_OK) return set_err(args_status);
+    validate_descriptor(descriptor, layout);
+    validate_args(layout, args);
 
     auto session = make_session(static_cast<cudaStream_t>(args->stream));
-    if (not session) return err_state();
     auto& linalg = session->linalg();
     const auto stream = linalg.stream();
     auto transient_arena = linalg.transient_arena();
@@ -593,7 +623,6 @@ auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArg
     constexpr cuFloatComplex one{1.0f, 0.0f};
     upload_async(linalg, initial_factor, &one, 1);
     zero_async(linalg, fail_flag, 1);
-    if (err_state() != QNPEPS_OK) return err_state();
 
     std::vector<DeviceTensor> mpo{};
     std::vector<DeviceTensor> mps{};
@@ -624,26 +653,22 @@ auto execute(const QnpepsZipupMpoMpsDesc* descriptor, const QnpepsZipupMpoMpsArg
             .maxdim = descriptor->maxdim,
         }
     );
-    if (err_state() == QNPEPS_OK)
+    auto* output_base = static_cast<cuFloatComplex*>(args->output);
+    for (auto site = 0_uz; site < layout.sites.size(); ++site)
     {
-        auto* output_base = static_cast<cuFloatComplex*>(args->output);
-        for (auto site = 0_uz; site < layout.sites.size(); ++site)
-        {
-            copy_device_async(
-                linalg,
-                output_base + layout.sites[site].output_offset,
-                output[site].d,
-                output[site].num_elems()
-            );
-        }
+        copy_device_async(
+            linalg,
+            output_base + layout.sites[site].output_offset,
+            output[site].d,
+            output[site].num_elems()
+        );
     }
 
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    check(cudaStreamSynchronize(stream));
     int fail_host{};
-    if (err_state() == QNPEPS_OK) download(&fail_host, fail_flag, 1);
-    if (err_state() == QNPEPS_OK) set_rangefinder_failure(fail_host);
-    if (err_state() == QNPEPS_OK) accumulate_log_scales(state, layout.sites.size(), log_scale);
-    if (err_state() == QNPEPS_OK) *args->log_gauge = log_scale;
-    return err_state();
+    download(&fail_host, fail_flag, 1);
+    raise_rangefinder_failure(fail_host);
+    accumulate_log_scales(state, layout.sites.size(), log_scale);
+    *args->log_gauge = log_scale;
 }
 }

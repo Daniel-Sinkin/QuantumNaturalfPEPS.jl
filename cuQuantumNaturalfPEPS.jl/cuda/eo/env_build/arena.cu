@@ -3,95 +3,88 @@
 namespace qn_eloc::env
 {
 
-auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> bool
+auto arena_product(std::initializer_list<std::uint64_t> factors, usize& result) -> void
 {
     auto product = std::uint64_t{1};
     for (const std::uint64_t factor : factors)
     {
-        if (factor != 0 and product > std::numeric_limits<std::uint64_t>::max() / factor)
-        {
-            qn::set_err(QNPEPS_ELOC_ERR_OOM);
-            result = 0;
-            return false;
-        }
+        const auto overflows =
+            factor != 0 and product > std::numeric_limits<std::uint64_t>::max() / factor;
+        require(
+            not overflows,
+            Status::out_of_memory,
+            "arena size product {} times {} overflows",
+            product,
+            factor
+        );
         product *= factor;
     }
-    if (product > std::numeric_limits<usize>::max())
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        result = 0;
-        return false;
-    }
+    require(
+        product <= std::numeric_limits<usize>::max(),
+        Status::out_of_memory,
+        "arena size {} exceeds the size range",
+        product
+    );
     result = static_cast<usize>(product);
-    return true;
 }
 
-auto arena_sum(usize left, usize right, usize& result) -> bool
+auto arena_sum(usize left, usize right, usize& result) -> void
 {
-    if (right > std::numeric_limits<usize>::max() - left)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        result = 0;
-        return false;
-    }
+    require(
+        right <= std::numeric_limits<usize>::max() - left,
+        Status::out_of_memory,
+        "arena size sum {} plus {} overflows",
+        left,
+        right
+    );
     result = left + right;
-    return true;
 }
 
-auto arena_accumulate(usize& total, usize term) -> bool
+auto arena_accumulate(usize& total, usize term) -> void
 {
     usize result{};
-    if (not arena_sum(total, term, result)) return false;
+    arena_sum(total, term, result);
     total = result;
-    return true;
 }
 
-auto arena_align(usize value, usize& result) -> bool
+auto arena_align(usize value, usize& result) -> void
 {
     usize padded{};
-    if (not arena_sum(value, static_cast<usize>(CUDA_MALLOC_ALIGN - 1), padded)) return false;
+    arena_sum(value, static_cast<usize>(CUDA_MALLOC_ALIGN - 1), padded);
     result = padded & ~static_cast<usize>(CUDA_MALLOC_ALIGN - 1);
-    return true;
 }
 
-auto arena_slot(std::initializer_list<std::uint64_t> factors, i64& result) -> bool
+auto arena_slot(std::initializer_list<std::uint64_t> factors, i64& result) -> void
 {
     usize product{};
-    if (not arena_product(factors, product)) return false;
-    if (product > static_cast<usize>(std::numeric_limits<i64>::max()))
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        result = 0;
-        return false;
-    }
+    arena_product(factors, product);
+    require(
+        product <= static_cast<usize>(std::numeric_limits<i64>::max()),
+        Status::out_of_memory,
+        "arena slot of {} elements exceeds the i64 range",
+        product
+    );
     result = static_cast<i64>(product);
-    return true;
 }
 
-auto arena_int(std::initializer_list<std::uint64_t> factors, int& result) -> bool
+auto arena_int(std::initializer_list<std::uint64_t> factors, int& result) -> void
 {
     usize product{};
-    if (not arena_product(factors, product)) return false;
-    if (product > static_cast<usize>(std::numeric_limits<int>::max()))
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        result = 0;
-        return false;
-    }
+    arena_product(factors, product);
+    require(
+        product <= static_cast<usize>(std::numeric_limits<int>::max()),
+        Status::out_of_memory,
+        "arena extent {} exceeds the int range",
+        product
+    );
     result = static_cast<int>(product);
-    return true;
 }
 
-auto arena_i64_sum(i64 left, i64 right, i64& result) -> bool
+auto arena_i64_sum(i64 left, i64 right, i64& result) -> void
 {
-    if (left < 0 or right < 0 or right > std::numeric_limits<i64>::max() - left)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        result = 0;
-        return false;
-    }
+    const auto valid = left >= 0 and right >= 0 and right <= std::numeric_limits<i64>::max() - left;
+    require(valid, Status::out_of_memory, "arena offset sum {} plus {} is invalid", left, right);
     result = left + right;
-    return true;
 }
 
 }

@@ -7,7 +7,7 @@ namespace qnpeps::densitymatrix
 {
 using HandleState = LinalgState;
 
-[[nodiscard]] auto enter_handle_state(Linalg& linalg, HandleState& state) -> bool;
+auto enter_handle_state(Linalg& linalg, HandleState& state) -> void;
 auto restore_handle_state(Linalg& linalg, const HandleState& state) -> void;
 auto matmul(
     Linalg& linalg,

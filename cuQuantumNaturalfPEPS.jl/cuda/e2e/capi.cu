@@ -1,5 +1,7 @@
+#include "capi/internal/format.cuh"
 #include "../minsr/solve.cuh"
 #include "common.cuh"
+#include "core/defer.cuh"
 #include "dans_qnpeps_e2e.h"
 #include "layout.cuh"
 
@@ -11,25 +13,108 @@
 
 namespace
 {
-auto check_cfg(const QnpepsE2eConfig* c) -> qnpeps_e2e_status
+auto validate_config(const QnpepsE2eConfig* config) -> void
 {
-    if (not c) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (c->struct_size != sizeof(QnpepsE2eConfig)) return QNPEPS_E2E_ERR_BAD_VERSION;
-    if (c->lx < 2 or c->ly < 2 or c->dim_phys != 2 or c->dim_bond < 1)
-        return QNPEPS_E2E_ERR_BAD_CONFIG;
-    return QNPEPS_E2E_OK;
+    require(config != nullptr, Status::null_argument, "end-to-end config is null");
+    require_struct_size(*config, "end-to-end config");
+    const auto valid_geometry =
+        config->lx >= 2 and config->ly >= 2 and config->dim_phys == 2 and config->dim_bond >= 1;
+    require(valid_geometry, Status::bad_config, "end-to-end config rejects {}", *config);
 }
+
 auto as_cf(const qnpeps_e2e_cbuf* p) -> const qn_e2e::cf*
 {
     return reinterpret_cast<const qn_e2e::cf*>(p);
 }
+
 auto as_cf(qnpeps_e2e_cbuf* p) -> qn_e2e::cf*
 {
     return reinterpret_cast<qn_e2e::cf*>(p);
 }
+
+struct MinsrInputs
+{
+    const uint8_t* device_samples;
+    const double* device_log_amplitudes;
+    const double* device_local_energies;
+    const double* device_log_proposals;
+    const qnpeps_e2e_cbuf* device_gram;
+    const qnpeps_e2e_cbuf* device_rows;
+    const qnpeps_e2e_cbuf* host_rows;
+    double relative_cut;
+    double absolute_cut;
+    qnpeps_e2e_cbuf* theta_output;
+    double* energy_mean_output;
+    double* energy_variance_output;
+    double* ess_output;
+};
+
+auto validate_inputs(const MinsrInputs& inputs) -> void
+{
+    const auto has_buffers =
+        inputs.device_samples and inputs.device_log_amplitudes and inputs.device_local_energies
+        and inputs.device_log_proposals and inputs.device_gram and inputs.theta_output
+        and inputs.energy_mean_output and inputs.energy_variance_output and inputs.ess_output;
+    require(
+        has_buffers, Status::null_argument, "end-to-end MinSR misses an input or output buffer"
+    );
+    require(
+        static_cast<bool>(inputs.device_rows) != static_cast<bool>(inputs.host_rows),
+        Status::null_argument,
+        "end-to-end MinSR needs exactly one of device rows and host rows"
+    );
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_minsr_ctx_create(
+auto minsr_context_create(
+    const QnpepsE2eConfig* config,
+    int64_t n_samples,
+    int64_t host_tile_bytes,
+    void* stream,
+    qnpeps_e2e_minsr_ctx** out
+) -> void
+{
+    require(out != nullptr, Status::null_argument, "end-to-end MinSR context output is null");
+    *out = nullptr;
+    validate_config(config);
+    require(
+        n_samples >= 2,
+        Status::bad_config,
+        "end-to-end MinSR needs at least 2 samples, got {}",
+        n_samples
+    );
+    qnpeps::minsr::minsr_context_create(
+        *config, n_samples, host_tile_bytes, static_cast<cudaStream_t>(stream), out
+    );
+}
+
+auto minsr_context_run(qnpeps_e2e_minsr_ctx& context, const MinsrInputs& inputs) -> void
+{
+    qnpeps::minsr::minsr_context_run(
+        context,
+        inputs.device_samples,
+        inputs.device_log_amplitudes,
+        inputs.device_local_energies,
+        inputs.device_log_proposals,
+        as_cf(inputs.device_gram),
+        as_cf(inputs.device_rows),
+        as_cf(inputs.host_rows),
+        inputs.relative_cut,
+        inputs.absolute_cut,
+        as_cf(inputs.theta_output),
+        inputs.energy_mean_output,
+        inputs.energy_variance_output,
+        inputs.ess_output
+    );
+}
+
+auto validate_count_query(const QnpepsE2eConfig* config, const void* output) -> void
+{
+    validate_config(config);
+    require(output != nullptr, Status::null_argument, "end-to-end count query output is null");
+}
+}
+
+extern "C" qnpeps_status qnpeps_e2e_minsr_ctx_create(
     const QnpepsE2eConfig* cfg,
     int64_t n_samples,
     int64_t host_tile_bytes,
@@ -37,20 +122,10 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_minsr_ctx_create(
     qnpeps_e2e_minsr_ctx** out
 )
 {
-    qn_e2e::clear_err();
-    if (not out) return QNPEPS_E2E_ERR_NULL_ARG;
-    *out = nullptr;
-    const qnpeps_e2e_status v{check_cfg(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    if (n_samples < 2) return QNPEPS_E2E_ERR_BAD_CONFIG;
-
-    qnpeps::minsr::minsr_context_create(
-        *cfg, n_samples, host_tile_bytes, static_cast<cudaStream_t>(stream), out
-    );
-    return qn_e2e::err_state();
+    return guarded([&] { minsr_context_create(cfg, n_samples, host_tile_bytes, stream, out); });
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_minsr_ctx_run(
+extern "C" qnpeps_status qnpeps_e2e_minsr_ctx_run(
     qnpeps_e2e_minsr_ctx* ctx,
     const uint8_t* device_samples,
     const double* device_log_amplitudes,
@@ -67,40 +142,39 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_minsr_ctx_run(
     double* ess_output
 )
 {
-    qn_e2e::clear_err();
-    const auto missing_input = not ctx or not device_samples or not device_log_amplitudes
-                               or not device_local_energies or not device_log_proposals
-                               or not device_gram or not theta_output or not energy_mean_output
-                               or not energy_variance_output or not ess_output;
-    if (missing_input) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (static_cast<bool>(device_rows) == static_cast<bool>(host_rows))
-        return QNPEPS_E2E_ERR_NULL_ARG;
-
-    qnpeps::minsr::minsr_context_run(
-        *ctx,
-        device_samples,
-        device_log_amplitudes,
-        device_local_energies,
-        device_log_proposals,
-        as_cf(device_gram),
-        as_cf(device_rows),
-        as_cf(host_rows),
-        relative_cut,
-        absolute_cut,
-        as_cf(theta_output),
-        energy_mean_output,
-        energy_variance_output,
-        ess_output
+    return guarded(
+        [&]
+        {
+            require(
+                ctx != nullptr, Status::null_argument, "end-to-end MinSR run without a context"
+            );
+            const MinsrInputs inputs{
+                device_samples,
+                device_log_amplitudes,
+                device_local_energies,
+                device_log_proposals,
+                device_gram,
+                device_rows,
+                host_rows,
+                relative_cut,
+                absolute_cut,
+                theta_output,
+                energy_mean_output,
+                energy_variance_output,
+                ess_output
+            };
+            validate_inputs(inputs);
+            minsr_context_run(*ctx, inputs);
+        }
     );
-    return qn_e2e::err_state();
 }
 
 extern "C" void qnpeps_e2e_minsr_ctx_destroy(qnpeps_e2e_minsr_ctx* ctx)
 {
-    qnpeps::minsr::minsr_context_destroy(ctx);
+    static_cast<void>(guarded_keeping_message([&] { qnpeps::minsr::minsr_context_destroy(ctx); }));
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_minsr(
+extern "C" qnpeps_status qnpeps_e2e_minsr(
     const QnpepsE2eConfig* cfg,
     int64_t n_samples,
     const uint8_t* device_samples,
@@ -120,94 +194,76 @@ extern "C" qnpeps_e2e_status qnpeps_e2e_minsr(
     void* stream
 )
 {
-    const qnpeps_e2e_status v{check_cfg(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    const auto missing_input = not device_samples or not device_log_amplitudes
-                               or not device_local_energies or not device_log_proposals
-                               or not device_gram or not theta_output or not energy_mean_output
-                               or not energy_variance_output or not ess_output;
-    if (missing_input) return QNPEPS_E2E_ERR_NULL_ARG;
-    if (static_cast<bool>(device_rows) == static_cast<bool>(host_rows))
-        return QNPEPS_E2E_ERR_NULL_ARG;
-    if (n_samples < 2) return QNPEPS_E2E_ERR_BAD_CONFIG;
-
-    qnpeps_e2e_minsr_ctx* ctx{};
-    qnpeps_e2e_status status{
-        qnpeps_e2e_minsr_ctx_create(cfg, n_samples, host_tile_bytes, stream, &ctx)
-    };
-    if (status != QNPEPS_E2E_OK) return status;
-    status = qnpeps_e2e_minsr_ctx_run(
-        ctx,
-        device_samples,
-        device_log_amplitudes,
-        device_local_energies,
-        device_log_proposals,
-        device_gram,
-        device_rows,
-        host_rows,
-        relative_cut,
-        absolute_cut,
-        theta_output,
-        energy_mean_output,
-        energy_variance_output,
-        ess_output
+    return guarded(
+        [&]
+        {
+            validate_config(cfg);
+            const MinsrInputs inputs{
+                device_samples,
+                device_log_amplitudes,
+                device_local_energies,
+                device_log_proposals,
+                device_gram,
+                device_rows,
+                host_rows,
+                relative_cut,
+                absolute_cut,
+                theta_output,
+                energy_mean_output,
+                energy_variance_output,
+                ess_output
+            };
+            validate_inputs(inputs);
+            require(
+                n_samples >= 2,
+                Status::bad_config,
+                "end-to-end MinSR needs at least 2 samples, got {}",
+                n_samples
+            );
+            qnpeps_e2e_minsr_ctx* context{};
+            minsr_context_create(cfg, n_samples, host_tile_bytes, stream, &context);
+            const qnpeps::Defer destroy_context{[&]
+                                                { qnpeps::minsr::minsr_context_destroy(context); }};
+            minsr_context_run(*context, inputs);
+        }
     );
-    qnpeps_e2e_minsr_ctx_destroy(ctx);
-    return status;
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_dense_count(const QnpepsE2eConfig* cfg, int64_t* out_count)
+extern "C" qnpeps_status qnpeps_e2e_dense_count(const QnpepsE2eConfig* cfg, int64_t* out_count)
 {
-    const qnpeps_e2e_status v{check_cfg(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    if (not out_count) return QNPEPS_E2E_ERR_NULL_ARG;
-    *out_count = qn_e2e::dense_count(*cfg);
-    return QNPEPS_E2E_OK;
+    return guarded(
+        [&]
+        {
+            validate_count_query(cfg, out_count);
+            *out_count = qn_e2e::dense_count(*cfg);
+        }
+    );
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_compact_count(
-    const QnpepsE2eConfig* cfg, int64_t* out_count
-)
+extern "C" qnpeps_status qnpeps_e2e_compact_count(const QnpepsE2eConfig* cfg, int64_t* out_count)
 {
-    const qnpeps_e2e_status v{check_cfg(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    if (not out_count) return QNPEPS_E2E_ERR_NULL_ARG;
-    *out_count = qn_e2e::compact_count(*cfg);
-    return QNPEPS_E2E_OK;
+    return guarded(
+        [&]
+        {
+            validate_count_query(cfg, out_count);
+            *out_count = qn_e2e::compact_count(*cfg);
+        }
+    );
 }
 
-extern "C" qnpeps_e2e_status qnpeps_e2e_minsr_scratch_bytes(
+extern "C" qnpeps_status qnpeps_e2e_minsr_scratch_bytes(
     const QnpepsE2eConfig* cfg, int64_t n_samples, int64_t host_tile_bytes, uint64_t* out_bytes
 )
 {
-    const qnpeps_e2e_status v{check_cfg(cfg)};
-    if (v != QNPEPS_E2E_OK) return v;
-    if (not out_bytes) return QNPEPS_E2E_ERR_NULL_ARG;
-    *out_bytes =
-        qnpeps::minsr::qn_e2e_minsr_scratch(*cfg, n_samples < 1 ? 1 : n_samples, host_tile_bytes);
-    return QNPEPS_E2E_OK;
-}
-
-extern "C" const char* qnpeps_e2e_strerror(qnpeps_e2e_status status)
-{
-    switch (status)
-    {
-        case QNPEPS_E2E_OK:
-            return "ok";
-        case QNPEPS_E2E_ERR_NULL_ARG:
-            return "a required pointer was NULL (or both/neither row source supplied)";
-        case QNPEPS_E2E_ERR_BAD_CONFIG:
-            return "descriptor or sample count failed validation";
-        case QNPEPS_E2E_ERR_BAD_VERSION:
-            return "descriptor struct_size not recognized";
-        case QNPEPS_E2E_ERR_CUDA:
-            return "an underlying CUDA / cuBLAS / cuSOLVER call failed";
-        case QNPEPS_E2E_ERR_OOM:
-            return "device allocation failed";
-        case QNPEPS_E2E_ERR_INTERNAL:
-            return "internal invariant violated (please report)";
-    }
-    return "unknown status";
+    return guarded(
+        [&]
+        {
+            validate_count_query(cfg, out_bytes);
+            *out_bytes = qnpeps::minsr::qn_e2e_minsr_scratch(
+                *cfg, n_samples < 1 ? 1 : n_samples, host_tile_bytes
+            );
+        }
+    );
 }
 
 extern "C" const char* qnpeps_e2e_version(void)

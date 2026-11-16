@@ -47,7 +47,6 @@ function _eo_host_create_lane(arguments::_EoHostLaneArguments)
             affinity_saved=Int32(0),
             affinity_applied=Int32(0),
             status=Int32(0),
-            failure_location="",
             failure_message="",
         )
     catch
@@ -101,7 +100,7 @@ end
 function EoHost(
     peps::CuVector{ComplexF32},
     config::QnpepsElocConfig,
-    terms::HeisenbergTerms,
+    terms::OperatorTerms,
     values::Vararg{Any,6},
 )
     table = eo_term_table(config, terms)

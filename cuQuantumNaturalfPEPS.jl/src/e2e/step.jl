@@ -61,10 +61,11 @@ function _vmc_step_device!(
     sampling_mode=:fast,
     contract_dim::Integer=3 * dim_bond,
     sample_batch::Integer=0,
+    truncation_route=:default,
     gpus::Integer=1,
     J1::Real=1.0,
     J2::Real=0.0,
-    terms::HeisenbergTerms=heisenberg_terms(lx, ly; J1=J1, J2=J2),
+    terms::OperatorTerms=heisenberg_terms(lx, ly; J1=J1, J2=J2),
     relative_cut::Real=1.0e-3,
     absolute_cut::Real=1.0e-8,
     host_tile_bytes::Integer=0,
@@ -89,6 +90,7 @@ function _vmc_step_device!(
         sampling_mode=sampling_mode,
         contract_dim=contract_dim,
         sample_batch=sample_batch,
+        truncation_route=truncation_route,
     )
     return _vmc_step_node!(
         data,

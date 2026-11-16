@@ -39,45 +39,40 @@ auto bcontract(
     auto N = i64{1};
     for (const int ax : free_a)
     {
-        if (not arena_slot(
-                {static_cast<std::uint64_t>(M),
-                 static_cast<std::uint64_t>(A.dim[static_cast<usize>(ax)])},
-                M
-            ))
-            return {};
+        arena_slot(
+            {static_cast<std::uint64_t>(M),
+             static_cast<std::uint64_t>(A.dim[static_cast<usize>(ax)])},
+            M
+        );
     }
     for (const int ax : ca)
     {
-        if (not arena_slot(
-                {static_cast<std::uint64_t>(K),
-                 static_cast<std::uint64_t>(A.dim[static_cast<usize>(ax)])},
-                K
-            ))
-            return {};
+        arena_slot(
+            {static_cast<std::uint64_t>(K),
+             static_cast<std::uint64_t>(A.dim[static_cast<usize>(ax)])},
+            K
+        );
     }
     for (const int ax : free_b)
     {
-        if (not arena_slot(
-                {static_cast<std::uint64_t>(N),
-                 static_cast<std::uint64_t>(B.dim[static_cast<usize>(ax)])},
-                N
-            ))
-            return {};
+        arena_slot(
+            {static_cast<std::uint64_t>(N),
+             static_cast<std::uint64_t>(B.dim[static_cast<usize>(ax)])},
+            N
+        );
     }
     i64 mk{};
     i64 kn{};
     i64 mn{};
-    if (not arena_slot({static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(K)}, mk)
-        or not arena_slot({static_cast<std::uint64_t>(K), static_cast<std::uint64_t>(N)}, kn)
-        or not arena_slot({static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(N)}, mn))
-        return {};
+    arena_slot({static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(K)}, mk);
+    arena_slot({static_cast<std::uint64_t>(K), static_cast<std::uint64_t>(N)}, kn);
+    arena_slot({static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(N)}, mn);
     int m_int{};
     int contraction_extent{};
     int n_int{};
-    if (not arena_int({static_cast<std::uint64_t>(M)}, m_int)
-        or not arena_int({static_cast<std::uint64_t>(K)}, contraction_extent)
-        or not arena_int({static_cast<std::uint64_t>(N)}, n_int))
-        return {};
+    arena_int({static_cast<std::uint64_t>(M)}, m_int);
+    arena_int({static_cast<std::uint64_t>(K)}, contraction_extent);
+    arena_int({static_cast<std::uint64_t>(N)}, n_int);
 
     std::vector<int> res{};
     for (const int ax : free_a)
@@ -95,7 +90,6 @@ auto bcontract(
             {static_cast<std::uint64_t>(stride), static_cast<std::uint64_t>(lanes)}
         );
     }
-    if (qn::err_state() != QNPEPS_ELOC_OK) return BT{out, stride, res};
 
     const auto is_identity = [](const std::vector<int>& perm) -> bool
     {
@@ -121,7 +115,6 @@ auto bcontract(
         auto dst{sub.take_product<cf>(
             {static_cast<std::uint64_t>(mk), static_cast<std::uint64_t>(lanes)}
         )};
-        if (qn::err_state() != QNPEPS_ELOC_OK) return BT{out, stride, res};
         device_permute(
             w.la,
             w.permutation_index_maps,
@@ -141,7 +134,6 @@ auto bcontract(
         auto dst{sub.take_product<cf>(
             {static_cast<std::uint64_t>(kn), static_cast<std::uint64_t>(lanes)}
         )};
-        if (qn::err_state() != QNPEPS_ELOC_OK) return BT{out, stride, res};
         device_permute(
             w.la,
             w.permutation_index_maps,
@@ -286,17 +278,14 @@ auto project_column_into(Worker& w, int row, int col, cf* out, i64 out_stride) -
     const auto& sh = w.sh;
     i64 slab{};
     i64 total{};
-    if (not arena_slot(
-            {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
-             static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
-             static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
-             static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond))},
-            slab
-        )
-        or not arena_slot(
-            {static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(sh.lanes)}, total
-        ))
-        return;
+    arena_slot(
+        {static_cast<std::uint64_t>(bd(sh.ly, col, sh.dim_bond)),
+         static_cast<std::uint64_t>(bd(sh.lx, row + 1, sh.dim_bond)),
+         static_cast<std::uint64_t>(bd(sh.ly, col + 1, sh.dim_bond)),
+         static_cast<std::uint64_t>(bd(sh.lx, row, sh.dim_bond))},
+        slab
+    );
+    arena_slot({static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(sh.lanes)}, total);
     const auto threads = int{256};
     const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
     cu_project_slab<<<blocks, threads, 0, w.la.stream()>>>(
@@ -309,7 +298,7 @@ auto project_column_into(Worker& w, int row, int col, cf* out, i64 out_stride) -
         out_stride,
         sh.lanes
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto project_row_into(Worker& w, int row, cf* base, i64 slot) -> void
@@ -323,19 +312,17 @@ auto rail_normalize(Worker& w, cf* rail, i64 n, i64 slot, f64* f_cut, const f64*
     const auto lanes = int{w.sh.lanes};
     int elements{};
     usize lane_bytes{};
-    if (n < 1 or not arena_int({static_cast<std::uint64_t>(n)}, elements)
-        or not arena_product({sizeof(f64), static_cast<std::uint64_t>(lanes)}, lane_bytes))
-        return;
+    if (n < 1) return;
+    arena_int({static_cast<std::uint64_t>(n)}, elements);
+    arena_product({sizeof(f64), static_cast<std::uint64_t>(lanes)}, lane_bytes);
     if (f_prev)
     {
-        CUDA_CHECK(
-            cudaMemcpyAsync(f_cut, f_prev, lane_bytes, cudaMemcpyDeviceToDevice, w.la.stream())
-        );
+        check(cudaMemcpyAsync(f_cut, f_prev, lane_bytes, cudaMemcpyDeviceToDevice, w.la.stream()));
     }
     else
-        CUDA_CHECK(cudaMemsetAsync(f_cut, 0, lane_bytes, w.la.stream()));
+        check(cudaMemsetAsync(f_cut, 0, lane_bytes, w.la.stream()));
     cu_normalize_log<<<lanes, 256, 0, w.la.stream()>>>(rail, elements, slot, f_cut, lanes, nullptr);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto build_h_rails(Worker& w, int i) -> void
@@ -354,7 +341,6 @@ auto build_h_rails(Worker& w, int i) -> void
     auto h = BT{unit3(w)};
     for (auto c = int{0}; c <= ly - 2; ++c)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto d = std::vector<int>{
             fold_left(w, w.scratch, h, top(c), pr(c), bot(c), hl_site(w, i, c), w.slot_h)
         };
@@ -371,7 +357,6 @@ auto build_h_rails(Worker& w, int i) -> void
     auto r = BT{unit3(w)};
     for (auto c = int{ly - 1}; c >= 1; --c)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto d = std::vector<int>{
             fold_right(w, w.scratch, r, top(c), pr(c), bot(c), hr_site(w, i, c - 1), w.slot_h)
         };
@@ -412,7 +397,6 @@ auto build_fb_rails(Worker& w, int i) -> void
     auto h = BT{unit4(w)};
     for (auto c = int{0}; c <= ly - 2; ++c)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto d = std::vector<int>{fold_left4(
             w, w.scratch, h, top(c), pri(c), prj(c), bot(c), fbl_site(w, i, c), w.slot_fb
         )};
@@ -429,7 +413,6 @@ auto build_fb_rails(Worker& w, int i) -> void
     auto r = BT{unit4(w)};
     for (auto c = int{ly - 1}; c >= 1; --c)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return;
         const auto d = std::vector<int>{fold_right4(
             w, w.scratch, r, top(c), pri(c), prj(c), bot(c), fbr_site(w, i, c - 1), w.slot_fb
         )};
@@ -454,7 +437,6 @@ auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
     {
         for (auto i = int{0}; i < sh.lx; ++i)
         {
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             project_row_into(w, i, w.proj.p, w.slot_proj);
             build_h_rails(w, i);
         }
@@ -463,7 +445,6 @@ auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
     {
         for (auto i = int{0}; i < sh.lx - 1; ++i)
         {
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             project_row_into(w, i, w.proj.p, w.slot_proj);
             project_row_into(w, i + 1, w.proj2.p, w.slot_proj);
             build_fb_rails(w, i);

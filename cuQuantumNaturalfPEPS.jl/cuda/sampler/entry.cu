@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <format>
 #include <numeric>
 #include <string>
 #include <thread>
@@ -33,7 +34,7 @@ namespace qnpeps
 }
 namespace sampler
 {
-auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
+auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> void
 {
     auto* const output = args.output;
     auto* const logpc_out = args.logpc_out;
@@ -42,8 +43,12 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto batch_base = args.batch_base;
 
     const auto& active_lane = ctx.dlenv.lanes[ctx.dlenv.active_lane];
-    if (not active_lane.valid) return set_err(QNPEPS_ERR_BAD_CONFIG);
-    if (n_samples == 0) return QNPEPS_OK;
+    require(
+        active_lane.valid,
+        Status::bad_config,
+        "sampling before a double-layer environment was built"
+    );
+    if (n_samples == 0) return;
 
     const auto& config = ctx.cfg;
     const auto lx = config.lx;
@@ -55,7 +60,7 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto dim_batch = static_cast<i64>(args.dim_batch);
     if (ctx.sampler.allocation.allocated and dim_batch > ctx.sampler.allocation.dim_batch_capacity)
     {
-        CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
+        check(cudaStreamSynchronize(ctx.linalg().stream()));
         ctx_sampler_free(ctx);
         ctx.sampler = {};
     }
@@ -65,17 +70,19 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
     const auto batches = static_cast<int>(ceil_div(n_samples_i, dim_batch));
 
     const auto num_sites = (lx - 1) * ly;
-    if (not dlenv_dims_fit_sampler(ctx.dlenv.dims, num_sites, dim_bond, chi_dl))
-    {
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
-    }
+    require(
+        dlenv_dims_fit_sampler(ctx.dlenv.dims, num_sites, dim_bond, chi_dl),
+        Status::bad_config,
+        "double-layer environment header does not fit bond dimension {} and cap {}",
+        dim_bond,
+        chi_dl
+    );
     const usize header_bytes{ctx.dlenv.dims.size() * sizeof(int)};
     DlEnvView dlenv_view{};
     dlenv_view.dims = ctx.dlenv.dims.data();
     dlenv_view.values = byte_offset<cuFloatComplex>(active_lane.packed, header_bytes);
 
     ctx_sampler_setup(ctx, &dlenv_view, nullptr, 0);
-    if (err_state() != QNPEPS_OK) return err_state();
     ctx.sampler.samp.cfg().batch_base = batch_base;
 
     if (ctx.sampler.execution.refresh_gen != ctx.dlenv.build_count)
@@ -98,30 +105,43 @@ auto ctx_sample(qnpeps_ctx& ctx, const CtxSampleArgs& args) -> qnpeps_status
         all_batch_ids,
         args.output_location == SampleOutputLocation::host ? &host_output : nullptr
     );
-    CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
-    if (args.output_location == SampleOutputLocation::host) return err_state();
+    check(cudaStreamSynchronize(ctx.linalg().stream()));
+    if (args.output_location == SampleOutputLocation::host) return;
 
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
     };
-    if (ctx.sampler.staging.all_samples.size() < total_sample_count)
-        return set_err(QNPEPS_ERR_INTERNAL);
+    require(
+        ctx.sampler.staging.all_samples.size() >= total_sample_count,
+        "sampler staged {} sample sites, expected {}",
+        ctx.sampler.staging.all_samples.size(),
+        total_sample_count
+    );
     upload(output, ctx.sampler.staging.all_samples.data(), total_sample_count);
 
     if (logpc_out)
     {
-        if (ctx.sampler.staging.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        require(
+            ctx.sampler.staging.all_logpc.size() >= n_samples,
+            "sampler staged {} proposal logs, expected {}",
+            ctx.sampler.staging.all_logpc.size(),
+            n_samples
+        );
         upload(logpc_out, ctx.sampler.staging.all_logpc.data(), n_samples);
     }
     if (lognorm_out)
     {
-        if (ctx.sampler.staging.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        require(
+            ctx.sampler.staging.all_lognorm.size() >= n_samples,
+            "sampler staged {} gauge logs, expected {}",
+            ctx.sampler.staging.all_lognorm.size(),
+            n_samples
+        );
         upload(lognorm_out, ctx.sampler.staging.all_lognorm.data(), n_samples);
     }
-    return err_state();
 }
 
-auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) -> qnpeps_status
+auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) -> void
 {
     const auto* device_peps = args.device_peps;
     const auto* device_dlenv = args.device_dlenv;
@@ -138,8 +158,11 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) 
     const auto dim_bond = config.dim_bond;
     const auto chi_dl = std::min(config.chi_dl, dim_bond * dim_bond);
 
-    if (args.stream and static_cast<cudaStream_t>(args.stream) != linalg.stream())
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
+    const auto foreign_stream =
+        args.stream and static_cast<cudaStream_t>(args.stream) != linalg.stream();
+    require(
+        not foreign_stream, Status::bad_config, "sampling stream differs from the execution stream"
+    );
     qnpeps_ctx ctx{config, linalg};
 
     const auto n_samples_i = static_cast<i64>(n_samples);
@@ -152,10 +175,13 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) 
     const auto header_elements = ctx.dlenv.dims.size();
     const usize header_bytes{header_elements * sizeof(int)};
     download(ctx.dlenv.dims.data(), static_cast<const int*>(device_dlenv), header_elements);
-    if (not dlenv_dims_fit_sampler(ctx.dlenv.dims, num_sites, dim_bond, chi_dl))
-    {
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
-    }
+    require(
+        dlenv_dims_fit_sampler(ctx.dlenv.dims, num_sites, dim_bond, chi_dl),
+        Status::bad_config,
+        "double-layer environment header does not fit bond dimension {} and cap {}",
+        dim_bond,
+        chi_dl
+    );
     DlEnvView dlenv_view{};
     dlenv_view.dims = ctx.dlenv.dims.data();
     dlenv_view.values = byte_offset<cuFloatComplex>(device_dlenv, header_bytes);
@@ -167,13 +193,12 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) 
     DEFER(
         [&]
         {
-            CUDA_NOCHECK(cudaStreamSynchronize(ctx.stream()));
+            unchecked(cudaStreamSynchronize(ctx.stream()));
             ctx_sampler_free(ctx);
         }
     );
 
     ctx_sampler_setup(ctx, &dlenv_view, scratch, scratch_bytes);
-    if (err_state() != QNPEPS_OK) return err_state();
     ctx.sampler.samp.cfg().batch_base = batch_base;
 
     ctx_sample_refresh(ctx, device_peps, PepsLayout::canonical);
@@ -192,39 +217,51 @@ auto sample(const QnpepsConfig& config, const SampleArgs& args, Linalg& linalg) 
         all_batch_ids,
         args.output_location == SampleOutputLocation::host ? &host_output : nullptr
     );
-    CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
-    if (args.output_location == SampleOutputLocation::host) return err_state();
+    check(cudaStreamSynchronize(ctx.linalg().stream()));
+    if (args.output_location == SampleOutputLocation::host) return;
 
     const usize total_sample_count{
         static_cast<usize>(n_samples) * static_cast<usize>(lx) * static_cast<usize>(ly)
     };
-    if (ctx.sampler.staging.all_samples.size() < total_sample_count)
-        return set_err(QNPEPS_ERR_INTERNAL);
+    require(
+        ctx.sampler.staging.all_samples.size() >= total_sample_count,
+        "sampler staged {} sample sites, expected {}",
+        ctx.sampler.staging.all_samples.size(),
+        total_sample_count
+    );
     upload(output, ctx.sampler.staging.all_samples.data(), total_sample_count);
 
     if (logpc_out)
     {
-        if (ctx.sampler.staging.all_logpc.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        require(
+            ctx.sampler.staging.all_logpc.size() >= n_samples,
+            "sampler staged {} proposal logs, expected {}",
+            ctx.sampler.staging.all_logpc.size(),
+            n_samples
+        );
         upload(logpc_out, ctx.sampler.staging.all_logpc.data(), n_samples);
     }
     if (lognorm_out)
     {
-        if (ctx.sampler.staging.all_lognorm.size() < n_samples) return set_err(QNPEPS_ERR_INTERNAL);
+        require(
+            ctx.sampler.staging.all_lognorm.size() >= n_samples,
+            "sampler staged {} gauge logs, expected {}",
+            ctx.sampler.staging.all_lognorm.size(),
+            n_samples
+        );
         upload(lognorm_out, ctx.sampler.staging.all_lognorm.data(), n_samples);
     }
-    return err_state();
 }
 
-auto sample(const QnpepsConfig& config, const SampleArgs& args) -> qnpeps_status
+auto sample(const QnpepsConfig& config, const SampleArgs& args) -> void
 {
     auto session = make_session(static_cast<cudaStream_t>(args.stream));
-    if (not session) return err_state();
-    return sample(config, args, session->linalg());
+    sample(config, args, session->linalg());
 }
 
 auto sample_multigpu(
     const QnpepsConfig& config, const SampleMultigpuArgs& args, std::span<Linalg* const> linalg
-) -> qnpeps_status
+) -> void
 {
     const auto* device_peps = args.device_peps;
     const auto* device_dlenv = args.device_dlenv;
@@ -236,13 +273,17 @@ auto sample_multigpu(
     const auto batch_base = args.batch_base;
     const auto dim_batch = static_cast<i64>(args.dim_batch);
 
-    if (gpus < 1 or linalg.size() != static_cast<usize>(gpus))
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
+    require(
+        gpus >= 1 and linalg.size() == static_cast<usize>(gpus),
+        Status::bad_config,
+        "multi-GPU sampling over {} GPUs with {} execution contexts",
+        gpus,
+        linalg.size()
+    );
 
     int caller_device{0};
-    CUDA_CHECK(cudaGetDevice(&caller_device));
-    if (err_state() != QNPEPS_OK) return err_state();
-    DEFER([&] { CUDA_NOCHECK(cudaSetDevice(caller_device)); });
+    check(cudaGetDevice(&caller_device));
+    DEFER([&] { unchecked(cudaSetDevice(caller_device)); });
 
     const auto lx = config.lx;
     const auto ly = config.ly;
@@ -261,10 +302,13 @@ auto sample_multigpu(
     const auto header_elements = dims.size();
     const usize header_bytes{header_elements * sizeof(int)};
     download(dims.data(), static_cast<const int*>(device_dlenv), header_elements);
-    if (not dlenv_dims_fit_sampler(dims, num_sites, dim_bond, chi_dl))
-    {
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
-    }
+    require(
+        dlenv_dims_fit_sampler(dims, num_sites, dim_bond, chi_dl),
+        Status::bad_config,
+        "double-layer environment header does not fit bond dimension {} and cap {}",
+        dim_bond,
+        chi_dl
+    );
 
     i64 dlenv_nvals{0};
     for (auto site = 0; site < num_sites; ++site)
@@ -309,10 +353,8 @@ auto sample_multigpu(
         std::vector<u8> samples{};
         std::vector<f64> logpc{};
         std::vector<f64> lognorm{};
-        qnpeps_status err{QNPEPS_OK};
-        const char* err_file{};
-        int32_t err_line{};
-        std::string err_message{};
+        qnpeps_status status{QNPEPS_OK};
+        std::string message{};
     };
     using BatchIds = std::vector<int>;
 
@@ -334,140 +376,103 @@ auto sample_multigpu(
 
     const auto dlenv_values_bytes = sizeof(cuFloatComplex) * static_cast<usize>(dlenv_nvals);
     const auto peps_bytes = sizeof(cuFloatComplex) * static_cast<usize>(peps_elems);
-    auto run_gpu = [&](usize g)
+    const auto sample_on_gpu = [&](usize g)
     {
-        reset_err();
-        auto& shard = shards[g];
-        const auto capture_error = [&]
-        {
-            shard.err = err_state();
-            shard.err_file = err_file();
-            shard.err_line = err_line();
-            if (const auto* message = err_message()) shard.err_message = message;
-        };
-        const auto set_device_status = cudaSetDevice(static_cast<int>(g));
-        if (set_device_status != cudaSuccess)
-        {
-            set_cuda_err(set_device_status);
-            capture_error();
-            return;
-        }
+        check(cudaSetDevice(static_cast<int>(g)));
         void* device_dlenv_copy{};
-        const auto dlenv_total_bytes = header_bytes + dlenv_values_bytes;
-        const auto dlenv_alloc_status = cudaMalloc(&device_dlenv_copy, dlenv_total_bytes);
-        if (dlenv_alloc_status != cudaSuccess)
-        {
-            set_cuda_err(dlenv_alloc_status, QNPEPS_ERR_OOM);
-            capture_error();
-            return;
-        }
+        check_allocation(cudaMalloc(&device_dlenv_copy, header_bytes + dlenv_values_bytes));
+        auto dlenv_copy_adopted = false;
+        const Defer free_dlenv_copy{[&]
+                                    {
+                                        if (not dlenv_copy_adopted)
+                                            unchecked(cudaFree(device_dlenv_copy));
+                                    }};
         cuFloatComplex* device_peps_copy{};
-        const auto peps_alloc_status = cudaMalloc(&device_peps_copy, peps_bytes);
-        if (peps_alloc_status != cudaSuccess)
-        {
-            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            set_cuda_err(peps_alloc_status, QNPEPS_ERR_OOM);
-            capture_error();
-            return;
-        }
-        const auto upload = [](void* destination, const void* source, usize bytes)
-        { return cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice); };
-        const auto header_status = upload(device_dlenv_copy, dims.data(), header_bytes);
-        if (header_status != cudaSuccess)
-        {
-            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            CUDA_NOCHECK(cudaFree(device_peps_copy));
-            set_cuda_err(header_status);
-            capture_error();
-            return;
-        }
-        const auto values_status = upload(
+        check_allocation(cudaMalloc(&device_peps_copy, peps_bytes));
+        const Defer free_peps_copy{[&] { unchecked(cudaFree(device_peps_copy)); }};
+        check(cudaMemcpy(device_dlenv_copy, dims.data(), header_bytes, cudaMemcpyHostToDevice));
+        check(cudaMemcpy(
             byte_offset<cuFloatComplex>(device_dlenv_copy, header_bytes),
             host_dlenv.data(),
-            dlenv_values_bytes
+            dlenv_values_bytes,
+            cudaMemcpyHostToDevice
+        ));
+        check(
+            cudaMemcpy(device_peps_copy, peps_staging.data(), peps_bytes, cudaMemcpyHostToDevice)
         );
-        if (values_status != cudaSuccess)
-        {
-            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            CUDA_NOCHECK(cudaFree(device_peps_copy));
-            set_cuda_err(values_status);
-            capture_error();
-            return;
-        }
-        const auto peps_status = upload(device_peps_copy, peps_staging.data(), peps_bytes);
-        if (peps_status != cudaSuccess)
-        {
-            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            CUDA_NOCHECK(cudaFree(device_peps_copy));
-            set_cuda_err(peps_status);
-            capture_error();
-            return;
-        }
 
         auto* execution = linalg[g];
-        if (not execution or execution->device() != static_cast<int>(g))
-        {
-            CUDA_NOCHECK(cudaFree(device_dlenv_copy));
-            CUDA_NOCHECK(cudaFree(device_peps_copy));
-            set_err(QNPEPS_ERR_BAD_CONFIG);
-            capture_error();
-            return;
-        }
+        require(
+            execution != nullptr and execution->device() == static_cast<int>(g),
+            Status::bad_config,
+            "GPU {} has no execution context on its own device",
+            g
+        );
         qnpeps_ctx ctx{config, *execution};
         ctx.sampler.execution.dim_batch = dim_batch_i;
         ctx.sampler.allocation.dim_batch_capacity = dim_batch_i;
         ctx.dlenv.dims = dims;
         auto& dlenv_lane = ctx.dlenv.lanes.front();
         dlenv_lane.packed = device_dlenv_copy;
+        dlenv_copy_adopted = true;
         dlenv_lane.valid = true;
         ctx.dlenv.active_lane = 0;
+        const Defer release_context{[&]
+                                    {
+                                        unchecked(cudaStreamSynchronize(ctx.linalg().stream()));
+                                        ctx_sampler_free(ctx);
+                                        dlenv::dl_free(ctx);
+                                    }};
 
         DlEnvView view{};
         view.dims = ctx.dlenv.dims.data();
         view.values = byte_offset<cuFloatComplex>(dlenv_lane.packed, header_bytes);
 
         ctx_sampler_setup(ctx, &view, nullptr, 0);
-        if (err_state() == QNPEPS_OK)
-        {
-            ctx.sampler.samp.cfg().batch_base = batch_base;
-            ctx_sample_refresh(ctx, device_peps_copy, PepsLayout::canonical);
-            ctx_sample_run(
-                ctx,
-                batches_of_gpu[g],
-                args.output_location == SampleOutputLocation::host ? &host_output : nullptr
-            );
-        }
-        CUDA_CHECK(cudaStreamSynchronize(ctx.linalg().stream()));
+        ctx.sampler.samp.cfg().batch_base = batch_base;
+        ctx_sample_refresh(ctx, device_peps_copy, PepsLayout::canonical);
+        ctx_sample_run(
+            ctx,
+            batches_of_gpu[g],
+            args.output_location == SampleOutputLocation::host ? &host_output : nullptr
+        );
+        check(cudaStreamSynchronize(ctx.linalg().stream()));
         if (args.output_location == SampleOutputLocation::device)
         {
-            shard.samples = std::move(ctx.sampler.staging.all_samples);
-            shard.logpc = std::move(ctx.sampler.staging.all_logpc);
-            shard.lognorm = std::move(ctx.sampler.staging.all_lognorm);
+            shards[g].samples = std::move(ctx.sampler.staging.all_samples);
+            shards[g].logpc = std::move(ctx.sampler.staging.all_logpc);
+            shards[g].lognorm = std::move(ctx.sampler.staging.all_lognorm);
         }
-        capture_error();
-
-        ctx_sampler_free(ctx);
-        dlenv::dl_free(ctx);
-        CUDA_NOCHECK(cudaFree(device_peps_copy));
+    };
+    const auto run_gpu = [&](usize g)
+    {
+        auto& shard = shards[g];
+        shard.status = guarded([&] { sample_on_gpu(g); });
+        if (shard.status != QNPEPS_OK) shard.message = std::move(last_error_message());
     };
 
-    std::vector<std::thread> threads{};
-    for (auto g = 1_uz; g < gpu_count; ++g)
-        threads.emplace_back(run_gpu, g);
-    run_gpu(0);
-    for (auto& t : threads)
-        t.join();
-
-    CUDA_CHECK(cudaSetDevice(caller_device));
-    for (const auto& shard : shards)
     {
-        if (shard.err != QNPEPS_OK)
-        {
-            const auto* message = shard.err_message.empty() ? nullptr : shard.err_message.c_str();
-            return set_err_at(shard.err, shard.err_file, shard.err_line, message);
-        }
+        std::vector<std::thread> threads{};
+        const Defer join_threads{[&]
+                                 {
+                                     for (auto& thread : threads)
+                                     {
+                                         if (thread.joinable()) thread.join();
+                                     }
+                                 }};
+        for (auto g = 1_uz; g < gpu_count; ++g)
+            threads.emplace_back(run_gpu, g);
+        run_gpu(0);
     }
-    if (args.output_location == SampleOutputLocation::host) return err_state();
+
+    check(cudaSetDevice(caller_device));
+    for (auto g = 0_uz; g < gpu_count; ++g)
+    {
+        const auto& shard = shards[g];
+        if (shard.status != QNPEPS_OK)
+            relay(static_cast<Status>(shard.status), std::format("[GPU {}] {}", g, shard.message));
+    }
+    if (args.output_location == SampleOutputLocation::host) return;
 
     const i64 sample_len{static_cast<i64>(lx) * ly};
     const auto sample_len_u = static_cast<usize>(sample_len);
@@ -488,10 +493,12 @@ auto sample_multigpu(
         const auto batches_before = static_cast<usize>(batch_id / gpus);
         const auto batch_offset = batches_before * static_cast<usize>(dim_batch);
         const auto shard_sample = batch_offset + slot_in_batch;
-        if ((shard_sample + 1) * sample_len_u > shard.samples.size())
-        {
-            return set_err(QNPEPS_ERR_INTERNAL);
-        }
+        require(
+            (shard_sample + 1) * sample_len_u <= shard.samples.size(),
+            "sample {} reads past the {} sites staged by its GPU",
+            sample,
+            shard.samples.size()
+        );
 
         const auto destination_offset = sample * sample_len_u;
         const auto source_offset = shard_sample * sample_len_u;
@@ -514,28 +521,25 @@ auto sample_multigpu(
     {
         upload(lognorm_out, out_lognorm.data(), n_samples_u);
     }
-    return err_state();
 }
 
-auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args) -> qnpeps_status
+auto sample_multigpu(const QnpepsConfig& config, const SampleMultigpuArgs& args) -> void
 {
-    if (args.gpus < 1) return set_err(QNPEPS_ERR_BAD_CONFIG);
+    require(args.gpus >= 1, Status::bad_config, "multi-GPU sampling over {} GPUs", args.gpus);
     int caller_device{};
-    CUDA_CHECK(cudaGetDevice(&caller_device));
-    if (err_state() != QNPEPS_OK) return err_state();
+    check(cudaGetDevice(&caller_device));
     std::vector<std::unique_ptr<Session>> sessions{static_cast<usize>(args.gpus)};
     std::vector<Linalg*> linalg{static_cast<usize>(args.gpus)};
-    for (int device{}; device < args.gpus and err_state() == QNPEPS_OK; ++device)
     {
-        CUDA_CHECK(cudaSetDevice(device));
-        if (err_state() != QNPEPS_OK) break;
-        sessions[static_cast<usize>(device)] = make_session(nullptr);
-        if (not sessions[static_cast<usize>(device)]) break;
-        linalg[static_cast<usize>(device)] = &sessions[static_cast<usize>(device)]->linalg();
+        const Defer restore_device{[&] { unchecked(cudaSetDevice(caller_device)); }};
+        for (int device{}; device < args.gpus; ++device)
+        {
+            check(cudaSetDevice(device));
+            sessions[static_cast<usize>(device)] = make_session(nullptr);
+            linalg[static_cast<usize>(device)] = &sessions[static_cast<usize>(device)]->linalg();
+        }
     }
-    CUDA_NOCHECK(cudaSetDevice(caller_device));
-    if (err_state() != QNPEPS_OK) return err_state();
-    return sample_multigpu(config, args, linalg);
+    sample_multigpu(config, args, linalg);
 }
 }
 }

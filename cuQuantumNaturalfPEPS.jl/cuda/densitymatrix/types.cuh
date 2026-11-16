@@ -88,4 +88,24 @@ auto take_workspace(Linalg& linalg, ArenaCursor& arena, const Geometry& geometry
 auto apply(Linalg& linalg, const Apply& args) -> void;
 }
 
+template <>
+struct std::formatter<qnpeps::densitymatrix::Site> : qnpeps::PlainFormatter
+{
+    auto format(const qnpeps::densitymatrix::Site& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(
+            context.out(),
+            "site={} state={}x{}x{} operator={}x{}x{}",
+            value.site,
+            value.state_left,
+            value.physical_input,
+            value.state_right,
+            value.operator_left,
+            value.physical_output,
+            value.operator_right
+        );
+    }
+};
+
 #endif

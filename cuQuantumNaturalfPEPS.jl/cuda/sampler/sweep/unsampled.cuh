@@ -6,14 +6,14 @@
 namespace qnpeps::sampler::internal
 {
 
-[[nodiscard]] inline auto build_env_unsampled(
+inline auto build_env_unsampled(
     Sampler& samp,
     const SamplerConfig& cfg,
     int row,
     bool has_below,
     const std::vector<int>& ket_bonds,
     const std::vector<int>& env_bonds
-) -> bool
+) -> void
 {
     const auto dim_batch = cfg.dim_batch;
     const auto dim_bond = cfg.dim_bond;
@@ -61,7 +61,7 @@ namespace qnpeps::sampler::internal
         };
         if (row == 0)
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 ket_env_spec,
@@ -70,11 +70,10 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.tmp_a_ptrs()},
                 dim_batch
             );
-            if (not res) return false;
         }
         else
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 ket_env_spec,
@@ -83,11 +82,10 @@ namespace qnpeps::sampler::internal
                 {.view = samp.tmp_a()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 {
@@ -101,12 +99,11 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.tmp_a_ptrs()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         if (row == 0)
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 {
@@ -121,11 +118,10 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.envu_ptrs()[col]},
                 dim_batch
             );
-            if (not res) return false;
         }
         else
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -140,7 +136,6 @@ namespace qnpeps::sampler::internal
                 {.view = {env_unsampled_out, samp.env_unsampled().stride}},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         const CuNormalizeLogArgs norm_args{
@@ -154,7 +149,6 @@ namespace qnpeps::sampler::internal
             norm_args
         );
     }
-    return err_state() == QNPEPS_OK;
 }
 
 }

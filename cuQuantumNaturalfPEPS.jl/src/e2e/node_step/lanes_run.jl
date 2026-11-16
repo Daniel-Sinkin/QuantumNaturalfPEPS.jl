@@ -29,7 +29,6 @@ function _node_step_run_eo_lane!(host::NodeStepHost, ::Nothing, lane_index::Int)
     lane = host.eo_lanes[lane_index]
     source_context = host.minsr.lanes[1].context
     lane.status = _NODE_STEP_OK
-    lane.failure_location = ""
     lane.failure_message = ""
     _minsr_host_peer_copy!(
         lane.peps_pointer,
@@ -70,8 +69,7 @@ function _node_step_run_eo_lane!(host::NodeStepHost, ::Nothing, lane_index::Int)
     end
     lane.status = Int32(status)
     if status != 0
-        lane.failure_location = _last_error_location()
-        lane.failure_message = _last_error_message()
+        lane.failure_message = _last_error()
     end
     return nothing
 end
@@ -109,8 +107,7 @@ function _node_step_eo_worker!(host::NodeStepHost, lane_index::Int)::Nothing
             _node_step_run_eo_lane!(host, lane_index)
         catch failure
             lane.status = Int32(6)
-            lane.failure_location = "Julia lane worker"
-            lane.failure_message = sprint(showerror, failure)
+            lane.failure_message = "[Julia lane worker] " * sprint(showerror, failure)
         end
         Threads.atomic_add!(host.done, 1)
     end
@@ -155,9 +152,10 @@ function _node_step_dispatch_eo!(host::NodeStepHost)::Nothing
     end
     for lane in _node_step_eo_lanes(host, host.eo_host)
         if lane.status != 0
-            location = isempty(lane.failure_location) ? "" : " at $(lane.failure_location)"
-            message = isempty(lane.failure_message) ? "" : "; $(lane.failure_message)"
-            error("qnpeps_eloc_ctx_run failed with status $(lane.status)$location$message")
+            message = isempty(lane.failure_message) ? "" : " $(lane.failure_message)"
+            error(
+                "[cuQuantumNaturalfPEPS] qnpeps_eloc_ctx_run failed (status $(lane.status))$message",
+            )
         end
     end
     return nothing

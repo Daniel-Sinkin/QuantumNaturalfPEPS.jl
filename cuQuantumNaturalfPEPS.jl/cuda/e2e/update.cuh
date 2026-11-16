@@ -36,7 +36,7 @@ auto launch_update_f32(
     const cf* theta_dot,
     f64 learning_rate,
     cudaStream_t stream
-) -> qnpeps_e2e_status;
+) -> void;
 
 auto launch_update_f64(
     const UpdateSite* sites,
@@ -46,7 +46,7 @@ auto launch_update_f64(
     cf* peps_f32_out,
     f64 learning_rate,
     cudaStream_t stream
-) -> qnpeps_e2e_status;
+) -> void;
 
 }
 

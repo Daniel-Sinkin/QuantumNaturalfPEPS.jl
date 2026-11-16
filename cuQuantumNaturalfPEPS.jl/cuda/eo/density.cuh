@@ -42,10 +42,22 @@ auto create(
     int dim_bond,
     int max_bond,
     Context** output
-) -> int;
+) -> void;
 auto destroy(Context* context) -> void;
-auto boundary(Context& context, const RowArgs& args) -> int;
-auto contract(Context& context, const RowArgs& args) -> int;
+auto boundary(Context& context, const RowArgs& args) -> void;
+auto contract(Context& context, const RowArgs& args) -> void;
 }
+
+template <>
+struct std::formatter<qn_eloc::density::SiteShape> : qnpeps::PlainFormatter
+{
+    auto format(const qn_eloc::density::SiteShape& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(
+            context.out(), "{}x{}x{}x{}", value.west, value.south, value.east, value.north
+        );
+    }
+};
 
 #endif

@@ -11,25 +11,24 @@ auto Linalg::destroy() -> void
                           and cudaSetDevice(device_) == cudaSuccess;
     svd_workspace_ = DeviceBuffer{};
     if (arena_lease_) arena_lease_->release();
-    if (gesvdj_parameters_) CUDA_NOCHECK(cusolverDnDestroyGesvdjInfo(gesvdj_parameters_));
+    if (gesvdj_parameters_) unchecked(cusolverDnDestroyGesvdjInfo(gesvdj_parameters_));
     gesvdj_parameters_ = nullptr;
+    if (batched_eigen_parameters_) unchecked(cusolverDnDestroyParams(batched_eigen_parameters_));
+    batched_eigen_parameters_ = nullptr;
     blas_.reset();
     solver_.reset();
-    if (switched) CUDA_NOCHECK(cudaSetDevice(caller_device));
+    if (switched) unchecked(cudaSetDevice(caller_device));
     device_ = -1;
     stream_ = nullptr;
 }
 
 auto Linalg::matmul(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) -> void
 {
-    if (a.cols() != b.rows() or c.rows() != a.rows() or c.cols() != b.cols())
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    const auto compatible = a.cols() == b.rows() and c.rows() == a.rows() and c.cols() == b.cols();
+    require(compatible, "gemm rejects operands {}, {}, {}", a, b, c);
     const auto one = cuComplex{1.0f, 0.0f};
     const auto zero = cuComplex{0.0f, 0.0f};
-    CUBLAS_CHECK(cublasCgemm(
+    check(cublasCgemm(
         cublas(),
         CUBLAS_OP_N,
         CUBLAS_OP_N,
@@ -49,14 +48,11 @@ auto Linalg::matmul(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) -> void
 
 auto Linalg::matmul_adj_norm(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) -> void
 {
-    if (a.rows() != b.rows() or c.rows() != a.cols() or c.cols() != b.cols())
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    const auto compatible = a.rows() == b.rows() and c.rows() == a.cols() and c.cols() == b.cols();
+    require(compatible, "adjoint gemm rejects operands {}, {}, {}", a, b, c);
     const cuComplex one{1.0f, 0.0f};
     const cuComplex zero{0.0f, 0.0f};
-    CUBLAS_CHECK(cublasCgemm(
+    check(cublasCgemm(
         cublas(),
         CUBLAS_OP_C,
         CUBLAS_OP_N,
@@ -77,7 +73,7 @@ auto Linalg::matmul_adj_norm(DeviceMatrix a, DeviceMatrix b, DeviceMatrix c) -> 
 auto Linalg::cholesky_batched(int n, ComplexF32** arrays, int lda, int* info, int batch_size)
     -> void
 {
-    CUSOLVER_CHECK(cusolverDnCpotrfBatched(
+    check(cusolverDnCpotrfBatched(
         cusolver(),
         CUBLAS_FILL_MODE_LOWER,
         n,
@@ -93,7 +89,7 @@ auto Linalg::solve_triangular_batched(
 ) -> void
 {
     const auto one = cuComplex{1.0f, 0.0f};
-    CUBLAS_CHECK(cublasCtrsmBatched(
+    check(cublasCtrsmBatched(
         cublas(),
         CUBLAS_SIDE_RIGHT,
         CUBLAS_FILL_MODE_LOWER,

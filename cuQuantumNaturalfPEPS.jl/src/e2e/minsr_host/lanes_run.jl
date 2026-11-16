@@ -20,14 +20,7 @@ function _minsr_host_create_lane(
         gram_out = Ref{Ptr{Cvoid}}(C_NULL)
         status = FFI.gram_host_ctx_create(gram_descriptor, Ptr{Cvoid}(stream), gram_out)
         gram = gram_out[]
-        status == 0 || throw(
-            MinsrHostError(
-                Int32(lane_index - 1),
-                Int32(status),
-                _last_error_location(),
-                _last_error_message(),
-            ),
-        )
+        status == 0 || throw(MinsrHostError(Int32(lane_index - 1), Int32(status), _last_error()))
         footprint_ref = Ref(
             _MinsrHostGramFootprint(;
                 struct_size=UInt32(sizeof(_MinsrHostGramFootprint)),
@@ -42,25 +35,11 @@ function _minsr_host_create_lane(
             ),
         )
         status = FFI.gram_host_ctx_footprint(gram, footprint_ref)
-        status == 0 || throw(
-            MinsrHostError(
-                Int32(lane_index - 1),
-                Int32(status),
-                _last_error_location(),
-                _last_error_message(),
-            ),
-        )
+        status == 0 || throw(MinsrHostError(Int32(lane_index - 1), Int32(status), _last_error()))
         minsr_out = Ref{Ptr{Cvoid}}(C_NULL)
         status = FFI.minsr_host_ctx_create(minsr_descriptor, Ptr{Cvoid}(stream), minsr_out)
         minsr = minsr_out[]
-        status == 0 || throw(
-            MinsrHostError(
-                Int32(lane_index - 1),
-                Int32(status),
-                _last_error_location(),
-                _last_error_message(),
-            ),
-        )
+        status == 0 || throw(MinsrHostError(Int32(lane_index - 1), Int32(status), _last_error()))
         footprint = footprint_ref[]
         sizes = (
             footprint.caller_samples_bytes,
@@ -162,7 +141,6 @@ function _minsr_host_create_lane(
             affinity_saved=Int32(0),
             affinity_applied=Int32(0),
             status=Int32(0),
-            failure_location="",
             failure_message="",
             input_copy_s=0.0,
             gram_s=0.0,
@@ -255,7 +233,6 @@ end
 function _minsr_host_run_lane!(host::MinsrHost, lane_index::Int, command::Int32)
     lane = host.lanes[lane_index]
     lane.status = _MINSR_HOST_OK
-    lane.failure_location = ""
     lane.failure_message = ""
     lane.input_copy_s = 0.0
     lane.gram_s = 0.0
@@ -275,8 +252,7 @@ function _minsr_host_run_lane!(host::MinsrHost, lane_index::Int, command::Int32)
     lane.gram_s = _minsr_host_seconds() - gram_started
     if status != 0
         lane.status = Int32(status)
-        lane.failure_location = _last_error_location()
-        lane.failure_message = _last_error_message()
+        lane.failure_message = _last_error()
         lane.complete_s = _minsr_host_seconds() - started
         return nothing
     end
@@ -311,8 +287,7 @@ function _minsr_host_run_lane!(host::MinsrHost, lane_index::Int, command::Int32)
     lane.minsr_s = _minsr_host_seconds() - minsr_started
     lane.status = Int32(status)
     if status != 0
-        lane.failure_location = _last_error_location()
-        lane.failure_message = _last_error_message()
+        lane.failure_message = _last_error()
     end
     if status == 0 && lane_index == 1
         _minsr_host_peer_copy!(
@@ -360,8 +335,7 @@ function _minsr_host_worker!(host::MinsrHost, lane_index::Int)
             _minsr_host_run_lane!(host, lane_index, command)
         catch failure
             lane.status = _MINSR_HOST_ERR_INTERNAL
-            lane.failure_location = "Julia lane worker"
-            lane.failure_message = sprint(showerror, failure)
+            lane.failure_message = "[Julia lane worker] " * sprint(showerror, failure)
         end
         Threads.atomic_add!(host.done, 1)
     end

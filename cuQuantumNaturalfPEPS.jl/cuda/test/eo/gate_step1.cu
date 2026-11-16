@@ -30,7 +30,7 @@ auto device_logpsi(
     const std::vector<std::uint8_t>& samples,
     int n,
     std::vector<double>& raw_out
-) -> qnpeps_eloc_status
+) -> qnpeps_status
 {
     QnpepsElocConfig cfg{};
     cfg.struct_size = sizeof(QnpepsElocConfig);
@@ -58,7 +58,7 @@ auto device_logpsi(
     double* d_lp{};
     cudaMalloc(reinterpret_cast<void**>(&d_lp), static_cast<std::size_t>(2 * n) * sizeof(double));
 
-    const qnpeps_eloc_status st{qnpeps_eloc_logpsi(
+    const qnpeps_status st{qnpeps_eloc_logpsi(
         &cfg, static_cast<const qnpeps_eloc_cbuf*>(d_peps), d_samp, n, d_lp, nullptr
     )};
 
@@ -94,13 +94,11 @@ auto run_case(
         gen_samples(lx, ly, dim_phys, n, 0xA11CEull ^ peps_seed, false)
     };
     std::vector<double> dev_a{};
-    const qnpeps_eloc_status sta{
-        device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, meo, sa, n, dev_a)
-    };
+    const qnpeps_status sta{device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, meo, sa, n, dev_a)};
     int fail_a{0};
-    if (sta != QNPEPS_ELOC_OK)
+    if (sta != QNPEPS_OK)
     {
-        std::printf("[gate1]   A device error: %s\n", qnpeps_eloc_strerror(sta));
+        std::printf("[gate1]   A device error: %s\n", qnpeps_last_error());
         fail_a = 1;
     }
     for (int lane{0}; lane < n; ++lane)
@@ -148,13 +146,11 @@ auto run_case(
         gen_samples(lx, ly, dim_phys, n, 0xB0B0ull ^ peps_seed, true)
     };
     std::vector<double> dev_b{};
-    const qnpeps_eloc_status stb{
-        device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, meo, sb, n, dev_b)
-    };
+    const qnpeps_status stb{device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, meo, sb, n, dev_b)};
     int fail_b{0};
-    if (stb != QNPEPS_ELOC_OK)
+    if (stb != QNPEPS_OK)
     {
-        std::printf("[gate1]   B device error: %s\n", qnpeps_eloc_strerror(stb));
+        std::printf("[gate1]   B device error: %s\n", qnpeps_last_error());
         fail_b = 1;
     }
     bool lanes_bit_equal{true};
@@ -191,16 +187,12 @@ auto run_case(
 
     std::vector<double> dev_c4{};
     std::vector<double> dev_c8{};
-    const qnpeps_eloc_status stc4{
-        device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, 4, sa, n, dev_c4)
-    };
-    const qnpeps_eloc_status stc8{
-        device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, 8, sa, n, dev_c8)
-    };
+    const qnpeps_status stc4{device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, 4, sa, n, dev_c4)};
+    const qnpeps_status stc8{device_logpsi(g, lx, ly, dim_phys, dim_bond, chi, 8, sa, n, dev_c8)};
     int fail_c{0};
     bool wave_bit_equal{true};
     double wave_max_rel{0.0};
-    if (stc4 != QNPEPS_ELOC_OK or stc8 != QNPEPS_ELOC_OK) fail_c = 1;
+    if (stc4 != QNPEPS_OK or stc8 != QNPEPS_OK) fail_c = 1;
     for (int lane{0}; lane < n; ++lane)
     {
         const double re4{dev_c4[static_cast<std::size_t>(2 * lane)]};

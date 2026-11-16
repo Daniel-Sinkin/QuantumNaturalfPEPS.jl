@@ -35,7 +35,7 @@ end
 Base.@kwdef struct _NodeStepEoLaneArguments
     context::CUDA.CuContext
     config::QnpepsElocConfig
-    terms::HeisenbergTerms
+    terms::OperatorTerms
     geometry::_NodeStepEoGeometry
     outputs::_NodeStepEoOutputs
 end
@@ -98,14 +98,13 @@ Base.@kwdef mutable struct _NodeStepEoLane
     affinity_saved::Int32
     affinity_applied::Int32
     status::Int32
-    failure_location::String
     failure_message::String
 end
 
 Base.@kwdef mutable struct NodeStepHost{DH,SH,MH,MI,EH}
     config::QnpepsE2eConfig
     config_ref::Base.RefValue{QnpepsE2eConfig}
-    terms::HeisenbergTerms
+    terms::OperatorTerms
     peps::QNP.CuPeps
     source_peps_pointer::CUDA.CuPtr{Cvoid}
     source_peps_bytes::UInt64

@@ -5,14 +5,14 @@
 
 namespace qnpeps::sampler::internal
 {
-[[nodiscard]] inline auto build_ket_row(
+inline auto build_ket_row(
     Sampler& samp,
     const SamplerConfig& cfg,
     int row,
     const std::vector<int>& bond_above,
     const std::vector<int>& ket_bonds,
     int env_above_cur
-) -> bool
+) -> void
 {
     const auto dim_batch = cfg.dim_batch;
     const auto dim_bond = cfg.dim_bond;
@@ -20,11 +20,10 @@ namespace qnpeps::sampler::internal
     const auto row_u = static_cast<usize>(row);
 
     auto& la = samp.linalg();
-    const auto permute = [&](PermuteOp op) -> bool
+    const auto permute = [&](PermuteOp op)
     {
         op.batch_count = dim_batch;
         permute_batched(samp.permutation_cache(), op, la.stream());
-        return err_state() == QNPEPS_OK;
     };
 
     const auto fill_first_one_args = CuFillFirstOneArgs{
@@ -54,7 +53,7 @@ namespace qnpeps::sampler::internal
         const auto environment_offset = col_i * samp.max_env_above_site();
         const auto* environment_site = environment.p + environment_offset;
         {
-            const auto res = contract_strided(
+            contract_strided(
                 la,
                 samp.permutation_cache(),
                 {
@@ -68,11 +67,10 @@ namespace qnpeps::sampler::internal
                 {.view = samp.tmp_b()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         {
-            const auto res = contract_batched(
+            contract_batched(
                 la,
                 samp.permutation_cache(),
                 {
@@ -86,17 +84,15 @@ namespace qnpeps::sampler::internal
                 {.ptrs = samp.tmp_b_ptrs()},
                 dim_batch
             );
-            if (not res) return false;
         }
 
         {
-            const auto res = permute({
+            permute({
                 .dst = samp.reduce_input(),
                 .src = samp.tmp_b(),
                 .dims_in = {ket_bond_l, bond_above_r, phys_site, bond_down, bond_right},
                 .perm = {0, 2, 3, 1, 4},
             });
-            if (not res) return false;
         }
         const int reduce_rows{ket_bond_l * phys_site * bond_down};
         const int reduce_cols{bond_above_r * bond_right};
@@ -108,7 +104,6 @@ namespace qnpeps::sampler::internal
             {samp.rfactor_next(), ket_bond_r, reduce_cols},
             dim_batch
         );
-        if (err_state() != QNPEPS_OK) return false;
 
         const CuNormalizeLogArgs norm_args{
             .x = samp.rfactor_next().p,
@@ -123,7 +118,6 @@ namespace qnpeps::sampler::internal
         std::swap(samp.rfactor().p, samp.rfactor_next().p);
         std::swap(samp.rfactor().stride, samp.rfactor_next().stride);
     }
-    return err_state() == QNPEPS_OK;
 }
 
 }

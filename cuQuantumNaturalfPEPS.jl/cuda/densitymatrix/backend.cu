@@ -2,9 +2,9 @@
 
 namespace qnpeps::densitymatrix
 {
-auto enter_handle_state(Linalg& linalg, HandleState& state) -> bool
+auto enter_handle_state(Linalg& linalg, HandleState& state) -> void
 {
-    return linalg.enter_default_state(state);
+    linalg.enter_default_state(state);
 }
 
 auto restore_handle_state(Linalg& linalg, const HandleState& state) -> void
@@ -36,11 +36,12 @@ auto matmul(
 
 auto eigen_workspace_bytes(Linalg& linalg, int order) -> usize
 {
-    if (order < 1)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return 0;
-    }
+    require(
+        order >= 1,
+        Status::bad_config,
+        "density eigensolver workspace needs a positive order, got {}",
+        order
+    );
     const auto count = linalg.diagonalize_workspace_count(order);
     const auto bytes =
         device_align(sizeof(cuDoubleComplex) * static_cast<usize>(std::max(count, 1)));
@@ -59,11 +60,12 @@ auto eigen_hermitian(
     const auto valid = matrix.data() and matrix.rows() > 0 and matrix.rows() == matrix.cols()
                        and eigenvalues and workspace and information
                        and workspace_bytes >= sizeof(cuDoubleComplex);
-    if (not valid)
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        valid,
+        "density eigensolve rejects matrix {} with {} workspace bytes",
+        matrix,
+        workspace_bytes
+    );
     linalg.diagonalize(
         matrix,
         {

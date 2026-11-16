@@ -100,7 +100,7 @@ end
 
 @inline function _run_prepared_rows_begin!(host::DlenvHost)::Nothing
     begin_status = FFI.zipup_ctx_begin(host.workspace.handle)
-    begin_status == 0 || _check(; status=begin_status, what="qnpeps_zipup_ctx_begin")
+    _check(; status=begin_status, what="qnpeps_zipup_ctx_begin")
     return nothing
 end
 
@@ -130,7 +130,7 @@ end
         pointer(scales),
         length(scales),
     )
-    finish_status == 0 || _check(; status=finish_status, what="qnpeps_zipup_ctx_finish")
+    _check(; status=finish_status, what="qnpeps_zipup_ctx_finish")
     return nothing
 end
 

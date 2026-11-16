@@ -37,7 +37,12 @@ auto product(
 ) -> void
 {
     const auto& context = *static_cast<const ProductContext*>(context_value);
-    if (site.site >= context.row_ket.size()) return set_err(QNPEPS_ERR_INTERNAL), void();
+    require(
+        site.site < context.row_ket.size(),
+        "density product site {} outside a row of {} sites",
+        site.site,
+        context.row_ket.size()
+    );
     const auto& ket = context.row_ket[site.site];
     const auto combined_left = site.state_left * site.operator_left;
     const auto combined_right = site.state_right * site.operator_right;
@@ -59,7 +64,7 @@ auto product(
         k_threads_per_block,
         0,
         linalg.stream()>>>(product_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }
@@ -78,11 +83,15 @@ auto density_row(
     const auto invalid_args = sites < 2 or args.environment.size() != sites or args.maxdim < 1
                               or not std::isfinite(args.cutoff) or args.cutoff < 0.0
                               or not args.device_scales;
-    if (invalid_args)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return output;
-    }
+    require(
+        not invalid_args,
+        Status::bad_config,
+        "density row rejects {} sites with {} environments, maxdim {}, cutoff {}",
+        sites,
+        args.environment.size(),
+        args.maxdim,
+        args.cutoff
+    );
     const auto dim_phys = args.row_ket.front().dim[0];
     const auto dim_bond = std::max({
         args.row_ket.front().dim[1],
@@ -112,7 +121,6 @@ auto density_row(
     auto* result_dimensions = arena.take<i32>(3 * sites);
     auto* normalization_log = arena.take<f64>(1);
     auto* device_output_gauge = arena.take<f64>(1);
-    if (err_state() != QNPEPS_OK) return output;
 
     std::vector<densitymatrix::Site> plans{};
     plans.reserve(sites);
@@ -126,11 +134,14 @@ auto density_row(
         const auto& ket = args.row_ket[site_index];
         const auto invalid_site = state.dim.rank() != 4 or ket.dim.rank() != 5
                                   or state.dim[1] != ket.dim[3] or state.dim[2] != ket.dim[3];
-        if (invalid_site)
-        {
-            set_err(QNPEPS_ERR_BAD_CONFIG);
-            return output;
-        }
+        require(
+            not invalid_site,
+            Status::bad_config,
+            "density row site {} pairs an environment of rank {} with a ket of rank {}",
+            site_index,
+            state.dim.rank(),
+            ket.dim.rank()
+        );
         const auto promote_args = PromoteArgs{
             .input = state.d,
             .count = state.num_elems(),
@@ -154,8 +165,13 @@ auto density_row(
         );
         state_offset += state.num_elems();
     }
-    CUDA_CHECK(cudaGetLastError());
-    if (state_offset > state_capacity or err_state() != QNPEPS_OK) return output;
+    check(cudaGetLastError());
+    require(
+        state_offset <= state_capacity,
+        "density row needs {} state values, {} reserved",
+        state_offset,
+        state_capacity
+    );
     const ProductContext context{args.row_ket, dim_phys};
     densitymatrix::apply(
         linalg,
@@ -183,13 +199,11 @@ auto density_row(
          .product = product,
          .product_context = &context}
     );
-    if (err_state() != QNPEPS_OK) return output;
     std::vector<i32> dimensions{};
     dimensions.resize(3 * sites);
     download_async(linalg, dimensions.data(), result_dimensions, dimensions.size());
     download_async(linalg, &output_gauge, device_output_gauge, 1);
-    CUDA_CHECK(cudaStreamSynchronize(linalg.stream()));
-    if (err_state() != QNPEPS_OK) return output;
+    check(cudaStreamSynchronize(linalg.stream()));
     for (auto site_index = 0_uz; site_index < sites; ++site_index)
     {
         const auto offset = 3 * site_index;
@@ -197,11 +211,17 @@ auto density_row(
         const auto right = static_cast<i64>(dimensions[offset + 1]);
         const auto left = static_cast<i64>(dimensions[offset + 2]);
         const auto vertical = args.row_ket[site_index].dim[1];
-        if (physical != static_cast<i64>(vertical) * vertical or left < 1 or right < 1)
-        {
-            set_err(QNPEPS_ERR_INTERNAL);
-            return output;
-        }
+        const auto valid_output =
+            physical == static_cast<i64>(vertical) * vertical and left >= 1 and right >= 1;
+        require(
+            valid_output,
+            "density row site {} produced extents {}x{}x{} for ket bond {}",
+            site_index,
+            left,
+            physical,
+            right,
+            vertical
+        );
         auto* packed = known.take<cuFloatComplex>(static_cast<usize>(left * physical * right));
         const auto pack_args = PackArgs{
             .input = result_values + site_index * output_slot,
@@ -225,7 +245,7 @@ auto density_row(
         .scales = args.device_scales,
     };
     cu_scales<<<launch_count(sites), k_threads_per_block, 0, linalg.stream()>>>(scale_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     return output;
 }
 }

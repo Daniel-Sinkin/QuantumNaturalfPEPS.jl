@@ -16,12 +16,9 @@ class LeasedArena
     LeasedArena() = default;
 
     LeasedArena(int device, cudaStream_t stream)
+        : lease_(shared_device_arena(device)->acquire_lease(stream)),
+          cursor_(ArenaCursor::persistent(*lease_))
     {
-        const auto arena = shared_device_arena(device);
-        if (not arena) return;
-        lease_ = arena->acquire_lease(stream);
-        if (not lease_) return;
-        cursor_ = ArenaCursor::persistent(*lease_);
     }
 
     LeasedArena(const LeasedArena&) = delete;

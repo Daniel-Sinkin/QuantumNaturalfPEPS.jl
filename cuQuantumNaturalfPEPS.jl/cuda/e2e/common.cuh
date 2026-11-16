@@ -1,11 +1,14 @@
 #ifndef QNPEPS_E2E_COMMON_CUH
 #define QNPEPS_E2E_COMMON_CUH
 
-#include "core/error.cuh"
+#include "capi/qnpeps.h"
+#include "core/error.hpp"
 #include "core/types.cuh"
 #include "dans_qnpeps_e2e.h"
 #include "eo/dans_qnpeps_eloc.h"
+#include "eo/routes.cuh"
 
+#include <algorithm>
 #include <cmath>
 #include <cuComplex.h>
 #include <cublas_v2.h>
@@ -22,50 +25,45 @@ using qnpeps::u64;
 using qnpeps::u8;
 using qnpeps::usize;
 
+using qnpeps::check;
+using qnpeps::fail;
+using qnpeps::guarded;
+using qnpeps::guarded_keeping_message;
+using qnpeps::guarded_labelled;
+using qnpeps::require;
+using qnpeps::require_struct_size;
+using qnpeps::Status;
+using qnpeps::unchecked;
+
 namespace qn_e2e
 {
 
 using cf = qnpeps::ComplexF32;
 using cd = cuDoubleComplex;
 
-static_assert(QNPEPS_E2E_OK == static_cast<int>(QNPEPS_OK));
-static_assert(QNPEPS_E2E_ERR_NULL_ARG == static_cast<int>(QNPEPS_ERR_NULL_ARG));
-static_assert(QNPEPS_E2E_ERR_BAD_CONFIG == static_cast<int>(QNPEPS_ERR_BAD_CONFIG));
-static_assert(QNPEPS_E2E_ERR_BAD_VERSION == static_cast<int>(QNPEPS_ERR_BAD_VERSION));
-static_assert(QNPEPS_E2E_ERR_CUDA == static_cast<int>(QNPEPS_ERR_CUDA));
-static_assert(QNPEPS_E2E_ERR_OOM == static_cast<int>(QNPEPS_ERR_OOM));
-static_assert(QNPEPS_E2E_ERR_INTERNAL == static_cast<int>(QNPEPS_ERR_INTERNAL));
-
-inline auto root_status(qnpeps_e2e_status status) -> qnpeps_status
-{
-    return static_cast<qnpeps_status>(status);
-}
-
-inline auto err_state() -> qnpeps_e2e_status
-{
-    return static_cast<qnpeps_e2e_status>(qnpeps::err_state());
-}
-inline void clear_err()
-{
-    qnpeps::reset_err();
-}
-inline void set_err(qnpeps_e2e_status s)
-{
-    qnpeps::set_err(root_status(s));
-}
-
 [[nodiscard]] inline auto is_valid_density_cutoff(f64 cutoff) noexcept -> bool
 {
     return std::isfinite(cutoff) and cutoff >= 0.0;
 }
 
+[[nodiscard]] inline auto is_local_energy_only_route(int32_t route) noexcept -> bool
+{
+    return route == QNPEPS_TRUNCATION_HOUSEHOLDER or route == QNPEPS_TRUNCATION_DENSITY_BATCHED
+           or route == QNPEPS_TRUNCATION_RANGEFINDER;
+}
+
+inline constexpr int32_t k_density_batched_wave_lanes{256};
+
+[[nodiscard]] inline auto local_energy_wave_lanes(const QnpepsE2eConfig& config) noexcept -> int32_t
+{
+    if (not qn_eloc::is_density_batched_route(config.truncation_route)) return config.meo;
+    return std::max(config.meo, k_density_batched_wave_lanes);
+}
+
 [[nodiscard]] inline auto has_valid_truncation(const QnpepsE2eConfig& config) noexcept -> bool
 {
-    const auto is_known_route = config.truncation_route == QNPEPS_TRUNCATION_DEFAULT
-                                or config.truncation_route == QNPEPS_TRUNCATION_SVD
-                                or config.truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
-                                or config.truncation_route == QNPEPS_TRUNCATION_DENSITY;
-    return is_known_route and is_valid_density_cutoff(config.dlenv_density_cutoff)
+    return qn_eloc::is_local_energy_route(config.truncation_route)
+           and is_valid_density_cutoff(config.dlenv_density_cutoff)
            and is_valid_density_cutoff(config.sampler_density_cutoff)
            and is_valid_density_cutoff(config.projected_density_cutoff)
            and is_valid_density_cutoff(config.local_energy_density_cutoff)
@@ -73,9 +71,9 @@ inline void set_err(qnpeps_e2e_status s)
            and config.local_energy_svd_cutoff <= 1.0;
 }
 
-inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsConfig& sampler) noexcept -> void
+inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsConfig& sampler) -> void
 {
-    const auto route = config.truncation_route == QNPEPS_TRUNCATION_HOUSEHOLDER
+    const auto route = is_local_energy_only_route(config.truncation_route)
                            ? int32_t{QNPEPS_TRUNCATION_DEFAULT}
                            : config.truncation_route;
     sampler.dlenv_truncation_route = route;
@@ -85,8 +83,7 @@ inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsConfig& sample
     sampler.projected_density_cutoff = config.projected_density_cutoff;
 }
 
-inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsElocConfig& local_energy) noexcept
-    -> void
+inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsElocConfig& local_energy) -> void
 {
     local_energy.truncation_route = config.truncation_route;
     local_energy.density_cutoff = config.local_energy_density_cutoff;
@@ -94,26 +91,5 @@ inline auto apply_truncation(const QnpepsE2eConfig& config, QnpepsElocConfig& lo
 }
 
 }
-
-#define QN_E2E_CUDA_CHECK(x)                                                                       \
-    do                                                                                             \
-    {                                                                                              \
-        const cudaError_t e_ = (x);                                                                \
-        if (e_ != cudaSuccess) qnpeps::set_cuda_err(e_);                                           \
-    } while (0)
-
-#define QN_E2E_CUBLAS_CHECK(x)                                                                     \
-    do                                                                                             \
-    {                                                                                              \
-        const cublasStatus_t s_ = (x);                                                             \
-        if (s_ != CUBLAS_STATUS_SUCCESS) qnpeps::set_cublas_err(s_);                               \
-    } while (0)
-
-#define QN_E2E_CUSOLVER_CHECK(x)                                                                   \
-    do                                                                                             \
-    {                                                                                              \
-        const cusolverStatus_t s_ = (x);                                                           \
-        if (s_ != CUSOLVER_STATUS_SUCCESS) qnpeps::set_cusolver_err(s_);                           \
-    } while (0)
 
 #endif

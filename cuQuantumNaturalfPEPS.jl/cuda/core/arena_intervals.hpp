@@ -30,7 +30,7 @@ class ArenaIntervals
     ArenaIntervals() = default;
     ArenaIntervals(std::size_t capacity, std::size_t alignment) { reset(capacity, alignment); }
 
-    auto reset(std::size_t capacity, std::size_t alignment) noexcept -> bool
+    auto reset(std::size_t capacity, std::size_t alignment) -> bool
     {
         if (alignment == 0 or (alignment & (alignment - 1)) != 0 or capacity % alignment != 0)
             return false;
@@ -74,7 +74,7 @@ class ArenaIntervals
 
     [[nodiscard]] auto checkpoint() const noexcept -> Checkpoint { return next_sequence_; }
 
-    auto release_since(Owner owner, Checkpoint checkpoint) noexcept -> void
+    auto release_since(Owner owner, Checkpoint checkpoint) -> void
     {
         occupied_.erase(
             std::remove_if(
@@ -87,8 +87,26 @@ class ArenaIntervals
         );
     }
 
-    auto release(Owner owner) noexcept -> void
+    auto release(Owner owner) -> void
     {
+#ifdef QNPEPS_INJECT_RELEASE_FAULT
+        const auto kept = std::find_if(
+            occupied_.begin(),
+            occupied_.end(),
+            [owner](const Occupied& region) { return region.owner == owner; }
+        );
+        if (kept != occupied_.end()) kept->sequence = 0;
+        occupied_.erase(
+            std::remove_if(
+                occupied_.begin(),
+                occupied_.end(),
+                [owner](const Occupied& region)
+                { return region.owner == owner and region.sequence != 0; }
+            ),
+            occupied_.end()
+        );
+        return;
+#endif
         occupied_.erase(
             std::remove_if(
                 occupied_.begin(),
@@ -99,7 +117,7 @@ class ArenaIntervals
         );
     }
 
-    auto quarantine(Owner owner) noexcept -> void
+    auto quarantine(Owner owner) -> void
     {
         for (auto& region : occupied_)
         {

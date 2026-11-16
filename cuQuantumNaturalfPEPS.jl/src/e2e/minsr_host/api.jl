@@ -17,14 +17,7 @@ function minsr_host_run!(host::MinsrHost, inputs::MinsrHostInputs)
         failed_lane_index = Int(host.stats.failed_lane) + 1
         if checkbounds(Bool, host.lanes, failed_lane_index)
             failed_lane = host.lanes[failed_lane_index]
-            throw(
-                MinsrHostError(
-                    host.stats.failed_lane,
-                    status,
-                    failed_lane.failure_location,
-                    failed_lane.failure_message,
-                ),
-            )
+            throw(MinsrHostError(host.stats.failed_lane, status, failed_lane.failure_message))
         end
         throw(MinsrHostError(host.stats.failed_lane, status))
     end

@@ -70,11 +70,8 @@ auto ok_layout(const Shape& sh, std::vector<i64>& off, std::vector<int>& slice) 
     const auto lx = int{sh.lx};
     const auto ly = int{sh.ly};
     int sites_int{};
-    if (lx < 1 or ly < 1 or sh.dim_bond < 1
-        or not arena_int(
-            {static_cast<std::uint64_t>(lx), static_cast<std::uint64_t>(ly)}, sites_int
-        ))
-        return 0;
+    if (lx < 1 or ly < 1 or sh.dim_bond < 1) return 0;
+    arena_int({static_cast<std::uint64_t>(lx), static_cast<std::uint64_t>(ly)}, sites_int);
     const auto sites = usize{static_cast<usize>(sites_int)};
     off.assign(sites, 0);
     slice.assign(sites, 0);
@@ -85,15 +82,14 @@ auto ok_layout(const Shape& sh, std::vector<i64>& off, std::vector<int>& slice) 
         {
             int s{};
             i64 next{};
-            if (not arena_int(
-                    {static_cast<std::uint64_t>(bd(ly, c, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(lx, i + 1, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(ly, c + 1, sh.dim_bond)),
-                     static_cast<std::uint64_t>(bd(lx, i, sh.dim_bond))},
-                    s
-                )
-                or not arena_i64_sum(acc, s, next))
-                return 0;
+            arena_int(
+                {static_cast<std::uint64_t>(bd(ly, c, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(lx, i + 1, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(ly, c + 1, sh.dim_bond)),
+                 static_cast<std::uint64_t>(bd(lx, i, sh.dim_bond))},
+                s
+            );
+            arena_i64_sum(acc, s, next);
             off[static_cast<usize>(i) * ly + c] = acc;
             slice[static_cast<usize>(i) * ly + c] = s;
             acc = next;
@@ -121,14 +117,12 @@ auto emit_o_rows(
     {
         for (auto c = int{0}; c < ly; ++c)
         {
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             const auto site = usize{static_cast<usize>(i) * ly + c};
             const auto slice = int{compact_slice[site]};
             auto frame = Carver{w.scratch};
             auto envblk{frame.take_product<cf>(
                 {static_cast<std::uint64_t>(slice), static_cast<std::uint64_t>(lanes)}
             )};
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
             const auto hl =
                 BT{c > 0 ? BT{hl_site(w, i, c - 1), w.slot_h, hl_o_dims(w, i, c)} : unit3(w)};
             const auto top = BT{top_bt(w, i, c)};
@@ -138,7 +132,6 @@ auto emit_o_rows(
             const auto t1 = BT{bcontract(w, frame, hl, {0}, top, {0}, nullptr, 0, 0)};
             const auto t2 = BT{bcontract(w, frame, t1, {1}, bot, {0}, nullptr, 0, 0)};
             bcontract(w, frame, t2, {2, 4}, hr, {0, 2}, envblk, static_cast<i64>(slice), 0);
-            if (qn::err_state() != QNPEPS_ELOC_OK) return;
 
             auto f_top{i > 0 ? w.f_top + static_cast<i64>(i - 1) * lanes : nullptr};
             auto f_down{i < lx - 1 ? w.f_down + static_cast<i64>(lx - i - 2) * lanes : nullptr};
@@ -148,7 +141,7 @@ auto emit_o_rows(
             cu_gscale<<<gblocks, threads, 0, w.la.stream()>>>(
                 gscratch, f_top, f_down, f_rail_l, f_rail_r, logpsi, lanes
             );
-            CUDA_CHECK(cudaGetLastError());
+            check(cudaGetLastError());
             const auto nwrite = i64{static_cast<i64>(slice) * lanes};
             const auto wblocks =
                 int{static_cast<int>(std::min<i64>(4096, (nwrite + threads - 1) / threads))};
@@ -162,7 +155,7 @@ auto emit_o_rows(
                 gscratch,
                 lanes
             );
-            CUDA_CHECK(cudaGetLastError());
+            check(cudaGetLastError());
         }
     }
 }
@@ -171,12 +164,9 @@ auto site_offsets(int lx, int ly, int dim_bond, int dim_phys) -> std::vector<i64
 {
     int sites_int{};
     usize slots{};
-    if (lx < 1 or ly < 1 or dim_bond < 1 or dim_phys < 1
-        or not arena_int(
-            {static_cast<std::uint64_t>(lx), static_cast<std::uint64_t>(ly)}, sites_int
-        )
-        or not arena_sum(static_cast<usize>(sites_int), 1u, slots))
-        return {};
+    if (lx < 1 or ly < 1 or dim_bond < 1 or dim_phys < 1) return {};
+    arena_int({static_cast<std::uint64_t>(lx), static_cast<std::uint64_t>(ly)}, sites_int);
+    arena_sum(static_cast<usize>(sites_int), 1u, slots);
     const auto sites = usize{static_cast<usize>(sites_int)};
     auto off = std::vector<i64>(slots, 0);
     auto o = i64{0};
@@ -187,16 +177,15 @@ auto site_offsets(int lx, int ly, int dim_bond, int dim_phys) -> std::vector<i64
             off[static_cast<usize>(r) * ly + c] = o;
             i64 site{};
             i64 next{};
-            if (not arena_slot(
-                    {static_cast<std::uint64_t>(bd(ly, c, dim_bond)),
-                     static_cast<std::uint64_t>(bd(lx, r + 1, dim_bond)),
-                     static_cast<std::uint64_t>(bd(ly, c + 1, dim_bond)),
-                     static_cast<std::uint64_t>(bd(lx, r, dim_bond)),
-                     static_cast<std::uint64_t>(dim_phys)},
-                    site
-                )
-                or not arena_i64_sum(o, site, next))
-                return {};
+            arena_slot(
+                {static_cast<std::uint64_t>(bd(ly, c, dim_bond)),
+                 static_cast<std::uint64_t>(bd(lx, r + 1, dim_bond)),
+                 static_cast<std::uint64_t>(bd(ly, c + 1, dim_bond)),
+                 static_cast<std::uint64_t>(bd(lx, r, dim_bond)),
+                 static_cast<std::uint64_t>(dim_phys)},
+                site
+            );
+            arena_i64_sum(o, site, next);
             o = next;
         }
     }
@@ -231,7 +220,7 @@ auto build_transposed_peps(
     const auto dp = int{cfg.dim_phys};
     const auto off = std::vector<i64>{site_offsets(lx, ly, D, dp)};
     const auto offt = std::vector<i64>{site_offsets(ly, lx, D, dp)};
-    if (qn::err_state() != QNPEPS_ELOC_OK or off.empty() or offt.empty()) return;
+    if (off.empty() or offt.empty()) return;
     for (auto r = int{0}; r < ly; ++r)
     {
         for (auto c = int{0}; c < lx; ++c)
@@ -253,7 +242,7 @@ auto build_transposed_peps(
             );
         }
     }
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 }

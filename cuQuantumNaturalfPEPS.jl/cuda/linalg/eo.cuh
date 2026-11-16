@@ -100,7 +100,6 @@ auto batched_rangefinder(
     Linalg& la,
     MatrixBatch panel,
     int k,
-    bool exact_factorization,
     RangefinderRoute route,
     f64 svd_cutoff,
     const cf* omega,
@@ -114,8 +113,8 @@ auto batched_rangefinder(
     cf** sketch_ptrs,
     int* info,
     int* fail_flag,
-    void* recovery_scratch,
-    usize recovery_scratch_bytes
+    void* fallback_scratch,
+    usize fallback_scratch_bytes
 ) -> void;
 
 inline auto cuda_align(usize bytes) -> usize
@@ -131,15 +130,11 @@ inline auto qr_workspace_count(Linalg& linalg, int m, int n) -> int
     if (found != cache.end()) return found->second;
 
     auto handle = cusolverDnHandle_t{linalg.cusolver()};
-    if (not handle)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return 0;
-    }
+    require(handle != nullptr, "QR workspace query without a solver handle");
     int geqrf_size{};
-    CUSOLVER_CHECK(cusolverDnCgeqrf_bufferSize(handle, m, n, nullptr, m, &geqrf_size));
+    check(cusolverDnCgeqrf_bufferSize(handle, m, n, nullptr, m, &geqrf_size));
     int ungqr_size{};
-    CUSOLVER_CHECK(cusolverDnCungqr_bufferSize(handle, m, n, n, nullptr, m, nullptr, &ungqr_size));
+    check(cusolverDnCungqr_bufferSize(handle, m, n, n, nullptr, m, nullptr, &ungqr_size));
     const auto workspace_count = int{std::max({geqrf_size, ungqr_size, 1})};
     cache.emplace(key, workspace_count);
     return workspace_count;
@@ -170,7 +165,7 @@ inline auto qr(
     auto* solver_workspace = reinterpret_cast<cuComplex*>(base + reflector_bytes + status_bytes);
     auto* a_cuda = reinterpret_cast<cuComplex*>(A);
     const auto workspace_size = int{qr_workspace_count(linalg, m, n)};
-    CUSOLVER_CHECK(cusolverDnCgeqrf(
+    check(cusolverDnCgeqrf(
         linalg.cusolver(),
         m,
         n,
@@ -183,7 +178,7 @@ inline auto qr(
     ));
     if (fail_flag)
         cu_or_info_bit<<<1, 1, 0, linalg.stream()>>>(device_status, 1, failure_bit, fail_flag);
-    CUSOLVER_CHECK(cusolverDnCungqr(
+    check(cusolverDnCungqr(
         linalg.cusolver(),
         m,
         n,
@@ -209,5 +204,27 @@ inline auto qr(Linalg& linalg, DeviceMatrix A, void* scratch, int* fail_flag = n
 }
 
 }
+
+template <>
+struct std::formatter<qnpeps::DeviceMatrix> : qnpeps::PlainFormatter
+{
+    auto format(const qnpeps::DeviceMatrix& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(context.out(), "{}x{}", value.rows(), value.cols());
+    }
+};
+
+template <>
+struct std::formatter<qnpeps::MatrixBatch> : qnpeps::PlainFormatter
+{
+    auto format(const qnpeps::MatrixBatch& value, std::format_context& context) const
+        -> std::format_context::iterator
+    {
+        return std::format_to(
+            context.out(), "{}x{} stride={}", value.rows(), value.cols(), value.stride()
+        );
+    }
+};
 
 #endif

@@ -44,7 +44,13 @@ inline constexpr uint64_t k_max_batch_size{2048};
 {
     if (rc != QNPEPS_OK)
     {
-        std::fprintf(stderr, "qnpeps error at %s: %s\n", what, qnpeps_strerror(rc));
+        std::fprintf(
+            stderr,
+            "[bench_api] %s failed with status %d, %s\n",
+            what,
+            static_cast<int>(rc),
+            qnpeps_last_error()
+        );
         return false;
     }
     return true;

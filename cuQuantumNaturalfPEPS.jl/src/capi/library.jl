@@ -139,33 +139,22 @@ end
 
 capi_version()::String = unsafe_string(FFI.capi_version())
 
-function _strerror(; status::Integer)::String
-    return unsafe_string(FFI.strerror(status))
-end
-
-function _last_error_location()::String
-    file_ptr = FFI.last_error_file()
-    line = FFI.last_error_line()
-    (file_ptr == C_NULL || line <= 0) && return ""
-    file = unsafe_string(file_ptr)
-    isempty(file) && return ""
-    return "$file:$line"
-end
-
-function _last_error_message()::String
-    message_ptr = FFI.last_error_message()
-    message_ptr == C_NULL && return ""
-    return unsafe_string(message_ptr)
+function _last_error()::String
+    message = FFI.last_error()
+    message == C_NULL && return ""
+    return unsafe_string(message)
 end
 
 @inline function _check(; status::Integer, what::AbstractString)::Nothing
     status == 0 && return
-    location = _last_error_location()
-    at = isempty(location) ? "" : " at $location"
-    message = _last_error_message()
-    backend = isempty(message) ? "" : "; $message"
-    error(
-        "[cuQuantumNaturalfPEPS] $what failed$at " *
-        "(status $status, $(_strerror(; status))$backend)",
-    )
+    message = _last_error()
+    cause = isempty(message) ? "" : " $message"
+    error("[cuQuantumNaturalfPEPS] $what failed (status $status)$cause")
+end
+
+function device_arena_reading(device::Integer)::QnpepsArenaReading
+    reading = Ref{QnpepsArenaReading}(_empty_arena_reading(device))
+    status = FFI.device_arena_reading(Int32(device), reading)
+    _check(; status, what="qnpeps_device_arena_reading")
+    return reading[]
 end

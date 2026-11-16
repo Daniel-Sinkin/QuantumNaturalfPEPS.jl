@@ -53,7 +53,7 @@ auto accumulate_block(
     cuFloatComplex* output,
     int output_ld,
     bool diagonal
-) -> qnpeps_status;
+) -> void;
 
 auto finalize_block(
     cuFloatComplex* output,
@@ -62,7 +62,7 @@ auto finalize_block(
     int global_base,
     int samples,
     cudaStream_t stream
-) -> qnpeps_status;
+) -> void;
 }
 
 #endif

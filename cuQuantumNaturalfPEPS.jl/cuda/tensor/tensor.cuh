@@ -69,10 +69,12 @@ class Shape
 
     [[nodiscard]] static auto ensure_valid(std::vector<int> extents) -> std::vector<int>
     {
-        if (is_shape(extents)) return extents;
-        assert(false);
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
+        require(
+            is_shape(extents),
+            "tensor shape of rank {} has a nonpositive or overflowing extent",
+            extents.size()
+        );
+        return extents;
     }
 
     std::vector<int> extents_{};

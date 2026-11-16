@@ -5,6 +5,8 @@
 #include "core/types.cuh"
 #include "dans_qnpeps_eloc.h"
 
+#include <cuda_runtime.h>
+
 namespace qnpeps
 {
 class Linalg;
@@ -26,7 +28,21 @@ struct ShardArgs
     Linalg* linalg;
 };
 
-auto run_shard(const ShardArgs& args) -> qnpeps_status;
+struct GramTileArgs
+{
+    const QnpepsElocConfig* config;
+    const ComplexF32* rows_a;
+    const u8* samples_a;
+    i64 count_a;
+    const ComplexF32* rows_b;
+    const u8* samples_b;
+    i64 count_b;
+    ComplexF32* tile;
+    cudaStream_t stream;
+};
+
+auto run_shard(const ShardArgs& args) -> void;
+auto gram_tile(const GramTileArgs& args) -> void;
 }
 
 #endif

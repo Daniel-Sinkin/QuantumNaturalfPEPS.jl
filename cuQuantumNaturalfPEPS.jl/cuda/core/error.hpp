@@ -1,185 +1,296 @@
-#ifndef QNPEPS_INTERNAL_ERROR_HPP
-#define QNPEPS_INTERNAL_ERROR_HPP
+#ifndef QNPEPS_ERROR_HPP
+#define QNPEPS_ERROR_HPP
 
-#include "core/checked.hpp"
-#include "core/error_type.hpp"
+#include "capi/qnpeps_status.h"
 #include "core/types.cuh"
 
-#include <complex>
 #include <concepts>
-#include <limits>
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+#include <cusolverDn.h>
+#include <exception>
+#include <format>
+#include <initializer_list>
+#include <new>
 #include <source_location>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace qnpeps
 {
-namespace detail
+enum class Status : i32
 {
-template <typename Value>
-[[nodiscard]] auto value_text(Value value) -> std::string
+    ok = QNPEPS_OK,
+    null_argument = QNPEPS_ERR_NULL_ARG,
+    bad_config = QNPEPS_ERR_BAD_CONFIG,
+    bad_version = QNPEPS_ERR_BAD_VERSION,
+    cuda = QNPEPS_ERR_CUDA,
+    out_of_memory = QNPEPS_ERR_OOM,
+    internal = QNPEPS_ERR_INTERNAL
+};
+
+[[nodiscard]] constexpr auto to_c_status(Status status) noexcept -> qnpeps_status
 {
-    return std::to_string(value);
+    return static_cast<qnpeps_status>(status);
 }
 
-template <typename Scalar>
-[[nodiscard]] auto value_text(const std::complex<Scalar>& value) -> std::string
+class Error : public std::exception
 {
-    return "(" + std::to_string(value.real()) + ", " + std::to_string(value.imag()) + ")";
+  public:
+    Error(
+        Status status,
+        std::string_view text,
+        std::source_location location = std::source_location::current()
+    )
+        : status_{status},
+          message_{std::format("[{}:{}] {}", location.file_name(), location.line(), text)}
+    {
+    }
+
+    [[nodiscard]] static auto relayed(Status status, std::string message) -> Error
+    {
+        return Error{status, std::move(message), Relayed{}};
+    }
+
+    [[nodiscard]] auto status() const noexcept -> Status { return status_; }
+    [[nodiscard]] auto what() const noexcept -> const char* override { return message_.c_str(); }
+
+  private:
+    struct Relayed
+    {
+    };
+
+    Error(Status status, std::string message, Relayed)
+        : status_{status}, message_{std::move(message)}
+    {
+    }
+
+    Status status_{};
+    std::string message_{};
+};
+
+template <typename... Args>
+struct LocatedFormat
+{
+    template <typename Text>
+        requires std::convertible_to<const Text&, std::string_view>
+    consteval LocatedFormat(
+        const Text& text, std::source_location location = std::source_location::current()
+    )
+        : format{text}, where{location}
+    {
+    }
+
+    std::format_string<Args...> format;
+    std::source_location where;
+};
+
+template <typename... Args>
+using Format = LocatedFormat<std::type_identity_t<Args>...>;
+
+template <typename... Args>
+[[noreturn]] auto fail(Status status, Format<Args...> format, const Args&... args) -> void
+{
+    throw Error{
+        status, std::vformat(format.format.get(), std::make_format_args(args...)), format.where
+    };
 }
 
-[[nodiscard]] inline auto value_text(ComplexF32 value) -> std::string
+template <typename... Args>
+[[noreturn]] auto fail(Format<Args...> format, const Args&... args) -> void
 {
-    return "(" + std::to_string(value.re) + ", " + std::to_string(value.im) + ")";
-}
+    fail(Status::internal, format, args...);
 }
 
-inline auto require(
-    bool condition, std::string_view message, Status status = Status::invalid_argument
+[[noreturn]] inline auto fail_at(
+    Status status, std::source_location location, std::string_view text
 ) -> void
+{
+    throw Error{status, text, location};
+}
+
+[[noreturn]] inline auto relay(Status status, std::string message) -> void
+{
+    throw Error::relayed(status, std::move(message));
+}
+
+template <typename... Args>
+auto require(bool condition, Format<Args...> format, const Args&... args) -> void
 {
     if (condition) return;
-    throw Error{status, std::string{message}};
+    fail(Status::internal, format, args...);
 }
 
-[[noreturn]] inline auto throw_size_overflow(
-    std::string_view context, std::source_location location = std::source_location::current()
+template <typename... Args>
+auto require(bool condition, Status status, Format<Args...> format, const Args&... args) -> void
+{
+    if (condition) return;
+    fail(status, format, args...);
+}
+
+template <typename Header>
+auto require_struct_size(
+    const Header& header,
+    std::string_view name,
+    std::source_location where = std::source_location::current()
 ) -> void
 {
+    if (header.struct_size == sizeof(Header)) return;
+    fail_at(
+        Status::bad_version,
+        where,
+        std::format("{} struct_size {}, expected {}", name, header.struct_size, sizeof(Header))
+    );
+}
+
+[[nodiscard]] auto cuda_failure_text(cudaError_t status) -> std::string;
+[[nodiscard]] auto cublas_failure_text(cublasStatus_t status) -> std::string;
+[[nodiscard]] auto cusolver_failure_text(cusolverStatus_t status) -> std::string;
+
+inline auto check(
+    cudaError_t status, std::source_location location = std::source_location::current()
+) -> void
+{
+    if (status == cudaSuccess) return;
+    const auto mapped = status == cudaErrorMemoryAllocation ? Status::out_of_memory : Status::cuda;
+    throw Error{mapped, cuda_failure_text(status), location};
+}
+
+inline auto check(
+    cublasStatus_t status, std::source_location location = std::source_location::current()
+) -> void
+{
+    if (status == CUBLAS_STATUS_SUCCESS) return;
+    throw Error{Status::cuda, cublas_failure_text(status), location};
+}
+
+inline auto check(
+    cusolverStatus_t status, std::source_location location = std::source_location::current()
+) -> void
+{
+    if (status == CUSOLVER_STATUS_SUCCESS) return;
+    throw Error{Status::cuda, cusolver_failure_text(status), location};
+}
+
+inline auto check(
+    cusolverStatus_t status,
+    std::string_view routine,
+    std::source_location location = std::source_location::current()
+) -> void
+{
+    if (status == CUSOLVER_STATUS_SUCCESS) return;
     throw Error{
-        Status::invalid_argument, std::string{context} + " size computation overflowed", location
+        Status::cuda, std::format("{} in {}", cusolver_failure_text(status), routine), location
     };
 }
 
-template <std::integral... Dimensions>
-[[nodiscard]] auto element_count(std::string_view name, Dimensions... dimensions) -> usize
-{
-    const auto result = checked_product(dimensions...);
-    if (not result.has_value()) throw_size_overflow(name);
-    return *result;
-}
-
-inline auto require_bytes(
-    usize actual,
-    usize expected,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
+inline auto check_allocation(
+    cudaError_t status, std::source_location location = std::source_location::current()
 ) -> void
 {
-    if (actual >= expected) return;
-    throw Error{
-        Status::invalid_argument,
-        std::string{context} + " too small (got " + std::to_string(actual) + " bytes, expected "
-            + std::to_string(expected) + " bytes)",
-        location
-    };
+    if (status == cudaSuccess) return;
+    throw Error{Status::out_of_memory, cuda_failure_text(status), location};
 }
 
-inline auto require_bytes(
-    usize actual,
-    i64 expected,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+template <typename BackendStatus>
+auto unchecked(BackendStatus) noexcept -> void
 {
-    require_bytes(actual, to_count(expected), context, location);
 }
 
-inline auto require_count(
-    usize actual,
-    usize expected,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+[[nodiscard]] auto last_error_message() noexcept -> std::string&;
+auto record_failure(const char* message) noexcept -> void;
+
+template <typename Body>
+[[nodiscard]] auto guarded(Body&& body) noexcept -> qnpeps_status
 {
-    if (actual >= expected) return;
-    throw Error{
-        Status::invalid_argument,
-        std::string{context} + " too small (got " + std::to_string(actual) + " elements, expected "
-            + std::to_string(expected) + " elements)",
-        location
-    };
+    last_error_message().clear();
+    try
+    {
+        std::forward<Body>(body)();
+        return QNPEPS_OK;
+    }
+    catch (const Error& error)
+    {
+        record_failure(error.what());
+        return to_c_status(error.status());
+    }
+    catch (const std::bad_alloc& error)
+    {
+        record_failure(error.what());
+        return QNPEPS_ERR_OOM;
+    }
+    catch (const std::exception& error)
+    {
+        record_failure(error.what());
+        return QNPEPS_ERR_INTERNAL;
+    }
+    catch (...)
+    {
+        record_failure("unknown exception");
+        return QNPEPS_ERR_INTERNAL;
+    }
 }
 
-inline auto require_count(
-    usize actual,
-    i64 expected,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+template <typename Body>
+[[nodiscard]] auto guarded_keeping_message(Body&& body) noexcept -> qnpeps_status
 {
-    require_count(actual, to_count(expected), context, location);
+    auto kept = std::move(last_error_message());
+    const auto status = guarded(std::forward<Body>(body));
+    last_error_message() = std::move(kept);
+    return status;
 }
 
-template <typename Value>
-auto require_equal(
-    Value actual,
-    Value expected,
-    std::string_view unit,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+template <typename Value, typename Body>
+[[nodiscard]] auto guarded_or(Value fallback, Body&& body) noexcept -> Value
 {
-    if (actual == expected) return;
-    throw Error{
-        Status::invalid_argument,
-        std::string{context} + " mismatch (got " + detail::value_text(actual) + " "
-            + std::string{unit} + ", expected " + detail::value_text(expected) + " "
-            + std::string{unit} + ")",
-        location
-    };
+    auto result = fallback;
+    const auto status = guarded_keeping_message([&] { result = std::forward<Body>(body)(); });
+    return status == QNPEPS_OK ? result : fallback;
 }
 
-template <typename Value>
-auto require_less_equal(
-    Value actual,
-    Value maximum,
-    std::string_view unit,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+template <typename Body>
+[[nodiscard]] auto guarded_labelled(std::string_view label, Body&& body) noexcept -> qnpeps_status
 {
-    if (actual <= maximum) return;
-    throw Error{
-        Status::invalid_argument,
-        std::string{context} + " exceeds limit (got " + detail::value_text(actual) + " "
-            + std::string{unit} + ", expected at most " + detail::value_text(maximum) + " "
-            + std::string{unit} + ")",
-        location
-    };
+    return guarded(
+        [&]
+        {
+            const auto status = guarded(std::forward<Body>(body));
+            if (status == QNPEPS_OK) return;
+            relay(static_cast<Status>(status), std::format("[{}] {}", label, last_error_message()));
+        }
+    );
 }
 
-template <typename Value>
-auto require_at_least(
-    Value actual,
-    Value minimum,
-    std::string_view unit,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> void
+template <typename Body>
+[[nodiscard]] auto guarded_labelled(std::string_view label, int gpu, Body&& body) noexcept
+    -> qnpeps_status
 {
-    if (actual >= minimum) return;
-    throw Error{
-        Status::invalid_argument,
-        std::string{context} + " below limit (got " + detail::value_text(actual) + " "
-            + std::string{unit} + ", expected at least " + detail::value_text(minimum) + " "
-            + std::string{unit} + ")",
-        location
-    };
+    return guarded(
+        [&]
+        {
+            const auto status = guarded(std::forward<Body>(body));
+            if (status == QNPEPS_OK) return;
+            relay(
+                static_cast<Status>(status),
+                std::format("[{}] [GPU {}] {}", label, gpu, last_error_message())
+            );
+        }
+    );
 }
 
-[[nodiscard]] inline auto require_fits_int(
-    i64 value,
-    std::string_view unit,
-    std::string_view context,
-    std::source_location location = std::source_location::current()
-) -> int
+template <typename Body>
+auto collapse_to_internal(std::initializer_list<Status> kept, Body&& body) -> void
 {
-    const i64 minimum{std::numeric_limits<int>::min()};
-    const i64 maximum{std::numeric_limits<int>::max()};
-    require_at_least(value, minimum, unit, context, location);
-    require_less_equal(value, maximum, unit, context, location);
-    return static_cast<int>(value);
+    const auto status = guarded(std::forward<Body>(body));
+    if (status == QNPEPS_OK) return;
+    auto mapped = Status::internal;
+    for (const auto keep : kept)
+    {
+        if (to_c_status(keep) == status) mapped = keep;
+    }
+    relay(mapped, last_error_message());
 }
 }
 

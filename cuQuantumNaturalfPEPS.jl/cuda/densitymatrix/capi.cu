@@ -1,3 +1,4 @@
+#include "capi/internal/format.cuh"
 #include "capi/qnpeps.h"
 #include "densitymatrix/backend.cuh"
 #include "densitymatrix/kernels.cuh"
@@ -24,21 +25,23 @@ auto buffer(const QnpepsDeviceBuffer& input, bool optional = false) -> BufferVie
 {
     const auto invalid_buffer = input.struct_size != sizeof(QnpepsDeviceBuffer)
                                 or input.reserved != 0_u32 or input.bytes % sizeof(T) != 0;
-    if (invalid_buffer)
-    {
-        set_err(QNPEPS_ERR_BAD_VERSION);
-        return {};
-    }
-    if (input.values == 0_u64 and input.bytes != 0_u64)
-    {
-        set_err(QNPEPS_ERR_NULL_ARG);
-        return {};
-    }
-    if (not optional and (input.values == 0_u64 or input.bytes == 0_u64))
-    {
-        set_err(QNPEPS_ERR_NULL_ARG);
-        return {};
-    }
+    require(
+        not invalid_buffer,
+        Status::bad_version,
+        "device buffer struct_size {}, reserved {}, {} bytes not a multiple of {}",
+        input.struct_size,
+        input.reserved,
+        input.bytes,
+        sizeof(T)
+    );
+    require(
+        input.values != 0_u64 or input.bytes == 0_u64,
+        Status::null_argument,
+        "device buffer of {} bytes has a null address",
+        input.bytes
+    );
+    const auto is_empty = input.values == 0_u64 or input.bytes == 0_u64;
+    require(optional or not is_empty, Status::null_argument, "required device buffer is empty");
     return {
         reinterpret_cast<T*>(static_cast<uintptr_t>(input.values)),
         static_cast<usize>(input.bytes / sizeof(T)),
@@ -55,11 +58,15 @@ struct WorkspaceOutputs
 
 auto workspace_outputs(const QnpepsDensityWorkspace& input) -> WorkspaceOutputs
 {
-    if (input.struct_size != sizeof(QnpepsDensityWorkspace) or input.reserved != 0_u32)
-    {
-        set_err(QNPEPS_ERR_BAD_VERSION);
-        return {};
-    }
+    const auto valid_header =
+        input.struct_size == sizeof(QnpepsDensityWorkspace) and input.reserved == 0_u32;
+    require(
+        valid_header,
+        Status::bad_version,
+        "density workspace struct_size {}, expected {}",
+        input.struct_size,
+        sizeof(QnpepsDensityWorkspace)
+    );
     const auto ranks = buffer<i32>(input.active_ranks);
     const auto records = buffer<QnpepsDensityRankRecord>(input.truncation_records);
     return {
@@ -93,15 +100,18 @@ auto density_geometry(std::span<const densitymatrix::Site> planned_sites, i64 up
     };
 }
 
-auto trace_available(const QnpepsDensityTrace& input) -> bool
+auto require_trace_disabled(const QnpepsDensityTrace& input) -> void
 {
-    if (input.struct_size != sizeof(QnpepsDensityTrace) or input.enabled > 1_u32)
-    {
-        set_err(QNPEPS_ERR_BAD_VERSION);
-        return false;
-    }
-    if (input.enabled != 0_u32) return set_err(QNPEPS_ERR_BAD_CONFIG), false;
-    return true;
+    const auto valid_header =
+        input.struct_size == sizeof(QnpepsDensityTrace) and input.enabled <= 1_u32;
+    require(
+        valid_header,
+        Status::bad_version,
+        "density trace struct_size {}, enabled {}",
+        input.struct_size,
+        input.enabled
+    );
+    require(input.enabled == 0_u32, Status::bad_config, "density trace capture is not available");
 }
 
 auto sites(const QnpepsDensityApplyArgs& input) -> std::vector<densitymatrix::Site>
@@ -110,11 +120,13 @@ auto sites(const QnpepsDensityApplyArgs& input) -> std::vector<densitymatrix::Si
     const auto invalid_sites =
         input.num_sites < 2_u64 or input.sites == 0_u64
         or input.sites_bytes != input.num_sites * sizeof(QnpepsDensitySitePlan);
-    if (invalid_sites)
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return output;
-    }
+    require(
+        not invalid_sites,
+        Status::bad_config,
+        "density apply rejects {} sites described by {} plan bytes",
+        input.num_sites,
+        input.sites_bytes
+    );
     const auto* plans =
         reinterpret_cast<const QnpepsDensitySitePlan*>(static_cast<uintptr_t>(input.sites));
     output.reserve(static_cast<usize>(input.num_sites));
@@ -124,11 +136,15 @@ auto sites(const QnpepsDensityApplyArgs& input) -> std::vector<densitymatrix::Si
         const auto invalid_plan = plan.struct_size != sizeof(QnpepsDensitySitePlan)
                                   or plan.reserved != 0_u32
                                   or plan.operator_input != plan.physical_input;
-        if (invalid_plan)
-        {
-            set_err(QNPEPS_ERR_BAD_VERSION);
-            return {};
-        }
+        require(
+            not invalid_plan,
+            Status::bad_version,
+            "density site plan {} has struct_size {}, operator input {}, physical input {}",
+            index,
+            plan.struct_size,
+            plan.operator_input,
+            plan.physical_input
+        );
         output.push_back(
             {.site = plan.site,
              .num_sites = plan.num_sites,
@@ -146,42 +162,51 @@ auto sites(const QnpepsDensityApplyArgs& input) -> std::vector<densitymatrix::Si
     return output;
 }
 
-auto bound_stream(qnpeps_ctx* ctx, void* stream) -> bool
+auto require_bound_stream(qnpeps_ctx* ctx, void* stream) -> void
 {
-    if (not ctx)
-    {
-        set_err(QNPEPS_ERR_NULL_ARG);
-        return false;
-    }
-    if (stream and static_cast<cudaStream_t>(stream) != ctx->stream())
-    {
-        set_err(QNPEPS_ERR_BAD_CONFIG);
-        return false;
-    }
-    return true;
-}
+    require(ctx != nullptr, Status::null_argument, "density call without a context");
+    const auto foreign_stream = stream and static_cast<cudaStream_t>(stream) != ctx->stream();
+    require(
+        not foreign_stream,
+        Status::bad_config,
+        "density call stream differs from the context stream"
+    );
 }
 
-extern "C" qnpeps_status qnpeps_density_workspace_sizes(
-    qnpeps_ctx* ctx, const QnpepsDensityWorkspaceQuery* query
-)
+auto density_workspace_sizes(qnpeps_ctx* ctx, const QnpepsDensityWorkspaceQuery* query) -> void
 {
-    reset_err();
-    if (not ctx or not query) return set_err(QNPEPS_ERR_NULL_ARG);
-    if (query->struct_size != sizeof(QnpepsDensityWorkspaceQuery) or query->reserved != 0_u32)
-        return set_err(QNPEPS_ERR_BAD_VERSION);
-    if (query->sizes_out == 0_u64) return set_err(QNPEPS_ERR_NULL_ARG);
+    require(
+        ctx != nullptr and query != nullptr,
+        Status::null_argument,
+        "density workspace query without a context or query"
+    );
+    const auto valid_query_header =
+        query->struct_size == sizeof(QnpepsDensityWorkspaceQuery) and query->reserved == 0_u32;
+    require(
+        valid_query_header,
+        Status::bad_version,
+        "density workspace query struct_size {}, expected {}",
+        query->struct_size,
+        sizeof(QnpepsDensityWorkspaceQuery)
+    );
+    require(
+        query->sizes_out != 0_u64, Status::null_argument, "density workspace query has no output"
+    );
     auto* output =
         reinterpret_cast<QnpepsDensityWorkspaceSizes*>(static_cast<uintptr_t>(query->sizes_out));
-    if (output->struct_size != sizeof(QnpepsDensityWorkspaceSizes) or output->reserved != 0_u32)
-        return set_err(QNPEPS_ERR_BAD_VERSION);
+    const auto valid_output_header =
+        output->struct_size == sizeof(QnpepsDensityWorkspaceSizes) and output->reserved == 0_u32;
+    require(
+        valid_output_header,
+        Status::bad_version,
+        "density workspace sizes struct_size {}, expected {}",
+        output->struct_size,
+        sizeof(QnpepsDensityWorkspaceSizes)
+    );
     const auto invalid_query = query->num_sites < 2 or query->input_bond < 1
                                or query->operator_bond < 1 or query->output_dimension < 1
                                or query->upper_bond < 1 or query->lanes < 1;
-    if (invalid_query)
-    {
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
-    }
+    require(not invalid_query, Status::bad_config, "density workspace query rejects {}", *query);
     const auto sites = static_cast<usize>(query->num_sites);
     const auto cuts = sites - 1;
     const auto input_bond = static_cast<usize>(query->input_bond);
@@ -220,19 +245,22 @@ extern "C" qnpeps_status qnpeps_density_workspace_sizes(
         .solver_information_bytes = sizeof(i32),
         .arena_bytes = arena_reservation_bytes(),
     };
-    return err_state();
 }
 
-extern "C" qnpeps_status qnpeps_densitymatrix_apply(
-    qnpeps_ctx* ctx, const QnpepsDensityApplyArgs* input, void* stream
-)
+auto densitymatrix_apply(qnpeps_ctx* ctx, const QnpepsDensityApplyArgs* input, void* stream) -> void
 {
-    reset_err();
-    if (not input or not bound_stream(ctx, stream)) return err_state();
-    if (input->struct_size != sizeof(QnpepsDensityApplyArgs) or input->normalize > 1_u32)
-        return set_err(QNPEPS_ERR_BAD_VERSION);
+    require(input != nullptr, Status::null_argument, "density apply without arguments");
+    require_bound_stream(ctx, stream);
+    const auto valid_header =
+        input->struct_size == sizeof(QnpepsDensityApplyArgs) and input->normalize <= 1_u32;
+    require(
+        valid_header,
+        Status::bad_version,
+        "density apply struct_size {}, normalize {}",
+        input->struct_size,
+        input->normalize
+    );
     auto planned_sites = sites(*input);
-    if (err_state() != QNPEPS_OK) return err_state();
     const auto state = buffer<const cuDoubleComplex>(input->state_values);
     const auto operator_values = buffer<const cuDoubleComplex>(input->operator_values);
     const auto dimensions = buffer<i32>(input->result_dimensions);
@@ -240,8 +268,7 @@ extern "C" qnpeps_status qnpeps_densitymatrix_apply(
     const auto normalization = buffer<f64>(input->normalization_log);
     const auto gauge = buffer<f64>(input->output_gauge);
     const auto workspace = workspace_outputs(input->workspace);
-    if (not trace_available(input->trace)) return err_state();
-    if (err_state() != QNPEPS_OK) return err_state();
+    require_trace_disabled(input->trace);
     const std::span<const densitymatrix::Site> site_span{planned_sites};
     const auto cuts = site_span.size() - 1;
     const auto upper_bond = static_cast<usize>(input->upper_bond);
@@ -252,17 +279,21 @@ extern "C" qnpeps_status qnpeps_densitymatrix_apply(
         state.count < 1 or operator_values.count < 1 or dimensions.count < 3 * site_span.size()
         or values.count < result_required or normalization.count < 1 or gauge.count < 1
         or workspace.active_rank_count < cuts or workspace.record_count < cuts;
-    if (insufficient_buffers)
-    {
-        return set_err(QNPEPS_ERR_BAD_CONFIG);
-    }
+    require(
+        not insufficient_buffers,
+        Status::bad_config,
+        "density apply buffers too small, {} result values for {} required, {} dimensions for {} "
+        "sites",
+        values.count,
+        result_required,
+        dimensions.count,
+        site_span.size()
+    );
     auto transient_arena = ctx->transient_arena();
     auto& arena = transient_arena.cursor();
-    if (err_state() != QNPEPS_OK) return err_state();
     const auto internal_workspace = densitymatrix::take_workspace(
         ctx->linalg(), arena, density_geometry(site_span, input->upper_bond)
     );
-    if (err_state() != QNPEPS_OK) return err_state();
     densitymatrix::apply(
         ctx->linalg(),
         {.settings = input->settings,
@@ -284,22 +315,28 @@ extern "C" qnpeps_status qnpeps_densitymatrix_apply(
          .active_ranks_out = workspace.active_ranks,
          .records_out = workspace.records}
     );
-    return err_state();
 }
 
-extern "C" qnpeps_status qnpeps_density_filter_apply(
-    qnpeps_ctx* ctx, const QnpepsDensityFilterArgs* input, void* stream
-)
+auto density_filter_apply(qnpeps_ctx* ctx, const QnpepsDensityFilterArgs* input, void* stream)
+    -> void
 {
-    reset_err();
-    if (not input or not bound_stream(ctx, stream)) return err_state();
+    require(input != nullptr, Status::null_argument, "density filter without arguments");
+    require_bound_stream(ctx, stream);
     const auto invalid_input =
         input->struct_size != sizeof(QnpepsDensityFilterArgs) or input->reserved != 0_u32
         or input->settings.struct_size != sizeof(QnpepsDensitySettings)
         or input->settings.precision != 1_u32 or input->settings.mindim != 1_u32
         or input->settings.reserved != 0_u32 or input->order < 1 or input->natural_cap < 1
         or input->applied_cap < 1;
-    if (invalid_input) return set_err(QNPEPS_ERR_BAD_CONFIG);
+    require(
+        not invalid_input,
+        Status::bad_config,
+        "density filter rejects struct_size {}, order {}, natural cap {}, applied cap {}",
+        input->struct_size,
+        input->order,
+        input->natural_cap,
+        input->applied_cap
+    );
     const auto solver = buffer<const f64>(input->solver_values);
     const auto sorted = buffer<f64>(input->sorted_values);
     const auto retained = buffer<f64>(input->retained_values);
@@ -307,11 +344,15 @@ extern "C" qnpeps_status qnpeps_density_filter_apply(
     const auto rank = buffer<i32>(input->active_rank);
     const auto record = buffer<QnpepsDensityRankRecord>(input->record);
     const auto order = static_cast<usize>(input->order);
-    const auto insufficient_buffers =
-        err_state() != QNPEPS_OK or solver.count < order or sorted.count < order
-        or retained.count < order or indices.count < order or rank.count < 1 or record.count < 1;
-    if (insufficient_buffers)
-        return err_state() == QNPEPS_OK ? set_err(QNPEPS_ERR_BAD_CONFIG) : err_state();
+    const auto insufficient_buffers = solver.count < order or sorted.count < order
+                                      or retained.count < order or indices.count < order
+                                      or rank.count < 1 or record.count < 1;
+    require(
+        not insufficient_buffers,
+        Status::bad_config,
+        "density filter buffers too small for order {}",
+        order
+    );
     const auto filter_args = densitymatrix::FilterArgs{
         .solver_values = solver.values,
         .order = input->order,
@@ -326,6 +367,27 @@ extern "C" qnpeps_status qnpeps_density_filter_apply(
         .record = record.values,
     };
     densitymatrix::cu_filter<<<1, 1, 0, ctx->stream()>>>(filter_args);
-    CUDA_CHECK(cudaGetLastError());
-    return err_state();
+    check(cudaGetLastError());
+}
+}
+
+extern "C" qnpeps_status qnpeps_density_workspace_sizes(
+    qnpeps_ctx* ctx, const QnpepsDensityWorkspaceQuery* query
+)
+{
+    return guarded([&] { density_workspace_sizes(ctx, query); });
+}
+
+extern "C" qnpeps_status qnpeps_densitymatrix_apply(
+    qnpeps_ctx* ctx, const QnpepsDensityApplyArgs* input, void* stream
+)
+{
+    return guarded([&] { densitymatrix_apply(ctx, input, stream); });
+}
+
+extern "C" qnpeps_status qnpeps_density_filter_apply(
+    qnpeps_ctx* ctx, const QnpepsDensityFilterArgs* input, void* stream
+)
+{
+    return guarded([&] { density_filter_apply(ctx, input, stream); });
 }

@@ -1,5 +1,6 @@
 #include "core/arena_cursor.cuh"
 #include "core/cuda_utils.cuh"
+#include "core/defer.cuh"
 #include "linalg/transfer.cuh"
 #include "tensor/kernels.cuh"
 #include "tensor/permutation.cuh"
@@ -29,19 +30,20 @@ namespace
 [[nodiscard]] auto permutation_index_map(const Shape& input_shape, const Permutation& permutation)
     -> std::vector<int>
 {
-    if (not permutation.can_apply_to(input_shape))
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    require(
+        permutation.can_apply_to(input_shape),
+        "permutation of rank {} applied to a rank {} shape",
+        permutation.size(),
+        input_shape.rank()
+    );
     const auto output_shape = permutation.apply(input_shape);
     const auto rank = input_shape.rank();
     const auto total = output_shape.num_elems();
-    if (total > static_cast<usize>(std::numeric_limits<int>::max()))
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return {};
-    }
+    require(
+        total <= static_cast<usize>(std::numeric_limits<int>::max()),
+        "permutation index map of {} elements exceeds the int range",
+        total
+    );
     const auto input_strides = column_major_strides(input_shape);
 
     std::vector<int> index_map{};
@@ -71,11 +73,12 @@ namespace
 
 auto PermutationCache::get_or_create(const Shape& shape, const Permutation& permutation) -> int*
 {
-    if (not permutation.can_apply_to(shape))
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return nullptr;
-    }
+    require(
+        permutation.can_apply_to(shape),
+        "permutation of rank {} cached for a rank {} shape",
+        permutation.size(),
+        shape.rank()
+    );
     const Key key{shape.get(), permutation.get()};
     if (const auto it = entries_.find(key); it != entries_.end())
     {
@@ -83,17 +86,16 @@ auto PermutationCache::get_or_create(const Shape& shape, const Permutation& perm
     }
 
     const auto gather_indices = permutation_index_map(shape, permutation);
-    if (err_state() != QNPEPS_OK) return nullptr;
     int* device_ptr{};
-    CUDA_CHECK(cudaMalloc(&device_ptr, gather_indices.size() * sizeof(int)));
-    if (err_state() != QNPEPS_OK) return nullptr;
+    check(cudaMalloc(&device_ptr, gather_indices.size() * sizeof(int)));
+    auto uploaded = false;
+    const Defer free_after_failure{[&]
+                                   {
+                                       if (not uploaded) unchecked(cudaFree(device_ptr));
+                                   }};
     upload(device_ptr, gather_indices.data(), gather_indices.size());
-    if (err_state() != QNPEPS_OK)
-    {
-        CUDA_NOCHECK(cudaFree(device_ptr));
-        return nullptr;
-    }
     entries_.emplace(key, device_ptr);
+    uploaded = true;
     return device_ptr;
 }
 
@@ -112,24 +114,24 @@ auto permute_axes(
     cudaStream_t stream
 ) -> void
 {
-    if (err_state() != QNPEPS_OK) return;
 
     const auto rank = permutation.size();
     const auto permutation_applies = permutation.can_apply_to(tensor.dim);
     const auto pointers_valid = tensor.d and output;
     const std::array validation_conditions{permutation_applies, pointers_valid};
-    if (not std::ranges::all_of(validation_conditions, std::identity{}))
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        std::ranges::all_of(validation_conditions, std::identity{}),
+        "permutation of rank {} rejects a rank {} tensor",
+        rank,
+        tensor.dim.rank()
+    );
     const auto output_shape = permutation.apply(tensor.dim);
     const auto num_elements = output_shape.num_elems();
-    if (not std::in_range<i64>(num_elements))
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        std::in_range<i64>(num_elements),
+        "permutation of {} elements exceeds the i64 range",
+        num_elements
+    );
     const auto input_strides = column_major_strides(tensor.dim);
     PermutationPlan permutation_plan{};
     for (auto output_axis = 0_uz; output_axis < rank; ++output_axis)
@@ -150,7 +152,7 @@ auto permute_axes(
         .conjugate = conjugate ? 1 : 0,
     };
     cu_permute<<<grid_blocks_exact(element_count), k_threads_per_block, 0, stream>>>(args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 
 auto permute_axes(
@@ -169,7 +171,6 @@ auto permute_axes(
 auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, cudaStream_t stream)
     -> void
 {
-    if (err_state() != QNPEPS_OK) return;
 
     const auto num_elements = op.dims_in.num_elems();
     const auto permutation_applies = op.perm.can_apply_to(op.dims_in);
@@ -183,14 +184,16 @@ auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, c
 
     const auto valid = permutation_applies and index_map_size_valid and batch_count_valid
                        and pointers_valid and dst_valid and src_valid;
-    if (not valid)
-    {
-        set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        valid,
+        "batched permutation rejects {} elements over {} lanes with strides {} and {}",
+        num_elements,
+        op.batch_count,
+        op.dst.stride,
+        op.src.stride
+    );
     const auto element_count = static_cast<i64>(num_elements);
     auto* gather_indices = permutation_cache.get_or_create(op.dims_in, op.perm);
-    if (not gather_indices or err_state() != QNPEPS_OK) return;
     const auto blocks = grid_blocks_capped(element_count * op.batch_count);
     const CuGatherArgs gather_args{
         .output = op.dst.p,
@@ -203,6 +206,6 @@ auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, c
         .batch_count = op.batch_count,
     };
     cu_gather<<<blocks, k_threads_per_block, 0, stream>>>(gather_args);
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
 }
 }

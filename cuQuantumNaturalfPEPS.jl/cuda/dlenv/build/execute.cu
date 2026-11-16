@@ -9,7 +9,7 @@ auto dl_free(qnpeps_ctx& ctx) -> void
     allocation.release();
 }
 
-auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> int
+auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_logs) -> void
 {
     auto& la = ctx.linalg();
     const auto& cfg = ctx.cfg;
@@ -22,7 +22,6 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
 
     BuildAllocation allocation{ctx};
     allocation.ensure(la);
-    if (err_state() != QNPEPS_OK) return err_state();
 
     const Dims dims{lx, ly, dim_phys, dim_bond};
 
@@ -75,7 +74,6 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
             cfg.dlenv_truncation_route,
             cfg.dlenv_density_cutoff
         );
-        if (err_state() != QNPEPS_OK) return;
 
         const auto header_required = cfg.dlenv_truncation_route == QNPEPS_TRUNCATION_DENSITY
                                      or not target_lane.header_written;
@@ -112,28 +110,33 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
 
     if (graph_capturable and target_lane.graph)
     {
-        CUDA_CHECK(cudaGraphLaunch(target_lane.graph, la.stream()));
+        check(cudaGraphLaunch(target_lane.graph, la.stream()));
     }
     else if (graph_capturable and ctx.dl.warmed)
     {
         cudaGraph_t graph{};
-        CUDA_CHECK(cudaStreamBeginCapture(la.stream(), cudaStreamCaptureModeThreadLocal));
-        build_region();
-        const auto capture_status = cudaStreamEndCapture(la.stream(), &graph);
-        const auto capture_succeeded = capture_status == cudaSuccess and err_state() == QNPEPS_OK;
+        const auto capture_status = guarded(
+            [&]
+            {
+                StreamCapture capture{la.stream()};
+                build_region();
+                graph = capture.finish();
+            }
+        );
+        const auto captured = capture_status == QNPEPS_OK and graph != nullptr;
         const auto graph_instantiated =
-            capture_succeeded and instantiate_graph(target_lane.graph, graph) == cudaSuccess;
+            captured and instantiate_graph(target_lane.graph, graph) == cudaSuccess;
         if (graph_instantiated)
         {
-            CUDA_CHECK(cudaGraphDestroy(graph));
-            CUDA_CHECK(cudaGraphLaunch(target_lane.graph, la.stream()));
+            check(cudaGraphDestroy(graph));
+            check(cudaGraphLaunch(target_lane.graph, la.stream()));
         }
         else
         {
-            cudaGetLastError();
-            reset_err();
+            last_error_message().clear();
+            unchecked(cudaGetLastError());
             target_lane.graph = nullptr;
-            if (graph) CUDA_NOCHECK(cudaGraphDestroy(graph));
+            if (graph) unchecked(cudaGraphDestroy(graph));
             ctx.dl.known.rewind();
             ctx.dl.rolling_r.rewind();
             ctx.dl.scratch.rewind();
@@ -147,13 +150,11 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
         build_region();
         ctx.dl.warmed = true;
     }
-    if (err_state() != QNPEPS_OK) return err_state();
 
-    CUDA_CHECK(cudaStreamSynchronize(la.stream()));
+    check(cudaStreamSynchronize(la.stream()));
     int fail_host{};
-    if (err_state() == QNPEPS_OK) download(&fail_host, ctx.dl.fail, 1);
-    if (err_state() == QNPEPS_OK) zipup::set_rangefinder_failure(fail_host);
-    if (err_state() != QNPEPS_OK) return err_state();
+    download(&fail_host, ctx.dl.fail, 1);
+    zipup::raise_rangefinder_failure(fail_host);
 
     const auto num_env_rows = num_rows - 1;
     std::vector<f64> scales_host{};
@@ -165,20 +166,19 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     f64 total_log{0.0};
     for (auto step = 0_uz; step < num_env_rows; ++step)
     {
-        bool aborted{false};
         for (auto col = 0_uz; col < num_cols; ++col)
         {
             const auto scale = scales_host[step * num_cols + col];
-            if (not std::isfinite(scale))
-            {
-                set_err(QNPEPS_ERR_INTERNAL);
-                aborted = true;
-                break;
-            }
+            require(
+                std::isfinite(scale),
+                "double-layer environment scale {} at step {} column {} is not finite",
+                scale,
+                step,
+                col
+            );
             if (scale > 0.0) total_log += std::log(scale);
         }
         row_logs[num_env_rows - 1 - step] = total_log;
-        if (aborted) break;
     }
 
     if (cumulative_row_logs and not row_logs.empty())
@@ -189,14 +189,12 @@ auto build_dlenv(qnpeps_ctx& ctx, const void* device_peps, f64* cumulative_row_l
     if (ctx.sampler.allocation.allocated)
     {
         ensure_sampling_buffers(ctx);
-        if (err_state() != QNPEPS_OK) return err_state();
         materialize_sampling_buffer(ctx, device_values, target_lane.sampling);
     }
 
     target_lane.valid = true;
     ctx.dlenv.active_lane = target;
     ctx.dlenv.build_count += 1;
-    return err_state();
 }
 
 }

@@ -436,13 +436,18 @@ auto main(int argc, char** argv) -> int
     auto observed_f64 = std::vector<Zd>(static_cast<std::size_t>(dense));
 
     cudaMemcpyAsync(peps_device, initial_f32.data(), f32_bytes, cudaMemcpyHostToDevice, stream);
-    const qnpeps_e2e_status f32_status{qn_e2e::launch_update_f32(
-        update_sites_device,
-        static_cast<int>(update_sites.size()),
-        reinterpret_cast<qn_e2e::cf*>(peps_device),
-        reinterpret_cast<const qn_e2e::cf*>(theta_device),
-        learning_rate,
-        stream
+    const qnpeps_status f32_status{qnpeps::guarded(
+        [&]
+        {
+            qn_e2e::launch_update_f32(
+                update_sites_device,
+                static_cast<int>(update_sites.size()),
+                reinterpret_cast<qn_e2e::cf*>(peps_device),
+                reinterpret_cast<const qn_e2e::cf*>(theta_device),
+                learning_rate,
+                stream
+            );
+        }
     )};
     cudaStreamSynchronize(stream);
     cudaMemcpy(observed_f32.data(), peps_device, f32_bytes, cudaMemcpyDeviceToHost);
@@ -450,20 +455,25 @@ auto main(int argc, char** argv) -> int
         "update_kernel",
         "fp32",
         "byte_exact",
-        f32_status == QNPEPS_E2E_OK and bit_equal(observed_f32, expected_f32) ? "byte_exact"
-                                                                              : "different",
-        f32_status == QNPEPS_E2E_OK and bit_equal(observed_f32, expected_f32)
+        f32_status == QNPEPS_OK and bit_equal(observed_f32, expected_f32) ? "byte_exact"
+                                                                          : "different",
+        f32_status == QNPEPS_OK and bit_equal(observed_f32, expected_f32)
     );
 
     cudaMemcpyAsync(state_device, initial_f64.data(), f64_bytes, cudaMemcpyHostToDevice, stream);
-    const qnpeps_e2e_status f64_status{qn_e2e::launch_update_f64(
-        update_sites_device,
-        static_cast<int>(update_sites.size()),
-        reinterpret_cast<qn_e2e::zd*>(state_device),
-        reinterpret_cast<const qn_e2e::cf*>(theta_device),
-        reinterpret_cast<qn_e2e::cf*>(peps_device),
-        learning_rate,
-        stream
+    const qnpeps_status f64_status{qnpeps::guarded(
+        [&]
+        {
+            qn_e2e::launch_update_f64(
+                update_sites_device,
+                static_cast<int>(update_sites.size()),
+                reinterpret_cast<qn_e2e::zd*>(state_device),
+                reinterpret_cast<const qn_e2e::cf*>(theta_device),
+                reinterpret_cast<qn_e2e::cf*>(peps_device),
+                learning_rate,
+                stream
+            );
+        }
     )};
     cudaStreamSynchronize(stream);
     cudaMemcpy(observed_f64.data(), state_device, f64_bytes, cudaMemcpyDeviceToHost);
@@ -472,50 +482,60 @@ auto main(int argc, char** argv) -> int
         "update_kernel_master",
         "fp64",
         "byte_exact",
-        f64_status == QNPEPS_E2E_OK and bit_equal(observed_f64, expected_f64) ? "byte_exact"
-                                                                              : "different",
-        f64_status == QNPEPS_E2E_OK and bit_equal(observed_f64, expected_f64)
+        f64_status == QNPEPS_OK and bit_equal(observed_f64, expected_f64) ? "byte_exact"
+                                                                          : "different",
+        f64_status == QNPEPS_OK and bit_equal(observed_f64, expected_f64)
     );
     record.add(
         "update_kernel_emit",
         "fp64_to_fp32",
         "byte_exact",
-        f64_status == QNPEPS_E2E_OK and bit_equal(observed_f32, expected_from_f64) ? "byte_exact"
-                                                                                   : "different",
-        f64_status == QNPEPS_E2E_OK and bit_equal(observed_f32, expected_from_f64)
+        f64_status == QNPEPS_OK and bit_equal(observed_f32, expected_from_f64) ? "byte_exact"
+                                                                               : "different",
+        f64_status == QNPEPS_OK and bit_equal(observed_f32, expected_from_f64)
     );
 
-    const qnpeps_e2e_status bad_rate_f32{qn_e2e::launch_update_f32(
-        update_sites_device,
-        static_cast<int>(update_sites.size()),
-        reinterpret_cast<qn_e2e::cf*>(peps_device),
-        reinterpret_cast<const qn_e2e::cf*>(theta_device),
-        std::numeric_limits<double>::quiet_NaN(),
-        stream
+    const qnpeps_status bad_rate_f32{qnpeps::guarded(
+        [&]
+        {
+            qn_e2e::launch_update_f32(
+                update_sites_device,
+                static_cast<int>(update_sites.size()),
+                reinterpret_cast<qn_e2e::cf*>(peps_device),
+                reinterpret_cast<const qn_e2e::cf*>(theta_device),
+                std::numeric_limits<double>::quiet_NaN(),
+                stream
+            );
+        }
     )};
     record.add(
         "nonfinite_rate",
         "fp32",
         "rejected",
-        bad_rate_f32 == QNPEPS_E2E_ERR_BAD_CONFIG ? "rejected" : "accepted",
-        bad_rate_f32 == QNPEPS_E2E_ERR_BAD_CONFIG
+        bad_rate_f32 == QNPEPS_ERR_BAD_CONFIG ? "rejected" : "accepted",
+        bad_rate_f32 == QNPEPS_ERR_BAD_CONFIG
     );
 
-    const qnpeps_e2e_status bad_rate_f64{qn_e2e::launch_update_f64(
-        update_sites_device,
-        static_cast<int>(update_sites.size()),
-        reinterpret_cast<qn_e2e::zd*>(state_device),
-        reinterpret_cast<const qn_e2e::cf*>(theta_device),
-        reinterpret_cast<qn_e2e::cf*>(peps_device),
-        std::numeric_limits<double>::infinity(),
-        stream
+    const qnpeps_status bad_rate_f64{qnpeps::guarded(
+        [&]
+        {
+            qn_e2e::launch_update_f64(
+                update_sites_device,
+                static_cast<int>(update_sites.size()),
+                reinterpret_cast<qn_e2e::zd*>(state_device),
+                reinterpret_cast<const qn_e2e::cf*>(theta_device),
+                reinterpret_cast<qn_e2e::cf*>(peps_device),
+                std::numeric_limits<double>::infinity(),
+                stream
+            );
+        }
     )};
     record.add(
         "nonfinite_rate",
         "fp64",
         "rejected",
-        bad_rate_f64 == QNPEPS_E2E_ERR_BAD_CONFIG ? "rejected" : "accepted",
-        bad_rate_f64 == QNPEPS_E2E_ERR_BAD_CONFIG
+        bad_rate_f64 == QNPEPS_ERR_BAD_CONFIG ? "rejected" : "accepted",
+        bad_rate_f64 == QNPEPS_ERR_BAD_CONFIG
     );
 
     const struct

@@ -120,7 +120,7 @@ __global__ auto cu_scale_power_intermediate(PowerScaleArgs args) -> void
         {
             auto value_exponent = 0;
             frexpf(shared_max[0], &value_exponent);
-            auto safe_exponent = k_power_qr_exponent_limit;
+            auto exponent_limit = k_power_qr_exponent_limit;
             if (args.next_inner_dimension > 0)
             {
                 auto inner_exponent = 0;
@@ -130,10 +130,10 @@ __global__ auto cu_scale_power_intermediate(PowerScaleArgs args) -> void
                     ++inner_exponent;
                     inner_remainder >>= 1;
                 }
-                safe_exponent =
+                exponent_limit =
                     k_power_product_exponent_limit - 1 - inner_exponent - *args.input_exponent;
             }
-            if (value_exponent > safe_exponent) shared_shift = safe_exponent - value_exponent;
+            if (value_exponent > exponent_limit) shared_shift = exponent_limit - value_exponent;
         }
     }
     __syncthreads();

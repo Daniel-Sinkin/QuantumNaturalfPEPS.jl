@@ -3,6 +3,7 @@
 #include "dans_qnpeps_e2e.h"
 #include "dans_qnpeps_eloc.h"
 #include "gate_fixture.cuh"
+#include "term_builders.cuh"
 #include "peps_minsr_host.hpp"
 
 #include <cmath>
@@ -64,32 +65,12 @@ auto bonds_nn(int lx, int ly, double j1) -> std::vector<Bond>
     return out;
 }
 
-auto diag_bonds_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocDiagBond>
+auto heisenberg_of(const std::vector<Bond>& bonds, int ly) -> eo_test::TermTableBuilder
 {
-    std::vector<QnpepsElocDiagBond> out{};
+    eo_test::TermTableBuilder terms{};
     for (const Bond& b : bonds)
-        out.push_back({site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j});
-    return out;
-}
-
-auto masked_flips_of(const std::vector<Bond>& bonds, int ly) -> std::vector<QnpepsElocFlipTerm>
-{
-    std::vector<QnpepsElocFlipTerm> out{};
-    for (const Bond& b : bonds)
-    {
-        QnpepsElocFlipTerm t{};
-        t.n_flips = 2;
-        t.flip_site[0] = site0(b.ai, b.aj, ly);
-        t.flip_site[1] = site0(b.bi, b.bj, ly);
-        t.flip_value[0] = -1;
-        t.flip_value[1] = -1;
-        t.mask_a = t.flip_site[0];
-        t.mask_b = t.flip_site[1];
-        t.coeff_re = 2.0 * b.j;
-        t.coeff_im = 0.0;
-        out.push_back(t);
-    }
-    return out;
+        terms.add_heisenberg_bond(site0(b.ai, b.aj, ly), site0(b.bi, b.bj, ly), b.j);
+    return terms;
 }
 
 struct Blk
@@ -210,6 +191,7 @@ auto run_case(
     ecfg.chi_eo = chi;
     ecfg.meo = meo;
     ecfg.seed = peps_seed;
+    ecfg.truncation_route = QNPEPS_TRUNCATION_RANGEFINDER;
 
     std::int64_t e2e_compact{0};
     std::int64_t e2e_dense{0};
@@ -224,6 +206,7 @@ auto run_case(
     lcfg.dim_bond = dim_bond;
     lcfg.chi_eo = chi;
     lcfg.meo = meo;
+    lcfg.truncation_route = QNPEPS_TRUNCATION_RANGEFINDER;
 
     std::int64_t eloc_compact{0};
     qnpeps_eloc_compact_count(&lcfg, &eloc_compact);
@@ -299,15 +282,10 @@ auto run_case(
     };
 
     const std::vector<Bond> bonds{bonds_nn(lx, ly, 1.0)};
-    const std::vector<QnpepsElocDiagBond> diag{diag_bonds_of(bonds, ly)};
-    const std::vector<QnpepsElocFlipTerm> flips{masked_flips_of(bonds, ly)};
-    QnpepsElocTermTable tt{};
-    tt.n_diag = static_cast<int32_t>(diag.size());
-    tt.diag = diag.data();
-    tt.n_flip = static_cast<int32_t>(flips.size());
-    tt.flip = flips.data();
+    const auto terms{heisenberg_of(bonds, ly)};
+    const auto tt{terms.table()};
 
-    const qnpeps_eloc_status est{qnpeps_eloc_run(
+    const qnpeps_status est{qnpeps_eloc_run(
         &lcfg,
         static_cast<const qnpeps_eloc_cbuf*>(d_peps),
         d_samp,
@@ -321,9 +299,9 @@ auto run_case(
         0.0,
         nullptr
     )};
-    if (est != QNPEPS_ELOC_OK)
+    if (est != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] eloc error: %s\n", qnpeps_eloc_strerror(est));
+        std::printf("[gate_e2e] eloc error: %s\n", qnpeps_last_error());
         return 1;
     }
 
@@ -353,7 +331,7 @@ auto run_case(
     qnpeps::CuArray<double, 2> e_mean_d{};
     double e_var_d{};
     double ess_d{};
-    const qnpeps_e2e_status s1{qnpeps_e2e_minsr(
+    const qnpeps_status s1{qnpeps_e2e_minsr(
         &ecfg,
         n,
         d_samp,
@@ -372,9 +350,9 @@ auto run_case(
         &ess_d,
         nullptr
     )};
-    if (s1 != QNPEPS_E2E_OK)
+    if (s1 != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e device-rows error: %s\n", qnpeps_e2e_strerror(s1));
+        std::printf("[gate_e2e] e2e device-rows error: %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_dev = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -431,7 +409,7 @@ auto run_case(
     const qnpeps_status root_status{qnpeps_minsr(&root_desc, &root_args)};
     if (root_status != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] root device-rows error: %s\n", qnpeps_strerror(root_status));
+        std::printf("[gate_e2e] root device-rows error: %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_root = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -466,7 +444,7 @@ auto run_case(
     double e_var_h{};
     double ess_h{};
     ck(cudaMemset(d_theta, 0, static_cast<std::size_t>(dense) * sizeof(cf32)), "memset theta");
-    const qnpeps_e2e_status s2{qnpeps_e2e_minsr(
+    const qnpeps_status s2{qnpeps_e2e_minsr(
         &ecfg,
         n,
         d_samp,
@@ -485,9 +463,9 @@ auto run_case(
         &ess_h,
         nullptr
     )};
-    if (s2 != QNPEPS_E2E_OK)
+    if (s2 != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e host-rows error: %s\n", qnpeps_e2e_strerror(s2));
+        std::printf("[gate_e2e] e2e host-rows error: %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_host = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -500,7 +478,7 @@ auto run_case(
     double e_var_h0{};
     double ess_h0{};
     ck(cudaMemset(d_theta, 0, static_cast<std::size_t>(dense) * sizeof(cf32)), "memset theta");
-    const qnpeps_e2e_status s2b{qnpeps_e2e_minsr(
+    const qnpeps_status s2b{qnpeps_e2e_minsr(
         &ecfg,
         n,
         d_samp,
@@ -519,9 +497,9 @@ auto run_case(
         &ess_h0,
         nullptr
     )};
-    if (s2b != QNPEPS_E2E_OK)
+    if (s2b != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e host-rows(default) error: %s\n", qnpeps_e2e_strerror(s2b));
+        std::printf("[gate_e2e] e2e host-rows(default) error: %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_host0 = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -567,18 +545,18 @@ auto run_case(
     qnpeps::CuArray<double, 4> stats_ctx_changed{};
     qnpeps::CuArray<double, 4> stats_one_changed{};
     qnpeps::CuArray<double, 4> stats_ctx_rebuilt{};
-    qnpeps_e2e_status ctx_create_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status ctx_first_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status ctx_changed_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status one_changed_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status ctx_recreate_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status ctx_rebuilt_status{QNPEPS_E2E_ERR_INTERNAL};
-    qnpeps_e2e_status ctx_wrong_device_status{QNPEPS_E2E_OK};
+    qnpeps_status ctx_create_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status ctx_first_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status ctx_changed_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status one_changed_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status ctx_recreate_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status ctx_rebuilt_status{QNPEPS_ERR_INTERNAL};
+    qnpeps_status ctx_wrong_device_status{QNPEPS_OK};
     bool ctx_wrong_device_checked{false};
 
     qnpeps_e2e_minsr_ctx* minsr_ctx{};
     ctx_create_status = qnpeps_e2e_minsr_ctx_create(&ecfg, n, 0, nullptr, &minsr_ctx);
-    if (ctx_create_status == QNPEPS_E2E_OK)
+    if (ctx_create_status == QNPEPS_OK)
     {
         ctx_first_status = qnpeps_e2e_minsr_ctx_run(
             minsr_ctx,
@@ -596,7 +574,7 @@ auto run_case(
             &stats_ctx_first[2],
             &stats_ctx_first[3]
         );
-        if (ctx_first_status == QNPEPS_E2E_OK)
+        if (ctx_first_status == QNPEPS_OK)
         {
             ck(cudaMemcpy(
                    theta_ctx_first.data(),
@@ -641,7 +619,7 @@ auto run_case(
     };
     ck(cudaMemcpy(d_samp, samp_changed.data(), samp_changed.size(), cudaMemcpyHostToDevice),
        "cpy changed samp");
-    const qnpeps_eloc_status est_changed{qnpeps_eloc_run(
+    const qnpeps_status est_changed{qnpeps_eloc_run(
         &lcfg,
         static_cast<const qnpeps_eloc_cbuf*>(d_peps),
         d_samp,
@@ -659,7 +637,7 @@ auto run_case(
     auto rows_changed = std::vector<cf32>(static_cast<std::size_t>(n) * compact);
     auto gram_changed = std::vector<cf32>(static_cast<std::size_t>(n) * n);
     auto logq_changed = std::vector<double>(static_cast<std::size_t>(n));
-    if (est_changed == QNPEPS_ELOC_OK)
+    if (est_changed == QNPEPS_OK)
     {
         ck(cudaMemcpy(
                lp_changed.data(), d_lp, lp_changed.size() * sizeof(double), cudaMemcpyDeviceToHost
@@ -711,7 +689,7 @@ auto run_case(
                 &stats_ctx_changed[2],
                 &stats_ctx_changed[3]
             );
-            if (ctx_changed_status == QNPEPS_E2E_OK)
+            if (ctx_changed_status == QNPEPS_OK)
             {
                 ck(cudaMemcpy(
                        theta_ctx_changed.data(),
@@ -742,7 +720,7 @@ auto run_case(
             &stats_one_changed[3],
             nullptr
         );
-        if (one_changed_status == QNPEPS_E2E_OK)
+        if (one_changed_status == QNPEPS_OK)
         {
             ck(cudaMemcpy(
                    theta_one_changed.data(),
@@ -758,11 +736,11 @@ auto run_case(
     minsr_ctx = nullptr;
     cudaStream_t rebuilt_stream{};
     ck(cudaStreamCreateWithFlags(&rebuilt_stream, cudaStreamNonBlocking), "create rebuilt stream");
-    if (est_changed == QNPEPS_ELOC_OK)
+    if (est_changed == QNPEPS_OK)
     {
         ctx_recreate_status =
             qnpeps_e2e_minsr_ctx_create(&ecfg, n, tile_tiny, rebuilt_stream, &minsr_ctx);
-        if (ctx_recreate_status == QNPEPS_E2E_OK)
+        if (ctx_recreate_status == QNPEPS_OK)
         {
             ctx_rebuilt_status = qnpeps_e2e_minsr_ctx_run(
                 minsr_ctx,
@@ -780,7 +758,7 @@ auto run_case(
                 &stats_ctx_rebuilt[2],
                 &stats_ctx_rebuilt[3]
             );
-            if (ctx_rebuilt_status == QNPEPS_E2E_OK)
+            if (ctx_rebuilt_status == QNPEPS_OK)
             {
                 ck(cudaMemcpy(
                        theta_ctx_rebuilt.data(),
@@ -932,7 +910,7 @@ auto run_case(
     {
         SetResult r{};
         r.name = "ctx_first";
-        if (ctx_create_status != QNPEPS_E2E_OK or ctx_first_status != QNPEPS_E2E_OK
+        if (ctx_create_status != QNPEPS_OK or ctx_first_status != QNPEPS_OK
             or ctx_first_theta_diff != 0 or ctx_first_stats_diff != 0)
         {
             r.fail = 1;
@@ -945,8 +923,8 @@ auto run_case(
     {
         SetResult r{};
         r.name = "ctx_changed";
-        if (est_changed != QNPEPS_ELOC_OK or ctx_changed_status != QNPEPS_E2E_OK
-            or one_changed_status != QNPEPS_E2E_OK or ctx_changed_theta_diff != 0
+        if (est_changed != QNPEPS_OK or ctx_changed_status != QNPEPS_OK
+            or one_changed_status != QNPEPS_OK or ctx_changed_theta_diff != 0
             or ctx_changed_stats_diff != 0 or freshness_input_words == 0
             or freshness_theta_words + freshness_stats_words == 0)
         {
@@ -961,7 +939,7 @@ auto run_case(
     {
         SetResult r{};
         r.name = "ctx_rebuilt";
-        if (ctx_recreate_status != QNPEPS_E2E_OK or ctx_rebuilt_status != QNPEPS_E2E_OK
+        if (ctx_recreate_status != QNPEPS_OK or ctx_rebuilt_status != QNPEPS_OK
             or ctx_rebuilt_theta_diff != 0 or ctx_rebuilt_stats_diff != 0)
         {
             r.fail = 1;
@@ -976,7 +954,7 @@ auto run_case(
         r.name = "ctx_device";
         if (ctx_wrong_device_checked)
         {
-            if (ctx_wrong_device_status != QNPEPS_E2E_ERR_BAD_CONFIG)
+            if (ctx_wrong_device_status != QNPEPS_ERR_BAD_CONFIG)
             {
                 r.fail = 1;
                 r.max_rel = 1.0;

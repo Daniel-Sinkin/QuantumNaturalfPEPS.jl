@@ -2,9 +2,11 @@
 #define QNPEPS_E2E_NODE_STATE_CUH
 
 #include "capi/qnpeps.h"
+#include "core/arena_cursor.cuh"
 #include "core/session.cuh"
 #include "e2e/common.cuh"
 #include "eo/dans_qnpeps_eloc.h"
+#include "eo/term_table.cuh"
 #include "e2e/mg_common.cuh"
 #include "e2e/update.cuh"
 #include "minsr/distributed.cuh"
@@ -12,8 +14,10 @@
 #include <condition_variable>
 #include <cuda_runtime.h>
 #include <memory>
-#include <string>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 class NodeWorkers;
@@ -26,6 +30,7 @@ struct GpuCtx
 
     int device{};
     std::unique_ptr<qnpeps::Session> session{};
+    std::unique_ptr<qnpeps::ArenaLease> buffer_lease{};
     u8* device_peps_slots[2]{};
     u8* device_dlenv_slots[2]{};
     f64* device_row_logs{};
@@ -71,10 +76,20 @@ class NodeState
     [[nodiscard]] auto gpu(int device) -> GpuCtx& { return ctx[static_cast<usize>(device)]; }
     [[nodiscard]] auto stream0() const -> cudaStream_t { return ctx[0].stream(); }
     [[nodiscard]] auto linalg0() -> qnpeps::Linalg& { return ctx[0].linalg(); }
-    [[nodiscard]] auto status() const -> qnpeps_e2e_status;
-    auto fail(qnpeps_e2e_status value) -> void;
-    [[nodiscard]] auto failure_location() const -> const char*;
-    [[nodiscard]] auto failure_message() const -> const char*;
+    [[nodiscard]] auto status() const -> qnpeps_status;
+    auto fail(qnpeps_status value, std::string message) -> void;
+    [[nodiscard]] auto failure_message() const -> std::string;
+    [[noreturn]] auto raise_failure() const -> void;
+    auto raise_if_failed() const -> void;
+
+    template <typename Body>
+    auto recorded(std::string_view stage, Body&& body) -> void
+    {
+        const auto outcome = guarded_labelled(stage, std::forward<Body>(body));
+        if (outcome == QNPEPS_OK) return;
+        fail(outcome, std::move(qnpeps::last_error_message()));
+        raise_failure();
+    }
 
     QnpepsE2eConfig cfg{};
     QnpepsConfig scfg{};
@@ -97,12 +112,10 @@ class NodeState
     i64 peps_bytes{};
     i64 dlenv_bytes{};
 
-    std::vector<QnpepsElocDiagBond> terms_diag{};
-    std::vector<QnpepsElocFlipTerm> terms_flip{};
+    qnpeps::eo::OwnedTermTable owned_terms{};
     QnpepsElocTermTable terms{};
 
-    qnpeps_e2e_status status_value{QNPEPS_E2E_OK};
-    std::string failure_location_value{};
+    qnpeps_status status_value{QNPEPS_OK};
     std::string failure_message_value{};
     mutable std::mutex status_m;
     std::mutex sampler_m;

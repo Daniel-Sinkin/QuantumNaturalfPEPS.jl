@@ -37,9 +37,12 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
 include(GNUInstallDirs)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/capi)
 
 add_library(qnpeps SHARED
   capi/capi.cu
+  capi/solvers.cu
+  capi/zipup.cu
   tensor/contraction.cu
   core/error.cu
   tensor/tensor.cu
@@ -48,6 +51,7 @@ add_library(qnpeps SHARED
   peps/kernels.cu
   peps/init.cu
   densitymatrix/backend.cu
+  densitymatrix/batched.cu
   densitymatrix/capi.cu
   densitymatrix/engine.cu
   densitymatrix/kernels.cu
@@ -79,6 +83,7 @@ add_library(qnpeps SHARED
   eo/env_build/active_lists.cu
   eo/env_build/arena.cu
   eo/env_build/context.cu
+  eo/env_build/density_rows.cu
   eo/env_build/environment_rows.cu
   eo/env_build/execute.cu
   eo/env_build/outputs.cu
@@ -123,6 +128,7 @@ set_source_files_properties(
   eo/env_build/active_lists.cu
   eo/env_build/arena.cu
   eo/env_build/context.cu
+  eo/env_build/density_rows.cu
   eo/env_build/environment_rows.cu
   eo/env_build/execute.cu
   eo/env_build/outputs.cu
@@ -172,15 +178,24 @@ target_compile_options(qnpeps PRIVATE
 )
 target_link_options(qnpeps PRIVATE -Wl,--no-undefined)
 
-add_executable(qnpeps_common_probe core/common_probe.cu)
-target_include_directories(qnpeps_common_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(qnpeps_common_probe PRIVATE
-  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wshadow,-Wconversion,-Wsign-conversion,-Wfloat-conversion,-Wcast-qual,-Wcast-align,-Wformat=2,-Wnull-dereference,-Wnon-virtual-dtor,-Woverloaded-virtual,-Wdouble-promotion,-Wimplicit-fallthrough,-Wreturn-type,-Werror>
-  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=cuda>
-)
+foreach(probe_name common_probe error_channel_test arena_reading_test)
+  if(probe_name STREQUAL "common_probe")
+    set(probe_source core/common_probe.cu)
+  else()
+    set(probe_source test/${probe_name}.cu)
+  endif()
+  add_executable(qnpeps_${probe_name} ${probe_source} core/error.cu)
+  target_include_directories(qnpeps_${probe_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(qnpeps_${probe_name} PRIVATE CUDA::cudart CUDA::cublas Threads::Threads)
+  target_compile_options(qnpeps_${probe_name} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wshadow,-Wconversion,-Wsign-conversion,-Wfloat-conversion,-Wcast-qual,-Wcast-align,-Wformat=2,-Wnull-dereference,-Wnon-virtual-dtor,-Woverloaded-virtual,-Wdouble-promotion,-Wimplicit-fallthrough,-Wreturn-type,-Werror>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=cuda>
+  )
+endforeach()
 
 install(TARGETS qnpeps LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES
+  capi/qnpeps_status.h
   capi/qnpeps.h
   eo/dans_qnpeps_eloc.h
   e2e/dans_qnpeps_e2e.h
@@ -190,13 +205,15 @@ install(FILES
 option(QNPEPS_BUILD_NATIVE_GATES "Build native CUDA correctness gates" OFF)
 if(QNPEPS_BUILD_NATIVE_GATES)
   include(CTest)
-  find_package(BLAS REQUIRED)
+  target_compile_definitions(qnpeps PRIVATE QNPEPS_GATE_HOOKS)
+  target_sources(qnpeps PRIVATE test/eo/panel_capture.cu)
   if(NOT QNPEPS_EO_ORACLE_DIR)
     message(FATAL_ERROR "[cmake] QNPEPS_BUILD_NATIVE_GATES requires -DQNPEPS_EO_ORACLE_DIR=<directory with the reference sources>")
   endif()
   if(NOT IS_DIRECTORY "${QNPEPS_EO_ORACLE_DIR}")
     message(FATAL_ERROR "[cmake] QNPEPS_EO_ORACLE_DIR does not name a directory at ${QNPEPS_EO_ORACLE_DIR}, required by QNPEPS_BUILD_NATIVE_GATES")
   endif()
+  find_package(BLAS REQUIRED)
   set(QNPEPS_EO_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/eo-oracle")
   file(MAKE_DIRECTORY "${QNPEPS_EO_GENERATED_DIR}")
 
@@ -226,6 +243,19 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_include_directories(qnpeps_eo_oracle PUBLIC "${QNPEPS_EO_ORACLE_DIR}")
   target_link_libraries(qnpeps_eo_oracle PUBLIC BLAS::BLAS)
 
+  add_test(NAME qnpeps_error_channel_test COMMAND qnpeps_error_channel_test)
+  add_test(NAME qnpeps_arena_reading_test COMMAND qnpeps_arena_reading_test)
+
+  add_executable(qnpeps_error_channel_gate test/error_channel_gate.cu)
+  target_include_directories(qnpeps_error_channel_gate PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/eo
+    ${CMAKE_CURRENT_SOURCE_DIR}/e2e
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/eo
+  )
+  target_link_libraries(qnpeps_error_channel_gate PRIVATE qnpeps CUDA::cudart)
+  add_test(NAME qnpeps_error_channel_gate COMMAND qnpeps_error_channel_gate)
+
   add_executable(qnpeps_peps_init_gate test/peps_init_gate.cu)
   target_include_directories(qnpeps_peps_init_gate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(qnpeps_peps_init_gate PRIVATE qnpeps CUDA::cudart)
@@ -251,6 +281,25 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   target_link_libraries(qnpeps_minsr_gate PRIVATE qnpeps CUDA::cudart)
   add_test(NAME qnpeps_minsr_gate COMMAND qnpeps_minsr_gate)
 
+  add_executable(qnpeps_arena_release_gate
+    test/arena_release_gate.cu
+    $<TARGET_PROPERTY:qnpeps,SOURCES>
+  )
+  target_include_directories(qnpeps_arena_release_gate PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/eo
+    ${CMAKE_CURRENT_SOURCE_DIR}/e2e
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/eo
+  )
+  target_compile_definitions(qnpeps_arena_release_gate PRIVATE
+    QNPEPS_C_API_VERSION="${QNPEPS_C_API_VERSION}"
+    QNPEPS_PACKAGE_VERSION="${QNPEPS_PACKAGE_VERSION}"
+  )
+  target_link_libraries(qnpeps_arena_release_gate PRIVATE
+    CUDA::cudart CUDA::cublas CUDA::cusolver Threads::Threads
+  )
+  add_test(NAME qnpeps_arena_release_gate COMMAND qnpeps_arena_release_gate)
+
   add_executable(qnpeps_eo_core_test test/eo/core_test.cpp)
   target_include_directories(qnpeps_eo_core_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -258,6 +307,27 @@ if(QNPEPS_BUILD_NATIVE_GATES)
   )
   target_link_libraries(qnpeps_eo_core_test PRIVATE CUDA::cudart)
   add_test(NAME qnpeps_eo_core_test COMMAND qnpeps_eo_core_test)
+
+  add_executable(qnpeps_arena_book_fuzz test/arena_book_fuzz.cpp)
+  target_include_directories(qnpeps_arena_book_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_options(qnpeps_arena_book_fuzz PRIVATE -O2)
+  add_test(NAME qnpeps_arena_book_fuzz COMMAND qnpeps_arena_book_fuzz)
+
+  add_executable(qnpeps_arena_book_fuzz_fault test/arena_book_fuzz.cpp)
+  target_include_directories(qnpeps_arena_book_fuzz_fault PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_options(qnpeps_arena_book_fuzz_fault PRIVATE -O2)
+  target_compile_definitions(qnpeps_arena_book_fuzz_fault PRIVATE QNPEPS_INJECT_RELEASE_FAULT)
+  add_test(NAME qnpeps_arena_book_fuzz_fault COMMAND qnpeps_arena_book_fuzz_fault)
+  set_tests_properties(qnpeps_arena_book_fuzz_fault PROPERTIES WILL_FAIL TRUE)
+
+  add_executable(qnpeps_eo_term_plan_test test/eo/term_plan_test.cu eo/env_build/planning.cu)
+  target_include_directories(qnpeps_eo_term_plan_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/eo
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/eo
+  )
+  target_link_libraries(qnpeps_eo_term_plan_test PRIVATE CUDA::cudart)
+  add_test(NAME qnpeps_eo_term_plan_test COMMAND qnpeps_eo_term_plan_test)
 
 
   add_executable(qnpeps_eo_suite test/eo/eo_suite.cu)
@@ -302,5 +372,5 @@ if(QNPEPS_BUILD_NATIVE_GATES)
     )
     add_test(NAME qnpeps_e2e_${gate_name}_gate COMMAND qnpeps_e2e_${gate_name}_gate)
   endforeach()
-  target_sources(qnpeps_e2e_update_gate PRIVATE e2e/update.cu e2e/kernels.cu)
+  target_sources(qnpeps_e2e_update_gate PRIVATE e2e/update.cu e2e/kernels.cu core/error.cu)
 endif()

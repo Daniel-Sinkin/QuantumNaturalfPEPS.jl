@@ -1,13 +1,14 @@
 #ifndef QNPEPS_CUDA_UTILS_CUH
 #define QNPEPS_CUDA_UTILS_CUH
 
-#include "core/error.cuh"
+#include "core/error.hpp"
 #include "core/types.cuh"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <utility>
 
 #if defined(__clang__) or defined(__GNUC__)
 #    define QNPEPS_UNREACHABLE()                                                                   \
@@ -101,6 +102,74 @@ template <class T>
 {
     return cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0);
 }
+
+class DeviceScope
+{
+  public:
+    explicit DeviceScope(int device)
+    {
+        check(cudaGetDevice(&caller_device_));
+        if (caller_device_ == device) return;
+        check(cudaSetDevice(device));
+        switched_ = true;
+    }
+
+    ~DeviceScope()
+    {
+        if (switched_) unchecked(cudaSetDevice(caller_device_));
+    }
+
+    DeviceScope(const DeviceScope&) = delete;
+    DeviceScope(DeviceScope&&) = delete;
+    auto operator=(const DeviceScope&) -> DeviceScope& = delete;
+    auto operator=(DeviceScope&&) -> DeviceScope& = delete;
+
+    auto restore() -> void
+    {
+        if (not switched_) return;
+        switched_ = false;
+        check(cudaSetDevice(caller_device_));
+    }
+
+  private:
+    int caller_device_{};
+    bool switched_{};
+};
+
+class StreamCapture
+{
+  public:
+    explicit StreamCapture(cudaStream_t stream) : stream_{stream}
+    {
+        check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+    }
+
+    ~StreamCapture()
+    {
+        if (not stream_) return;
+        cudaGraph_t graph{};
+        unchecked(cudaStreamEndCapture(stream_, &graph));
+        if (graph) unchecked(cudaGraphDestroy(graph));
+        unchecked(cudaGetLastError());
+    }
+
+    StreamCapture(const StreamCapture&) = delete;
+    StreamCapture(StreamCapture&&) = delete;
+    auto operator=(const StreamCapture&) -> StreamCapture& = delete;
+    auto operator=(StreamCapture&&) -> StreamCapture& = delete;
+
+    [[nodiscard]] auto finish() -> cudaGraph_t
+    {
+        cudaGraph_t graph{};
+        const auto status = cudaStreamEndCapture(std::exchange(stream_, nullptr), &graph);
+        if (status == cudaSuccess) return graph;
+        if (graph) unchecked(cudaGraphDestroy(graph));
+        return nullptr;
+    }
+
+  private:
+    cudaStream_t stream_{};
+};
 }
 
 #endif

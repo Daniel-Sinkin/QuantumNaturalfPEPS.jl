@@ -129,6 +129,115 @@ struct NormalizeArgs
     f64* output_gauge{};
 };
 
+inline constexpr u32 k_lane_solver_failed{1u};
+inline constexpr u32 k_lane_nonfinite_spectrum{2u};
+inline constexpr u32 k_lane_nonfinite_norm{4u};
+
+struct OperatorStrides
+{
+    i64 left{};
+    i64 input{};
+    i64 output{};
+    i64 right{};
+};
+
+struct BatchedProductArgs
+{
+    const cuFloatComplex* state{};
+    i64 state_lane_stride{};
+    i64 state_left{};
+    i64 physical_input{};
+    i64 state_right{};
+    const cuFloatComplex* operator_values{};
+    i64 operator_lane_stride{};
+    OperatorStrides operator_strides{};
+    i64 operator_left{};
+    i64 physical_output{};
+    i64 operator_right{};
+    cuDoubleComplex* products{};
+    i64 product_lane_stride{};
+    i64 lanes{};
+};
+
+struct BatchedBoundaryArgs
+{
+    const cuFloatComplex* input{};
+    i64 input_lane_stride{};
+    OperatorStrides input_strides{};
+    i64 left{};
+    i64 vertical{};
+    i64 right{};
+    cuFloatComplex* output{};
+    i64 output_lane_stride{};
+    f64* log_gauge{};
+    u32* lane_flags{};
+};
+
+struct BatchedRightBlockArgs
+{
+    const cuDoubleComplex* products{};
+    i64 product_lane_stride{};
+    const cuDoubleComplex* carried{};
+    i64 carried_lane_stride{};
+    i64 combined_left{};
+    i64 combined_right{};
+    i64 physical_output{};
+    i64 right_rank{};
+    cuDoubleComplex* right_block{};
+    i64 block_lane_stride{};
+    i64 lanes{};
+};
+
+struct BatchedSelectArgs
+{
+    const f64* eigenvalues{};
+    i64 eigenvalue_lane_stride{};
+    i64 order{};
+    const i32* solver_information{};
+    i32* sorted_indices{};
+    i64 index_lane_stride{};
+    u32* lane_flags{};
+};
+
+struct BatchedBasisArgs
+{
+    const cuDoubleComplex* vectors{};
+    i64 vector_lane_stride{};
+    const i32* sorted_indices{};
+    i64 index_lane_stride{};
+    i64 order{};
+    i64 rank{};
+    i64 lanes{};
+};
+
+struct BatchedPackSiteArgs
+{
+    BatchedBasisArgs basis{};
+    cuFloatComplex* output{};
+    i64 output_lane_stride{};
+};
+
+struct BatchedProjectArgs
+{
+    BatchedBasisArgs basis{};
+    const cuDoubleComplex* right_block{};
+    i64 block_lane_stride{};
+    i64 combined_left{};
+    cuDoubleComplex* carried{};
+    i64 carried_lane_stride{};
+};
+
+struct BatchedNormalizeArgs
+{
+    const cuDoubleComplex* values{};
+    i64 value_lane_stride{};
+    i64 count{};
+    cuFloatComplex* output{};
+    i64 output_lane_stride{};
+    f64* log_gauge{};
+    u32* lane_flags{};
+};
+
 __global__ auto cu_promote(PromoteArgs args) -> void;
 __global__ auto cu_pack(PackArgs args) -> void;
 __global__ auto cu_local_product(LocalProductArgs args) -> void;
@@ -141,6 +250,14 @@ __global__ auto cu_pack_site(PackSiteArgs args) -> void;
 __global__ auto cu_pack_first(PackFirstArgs args) -> void;
 __global__ auto cu_dimensions(DimensionsArgs args) -> void;
 __global__ auto cu_normalize(NormalizeArgs args) -> void;
+__global__ auto cu_batched_unit(cuDoubleComplex* values, i64 lane_stride, i64 lanes) -> void;
+__global__ auto cu_batched_products(BatchedProductArgs args) -> void;
+__global__ auto cu_batched_boundary(BatchedBoundaryArgs args) -> void;
+__global__ auto cu_batched_right_block(BatchedRightBlockArgs args) -> void;
+__global__ auto cu_batched_select(BatchedSelectArgs args) -> void;
+__global__ auto cu_batched_pack_site(BatchedPackSiteArgs args) -> void;
+__global__ auto cu_batched_project(BatchedProjectArgs args) -> void;
+__global__ auto cu_batched_normalize(BatchedNormalizeArgs args) -> void;
 }
 
 #endif

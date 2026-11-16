@@ -61,7 +61,7 @@ function _node_step_gram!(host::NodeStepHost, lane)::Nothing
                 stream=stream_pointer,
             )
             tile_status = GC.@preserve host FFI.eloc_gram_tile(arguments)
-            tile_status == 0 || error("qnpeps_eloc_gram_tile failed with status $tile_status")
+            _check(; status=tile_status, what="qnpeps_eloc_gram_tile")
             source_pitch = UInt(row_count_b) * element_bytes
             destination_pitch = UInt(host.n_samples) * element_bytes
             destination =
@@ -103,7 +103,7 @@ function _node_step_refresh_sampler!(host::NodeStepHost, lane_index::Int)::Nothi
         sampler.handle,
         pointer(host.sampler_refresh_args),
     )
-    status == 0 || error("qnpeps_sampler_host_refresh failed with status $status")
+    _check(; status, what="qnpeps_sampler_host_refresh")
     sampler.batch_args[1] = host.sampler_batch_lane_args[lane_index]
     sampler.generation = host.peps_generation
     return nothing

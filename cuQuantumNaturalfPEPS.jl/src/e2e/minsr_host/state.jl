@@ -81,7 +81,6 @@ Base.@kwdef mutable struct _MinsrHostLane
     affinity_saved::Int32
     affinity_applied::Int32
     status::Int32
-    failure_location::String
     failure_message::String
     input_copy_s::Float64
     gram_s::Float64
@@ -163,16 +162,14 @@ end
 struct MinsrHostError <: Exception
     lane::Int32
     status::Int32
-    location::String
     message::String
 end
 
-MinsrHostError(lane::Int32, status::Int32) = MinsrHostError(lane, status, "", "")
+MinsrHostError(lane::Int32, status::Int32) = MinsrHostError(lane, status, "")
 
 function Base.showerror(output_stream::IO, error::MinsrHostError)
     print(output_stream, "minSR Julia host failed lane=", error.lane, " status=", error.status)
-    isempty(error.location) || print(output_stream, " at ", error.location)
-    isempty(error.message) || print(output_stream, "; ", error.message)
+    isempty(error.message) || print(output_stream, ", ", error.message)
 end
 
 @inline _minsr_host_seconds() = Float64(time_ns()) * 1.0e-9

@@ -49,8 +49,8 @@ struct DistributedScatterArgs
     ComplexF32* theta_device0;
 };
 
-auto build_gram_blockrow(const DistributedGramArgs& args) -> qnpeps_status;
-auto scatter_ring(const DistributedScatterArgs& args) -> qnpeps_status;
+auto build_gram_blockrow(const DistributedGramArgs& args) -> void;
+auto scatter_ring(const DistributedScatterArgs& args) -> void;
 }
 
 #endif

@@ -13,12 +13,14 @@ auto Linalg::cholesky_lower_batched(int n, cuFloatComplex** as, int lda, int* in
     -> void
 {
     const auto valid = n > 0 and as and lda >= n and info and batch_size > 0;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
-    CUSOLVER_CHECK(cusolverDnCpotrfBatched(
+    require(
+        valid,
+        "batched Cholesky rejects order {}, leading dimension {}, batch {}",
+        n,
+        lda,
+        batch_size
+    );
+    check(cusolverDnCpotrfBatched(
         solver_->get(), CUBLAS_FILL_MODE_LOWER, n, as, lda, info, batch_size
     ));
 }
@@ -41,13 +43,17 @@ auto Linalg::triangular_solve_batched(
     const auto batch_valid = batch_size > 0;
     const auto shape_valid = dimensions_valid and leading_dimensions_valid;
     const auto valid = pointers_valid and shape_valid and batch_valid;
-    if (not valid)
-    {
-        qnpeps::set_err(QNPEPS_ERR_INTERNAL);
-        return;
-    }
+    require(
+        valid,
+        "batched triangular solve rejects a {}x{} system, leading dimensions {} and {}, batch {}",
+        m,
+        n,
+        lda,
+        ldb,
+        batch_size
+    );
     const auto alpha = cuFloatComplex{cfg.alpha_real, cfg.alpha_imag};
-    CUBLAS_CHECK(cublasCtrsmBatched(
+    check(cublasCtrsmBatched(
         blas_->get(),
         cfg.side_right ? CUBLAS_SIDE_RIGHT : CUBLAS_SIDE_LEFT,
         to_cublas(cfg.fill_mode),

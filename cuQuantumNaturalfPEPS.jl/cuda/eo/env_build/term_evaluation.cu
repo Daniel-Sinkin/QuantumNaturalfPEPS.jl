@@ -8,19 +8,11 @@ auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, in
     launch_dot(w, mid, cl, mid, cr, mid, out, dim_batch);
 }
 
-auto corner_mode(const FlipInst& t, int r, int c, int ly) -> int
-{
-    const auto idx = int{r * ly + c};
-    for (auto k = int{0}; k < t.n_flips; ++k)
-        if (t.site[static_cast<usize>(k)] == idx) return t.value[static_cast<usize>(k)];
-    return -2;
-}
-
 auto project_corner_indexed(
     Worker& w,
+    const TermPiece& piece,
     int r,
     int c,
-    int mode,
     const int* active_indices,
     int active,
     cf* out,
@@ -28,31 +20,53 @@ auto project_corner_indexed(
 ) -> BT
 {
     const auto& sh = w.sh;
-    const auto pd = std::vector<int>{proj_dims(w, r, c)};
-    const auto slab = i64{bt_elems(pd)};
+    const auto pd = proj_dims(w, r, c);
+    const auto slab = bt_elems(pd);
     i64 total{};
-    if (qn::err_state() != QNPEPS_ELOC_OK or slab < 1 or active < 1
-        or not arena_slot(
-            {static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(active)}, total
-        ))
-        return {};
-    const auto threads = int{256};
-    const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
-    cu_project_site_val_indexed<<<blocks, threads, 0, w.la.stream()>>>(
-        w.peps + w.site_off[static_cast<usize>(r) * sh.ly + c],
-        w.samples,
-        static_cast<i64>(sh.lx) * sh.ly,
-        active_indices,
-        r * sh.ly + c,
-        slab,
-        mode,
-        mode,
-        sh.dim_phys,
-        out,
-        out_stride,
-        active
-    );
-    CUDA_CHECK(cudaGetLastError());
+    if (slab < 1 or active < 1) return {};
+    arena_slot({static_cast<std::uint64_t>(slab), static_cast<std::uint64_t>(active)}, total);
+    constexpr auto threads = 256;
+    const auto blocks = static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads));
+    const auto site_index = r * sh.ly + c;
+    const auto position = support_position(piece, site_index);
+    const auto site = w.peps + w.site_off[static_cast<usize>(site_index)];
+    const auto lane_stride = static_cast<i64>(sh.lx) * sh.ly;
+    if (position == k_keep_position or piece.is_one_hot)
+    {
+        const auto args = CuProjectGatherArgs{
+            .site = site,
+            .samples = w.samples,
+            .lane_stride = lane_stride,
+            .active_indices = active_indices,
+            .site_index = site_index,
+            .slab = slab,
+            .local_state = piece.local_state,
+            .support_position = position,
+            .targets = piece.device_targets,
+            .out = out,
+            .out_stride = out_stride,
+            .active = active,
+        };
+        cu_project_site_gather<<<blocks, threads, 0, w.la.stream()>>>(args);
+    }
+    else
+    {
+        const auto args = CuProjectWeightedArgs{
+            .site = site,
+            .samples = w.samples,
+            .lane_stride = lane_stride,
+            .active_indices = active_indices,
+            .slab = slab,
+            .local_state = piece.local_state,
+            .support_position = position,
+            .weights = piece.device_weights,
+            .out = out,
+            .out_stride = out_stride,
+            .active = active,
+        };
+        cu_project_site_weighted<<<blocks, threads, 0, w.la.stream()>>>(args);
+    }
+    check(cudaGetLastError());
     return BT{out, out_stride, pd};
 }
 
@@ -60,51 +74,59 @@ auto compact_tensor(Worker& w, const BT& src, const int* active_indices, int act
 {
     const auto elems = i64{bt_elems(src.dim)};
     i64 total{};
-    if (qn::err_state() != QNPEPS_ELOC_OK or elems < 1 or active < 1
-        or not arena_slot(
-            {static_cast<std::uint64_t>(elems), static_cast<std::uint64_t>(active)}, total
-        ))
-        return {};
+    if (elems < 1 or active < 1) return {};
+    arena_slot({static_cast<std::uint64_t>(elems), static_cast<std::uint64_t>(active)}, total);
     const auto threads = int{256};
     const auto blocks = int{static_cast<int>(std::min<i64>(4096, (total + threads - 1) / threads))};
     cu_compact_lanes<<<blocks, threads, 0, w.la.stream()>>>(
         out, elems, src.p, src.stride, active_indices, elems, active
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
     return BT{out, elems, src.dim};
 }
 
 auto chain_normalize_batch(Worker& w, cf* x, i64 n, i64 stride, f64* f_chain, int dim_batch) -> void
 {
     int elements{};
-    if (n < 1 or not arena_int({static_cast<std::uint64_t>(n)}, elements)) return;
+    if (n < 1) return;
+    arena_int({static_cast<std::uint64_t>(n)}, elements);
     cu_normalize_log<<<dim_batch, 256, 0, w.la.stream()>>>(
         x, elements, stride, f_chain, dim_batch, nullptr
     );
-    CUDA_CHECK(cudaGetLastError());
+    check(cudaGetLastError());
+}
+
+namespace
+{
+struct ChainColumns
+{
+    int row{};
+    int first{};
+    int last{};
+};
+
+[[nodiscard]] auto chain_columns(const TermPiece& piece, int ly) noexcept -> ChainColumns
+{
+    auto columns = ChainColumns{.row = piece.moving[0] / ly, .first = ly, .last = -1};
+    for (auto k = 0_uz; k < static_cast<usize>(piece.moving_count); ++k)
+    {
+        columns.first = std::min(columns.first, piece.moving[k] % ly);
+        columns.last = std::max(columns.last, piece.moving[k] % ly);
+    }
+    return columns;
+}
 }
 
 auto eval_horizontal_compact(
-    Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
+    Worker& w, const TermPiece& piece, const int* active_indices, int active, cf* value_out
 ) -> f64*
 {
     const auto& sh = w.sh;
-    const auto ly = int{sh.ly};
-    const auto i = int{t.site[0] / ly};
-    auto c0 = int{ly};
-    auto cend = int{-1};
-    for (auto k = int{0}; k < t.n_flips; ++k)
-    {
-        const auto c = int{t.site[static_cast<usize>(k)] % ly};
-        c0 = std::min(c0, c);
-        cend = std::max(cend, c);
-    }
-    const auto val_at = [&](int c) -> int
-    {
-        for (auto k = int{0}; k < t.n_flips; ++k)
-            if (t.site[static_cast<usize>(k)] % ly == c) return t.value[static_cast<usize>(k)];
-        return -2;
-    };
+    const auto ly = sh.ly;
+    const auto columns = chain_columns(piece, ly);
+    const auto i = columns.row;
+    const auto c0 = columns.first;
+    const auto cend = columns.last;
 
     const auto left_src =
         BT{c0 > 0 ? BT{hl_site(w, i, c0 - 1), w.slot_h, hl_o_dims(w, i, c0)} : unit3(w)};
@@ -131,21 +153,17 @@ auto eval_horizontal_compact(
         {static_cast<std::uint64_t>(w.slot_env), static_cast<std::uint64_t>(active)}
     )};
     auto f_chain{frame.take<f64>(static_cast<usize>(active))};
-    if (qn::err_state() != QNPEPS_ELOC_OK) return nullptr;
     usize f_chain_bytes{};
-    if (not arena_product({sizeof(f64), static_cast<std::uint64_t>(active)}, f_chain_bytes))
-        return nullptr;
+    arena_product({sizeof(f64), static_cast<std::uint64_t>(active)}, f_chain_bytes);
 
-    CUDA_CHECK(cudaMemsetAsync(f_chain, 0, f_chain_bytes, w.la.stream()));
+    check(cudaMemsetAsync(f_chain, 0, f_chain_bytes, w.la.stream()));
     auto v = BT{compact_tensor(w, left_src, active_indices, active, chain_a)};
     auto next{chain_b};
     for (auto c = int{c0}; c <= cend; ++c)
     {
-        if (qn::err_state() != QNPEPS_ELOC_OK) return nullptr;
         const auto proj_elems = i64{bt_elems(proj_dims(w, i, c))};
-        const auto projected = BT{
-            project_corner_indexed(w, i, c, val_at(c), active_indices, active, flip, proj_elems)
-        };
+        const auto projected =
+            BT{project_corner_indexed(w, piece, i, c, active_indices, active, flip, proj_elems)};
         const auto top =
             BT{compact_tensor(w, top_bt(w, i, c), active_indices, active, compact_top)};
         const auto bot =
@@ -165,15 +183,15 @@ auto eval_horizontal_compact(
 }
 
 auto eval_fourbody_compact(
-    Worker& w, const FlipInst& t, const int* active_indices, int active, cf* value_out
+    Worker& w, const TermPiece& piece, const int* active_indices, int active, cf* value_out
 ) -> f64*
 {
     const auto& sh = w.sh;
     const auto ly = int{sh.ly};
-    const auto r0 = int{t.site[0] / ly};
-    const auto c0 = int{t.site[0] % ly};
-    const auto r1 = int{t.site[1] / ly};
-    const auto c1 = int{t.site[1] % ly};
+    const auto r0 = int{piece.moving[0] / ly};
+    const auto c0 = int{piece.moving[0] % ly};
+    const auto r1 = int{piece.moving[1] / ly};
+    const auto c1 = int{piece.moving[1] % ly};
     const auto minr = int{std::min(r0, r1)};
     const auto maxr = int{std::max(r0, r1)};
     const auto miny = int{std::min(c0, c1)};
@@ -200,14 +218,13 @@ auto eval_fourbody_compact(
         BT{maxy < ly - 1 ? BT{fbr_site(w, upper, maxy), w.slot_fb, fb_right_dims(w, upper, maxy)}
                          : unit4(w)};
     int mid{};
-    if (not arena_int(
-            {static_cast<std::uint64_t>(topL.dim[2]),
-             static_cast<std::uint64_t>(piLd[2]),
-             static_cast<std::uint64_t>(pjLd[2]),
-             static_cast<std::uint64_t>(botL.dim[2])},
-            mid
-        ))
-        return nullptr;
+    arena_int(
+        {static_cast<std::uint64_t>(topL.dim[2]),
+         static_cast<std::uint64_t>(piLd[2]),
+         static_cast<std::uint64_t>(pjLd[2]),
+         static_cast<std::uint64_t>(botL.dim[2])},
+        mid
+    );
 
     auto frame = Carver{w.scratch};
     auto piL{frame.take_product<cf>(
@@ -241,24 +258,18 @@ auto eval_fourbody_compact(
     auto compact_bot{frame.take_product<cf>(
         {static_cast<std::uint64_t>(bot_elems), static_cast<std::uint64_t>(active)}
     )};
-    if (qn::err_state() != QNPEPS_ELOC_OK) return nullptr;
 
-    const auto projected_pi_l = BT{project_corner_indexed(
-        w, minr, miny, corner_mode(t, minr, miny, ly), active_indices, active, piL, piL_elems
-    )};
-    const auto projected_pj_l = BT{project_corner_indexed(
-        w, maxr, miny, corner_mode(t, maxr, miny, ly), active_indices, active, pjL, pjL_elems
-    )};
-    const auto projected_pi_r = BT{project_corner_indexed(
-        w, minr, maxy, corner_mode(t, minr, maxy, ly), active_indices, active, piR, piR_elems
-    )};
-    const auto projected_pj_r = BT{project_corner_indexed(
-        w, maxr, maxy, corner_mode(t, maxr, maxy, ly), active_indices, active, pjR, pjR_elems
-    )};
+    const auto projected_pi_l =
+        BT{project_corner_indexed(w, piece, minr, miny, active_indices, active, piL, piL_elems)};
+    const auto projected_pj_l =
+        BT{project_corner_indexed(w, piece, maxr, miny, active_indices, active, pjL, pjL_elems)};
+    const auto projected_pi_r =
+        BT{project_corner_indexed(w, piece, minr, maxy, active_indices, active, piR, piR_elems)};
+    const auto projected_pj_r =
+        BT{project_corner_indexed(w, piece, maxr, maxy, active_indices, active, pjR, pjR_elems)};
     usize f_chain_bytes{};
-    if (not arena_product({sizeof(f64), static_cast<std::uint64_t>(active)}, f_chain_bytes))
-        return nullptr;
-    CUDA_CHECK(cudaMemsetAsync(f_chain, 0, f_chain_bytes, w.la.stream()));
+    arena_product({sizeof(f64), static_cast<std::uint64_t>(active)}, f_chain_bytes);
+    check(cudaMemsetAsync(f_chain, 0, f_chain_bytes, w.la.stream()));
 
     const auto compact_fb_l = BT{compact_tensor(w, fbL, active_indices, active, compact_fb)};
     const auto compact_top_l = BT{compact_tensor(w, topL, active_indices, active, compact_top)};
@@ -297,9 +308,9 @@ auto eval_fourbody_compact(
     return f_chain;
 }
 
-auto eval_flip_inst(
+auto eval_term_piece(
     Worker& w,
-    const FlipInst& t,
+    const TermPiece& piece,
     cf* value_buf,
     f64* e_loc,
     const f64* logpsi,
@@ -322,16 +333,16 @@ auto eval_flip_inst(
     f64* f_down{};
     f64* f_rail_l{};
     f64* f_rail_r{};
-    if (t.bucket == Bucket::fourbody)
+    if (piece.bucket == Bucket::fourbody)
     {
-        f_chain = eval_fourbody_compact(w, t, active_indices, active, value_buf);
-        if (qn::err_state() != QNPEPS_ELOC_OK or f_chain == nullptr) return;
-        const auto r0 = int{t.site[0] / ly};
-        const auto r1 = int{t.site[1] / ly};
+        f_chain = eval_fourbody_compact(w, piece, active_indices, active, value_buf);
+        if (f_chain == nullptr) return;
+        const auto r0 = int{piece.moving[0] / ly};
+        const auto r1 = int{piece.moving[1] / ly};
         const auto minr = int{std::min(r0, r1)};
         const auto maxr = int{std::max(r0, r1)};
-        const auto c0 = int{t.site[0] % ly};
-        const auto c1 = int{t.site[1] % ly};
+        const auto c0 = int{piece.moving[0] % ly};
+        const auto c1 = int{piece.moving[1] % ly};
         const auto miny = int{std::min(c0, c1)};
         const auto maxy = int{std::max(c0, c1)};
         f_top = minr > 0 ? w.f_top + static_cast<i64>(minr - 1) * lanes : nullptr;
@@ -341,17 +352,12 @@ auto eval_flip_inst(
     }
     else
     {
-        f_chain = eval_horizontal_compact(w, t, active_indices, active, value_buf);
-        if (qn::err_state() != QNPEPS_ELOC_OK or f_chain == nullptr) return;
-        const auto i = int{t.site[0] / ly};
-        auto c0 = int{ly};
-        auto cend = int{-1};
-        for (auto k = int{0}; k < t.n_flips; ++k)
-        {
-            const auto c = int{t.site[static_cast<usize>(k)] % ly};
-            c0 = std::min(c0, c);
-            cend = std::max(cend, c);
-        }
+        f_chain = eval_horizontal_compact(w, piece, active_indices, active, value_buf);
+        if (f_chain == nullptr) return;
+        const auto columns = chain_columns(piece, ly);
+        const auto i = columns.row;
+        const auto c0 = columns.first;
+        const auto cend = columns.last;
         f_top = i > 0 ? w.f_top + static_cast<i64>(i - 1) * lanes : nullptr;
         f_down = i < lx - 1 ? w.f_down + static_cast<i64>(lx - i - 2) * lanes : nullptr;
         f_rail_l = c0 > 0 ? f_hl_cut(w, i, c0 - 1) : nullptr;
@@ -359,7 +365,7 @@ auto eval_flip_inst(
     }
     reduce_term_indexed(
         w,
-        t,
+        piece,
         value_buf,
         f_chain,
         active_indices,

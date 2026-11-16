@@ -28,11 +28,7 @@ struct GesvdaQueryArgs
 inline auto query_gesvda_solver_count(const GesvdaQueryArgs& args) -> int
 {
     auto handle = cusolverDnHandle_t{args.linalg.cusolver()};
-    if (not handle)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_INTERNAL);
-        return 0;
-    }
+    require(handle != nullptr, "gesvda workspace query without a solver handle");
     int solver_count{};
     const auto query_status = cusolverStatus_t{cusolverDnCgesvdaStridedBatched_bufferSize(
         handle,
@@ -54,13 +50,7 @@ inline auto query_gesvda_solver_count(const GesvdaQueryArgs& args) -> int
         &solver_count,
         args.dim_batch
     )};
-    if (query_status != CUSOLVER_STATUS_SUCCESS)
-    {
-        qn::set_backend_err(
-            QNPEPS_ELOC_ERR_CUDA, "cusolver", static_cast<int>(query_status), __FILE__, __LINE__
-        );
-        return 0;
-    }
+    check(query_status, "gesvda workspace query");
     return std::max(solver_count, 1);
 }
 
@@ -137,9 +127,7 @@ inline auto carve_rangefinder_workspace(
     GesvdaWorkspace work{};
     const auto storage_rank = int{condition_spectrum_rank(max_dim, k)};
     carve_direct_workspace(la, work, cursor, max_dim, max_dim, k, storage_rank, dim_batch);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
     auto* end = cursor.take<char>(0);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return;
     scratch_bytes = static_cast<usize>(end - scratch);
 }
 
@@ -152,7 +140,7 @@ inline auto run_gesvda(
     int cols,
     int k,
     int dim_batch
-) -> bool
+) -> void
 {
     const auto solver_count = int{query_gesvda_solver_count({
         .linalg = la,
@@ -166,14 +154,16 @@ inline auto run_gesvda(
         .right = work.right,
         .singular = work.singular,
     })};
-    if (solver_count < 1 or static_cast<usize>(solver_count) > work.solver_scratch_count)
-    {
-        if (qn::err_state() == QNPEPS_ELOC_OK) qn::set_err(QNPEPS_ELOC_ERR_OOM);
-        return false;
-    }
-    CUDA_CHECK(
-        cudaMemsetAsync(work.info, 0, sizeof(int) * static_cast<usize>(dim_batch), la.stream())
+    const auto solver_scratch_fits =
+        solver_count >= 1 and static_cast<usize>(solver_count) <= work.solver_scratch_count;
+    require(
+        solver_scratch_fits,
+        Status::out_of_memory,
+        "gesvda needs {} workspace elements, {} carved",
+        solver_count,
+        work.solver_scratch_count
     );
+    check(cudaMemsetAsync(work.info, 0, sizeof(int) * static_cast<usize>(dim_batch), la.stream()));
     const auto status = cusolverStatus_t{cusolverDnCgesvdaStridedBatched(
         la.cusolver(),
         CUSOLVER_EIG_MODE_VECTOR,
@@ -197,14 +187,7 @@ inline auto run_gesvda(
         nullptr,
         dim_batch
     )};
-    if (status != CUSOLVER_STATUS_SUCCESS)
-    {
-        qn::set_backend_err(
-            QNPEPS_ELOC_ERR_CUDA, "cusolver", static_cast<int>(status), __FILE__, __LINE__
-        );
-        return false;
-    }
-    return true;
+    check(status, "gesvda");
 }
 
 inline auto apply_component_mask(
@@ -216,7 +199,7 @@ inline auto apply_component_mask(
     const f32* singular,
     f64 cutoff,
     int dim_batch
-) -> bool
+) -> void
 {
     const auto k = int{q.cols()};
     const auto panel_total_weight_args = CuPanelTotalWeightArgs{
@@ -265,8 +248,7 @@ inline auto apply_component_mask(
         .dim_batch = dim_batch,
     };
     cu_mask_factor_tails<<<blocks, 256, 0, la.stream()>>>(mask_factor_tails_args);
-    CUDA_CHECK(cudaGetLastError());
-    return qn::err_state() == QNPEPS_ELOC_OK;
+    check(cudaGetLastError());
 }
 
 inline auto run_direct_gesvda_cutoff(
@@ -280,23 +262,26 @@ inline auto run_direct_gesvda_cutoff(
     int* fail_flag,
     void* scratch,
     usize scratch_bytes
-) -> bool
+) -> void
 {
     const auto rows = int{panel.rows()};
     const auto cols = int{panel.cols()};
     const auto adjoint = bool{rows < cols};
     const auto svd_rows = int{adjoint ? cols : rows};
     const auto svd_cols = int{adjoint ? rows : cols};
-    if (k < 1 or k > svd_cols)
-    {
-        qn::set_err(QNPEPS_ELOC_ERR_BAD_CONFIG);
-        return false;
-    }
+    require(
+        k >= 1 and k <= svd_cols,
+        Status::bad_config,
+        "gesvda rank {} outside 1 to {} for a {}x{} panel",
+        k,
+        svd_cols,
+        rows,
+        cols
+    );
     GesvdaWorkspace work{};
     auto cursor = WorkspaceCursor::carve(scratch, scratch_bytes);
     const auto storage_rank = int{condition_spectrum_rank(svd_cols, k)};
     carve_direct_workspace(la, work, cursor, rows, cols, k, storage_rank, dim_batch);
-    if (qn::err_state() != QNPEPS_ELOC_OK) return false;
     const auto batch = usize{static_cast<usize>(dim_batch)};
     const auto input_stride = usize{static_cast<usize>(svd_rows) * svd_cols};
     const auto q_stride = usize{static_cast<usize>(rows) * k};
@@ -321,8 +306,7 @@ inline auto run_direct_gesvda_cutoff(
         svd_input = work.direct_input;
         svd_input_stride = static_cast<i64>(input_stride);
     }
-    if (not run_gesvda(la, work, svd_input, svd_input_stride, svd_rows, svd_cols, k, dim_batch))
-        return false;
+    run_gesvda(la, work, svd_input, svd_input_stride, svd_rows, svd_cols, k, dim_batch);
     const auto record_gesvda_info_args = CuRecordGesvdaInfoArgs{
         .info = work.info,
         .fail_flag = fail_flag,
@@ -332,7 +316,7 @@ inline auto run_direct_gesvda_cutoff(
         record_gesvda_info_args
     );
     auto q_source{adjoint ? work.right : work.left};
-    CUDA_CHECK(cudaMemcpyAsync(
+    check(cudaMemcpyAsync(
         work.q_candidate,
         q_source,
         sizeof(cf) * q_stride * batch,
@@ -363,10 +347,9 @@ inline auto run_direct_gesvda_cutoff(
         dim_batch,
         {.op_a = BlasOp::conj_trans, .op_b = BlasOp::none}
     );
-    if (not apply_component_mask(
-            la, work, panel, q_candidate, r_candidate, work.singular, cutoff, dim_batch
-        ))
-        return false;
+    apply_component_mask(
+        la, work, panel, q_candidate, r_candidate, work.singular, cutoff, dim_batch
+    );
     const auto total =
         i64{static_cast<i64>(dim_batch)
             * (static_cast<i64>(rows) * k + static_cast<i64>(k) * cols)};
@@ -388,14 +371,12 @@ inline auto run_direct_gesvda_cutoff(
         .dim_batch = dim_batch,
     };
     cu_copy_factor_outputs<<<blocks, 256, 0, la.stream()>>>(copy_factor_outputs_args);
-    CUDA_CHECK(cudaGetLastError());
-    if (storage_rank > k
-        and not run_gesvda(
-            la, work, svd_input, svd_input_stride, svd_rows, svd_cols, storage_rank, dim_batch
-        ))
-        return false;
+    check(cudaGetLastError());
     if (storage_rank > k)
     {
+        run_gesvda(
+            la, work, svd_input, svd_input_stride, svd_rows, svd_cols, storage_rank, dim_batch
+        );
         const auto record_gesvda_info_args = CuRecordGesvdaInfoArgs{
             .info = work.info,
             .fail_flag = fail_flag,
@@ -404,9 +385,8 @@ inline auto run_direct_gesvda_cutoff(
         cu_record_gesvda_info<<<(dim_batch + 255) / 256, 256, 0, la.stream()>>>(
             record_gesvda_info_args
         );
-        CUDA_CHECK(cudaGetLastError());
+        check(cudaGetLastError());
     }
-    return true;
 }
 
 }

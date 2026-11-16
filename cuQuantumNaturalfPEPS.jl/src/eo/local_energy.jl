@@ -1,7 +1,7 @@
 function local_energies(
     peps::CuVector{ComplexF32},
     config::QnpepsElocConfig,
-    terms::HeisenbergTerms,
+    terms::OperatorTerms,
     samples::CuVector{UInt8},
 )
     sites = Int(config.lx) * Int(config.ly)
@@ -11,13 +11,12 @@ function local_energies(
     logpsi = CUDA.zeros(Float64, 2 * n_samples)
     e_loc = CUDA.zeros(Float64, 2 * n_samples)
     stream = CUDA.stream()
-    diag = terms.diag
-    flip = terms.flip
-    status = GC.@preserve peps samples logpsi e_loc diag flip begin
+    buffers = _eloc_term_buffers(terms, config)
+    status = GC.@preserve peps samples logpsi e_loc buffers begin
         inputs = FFI._ElocRunInputs(;
             peps=reinterpret(CuPtr{Cvoid}, pointer(peps)),
             samples=pointer(samples),
-            terms=_eloc_term_table(terms),
+            terms=_eloc_term_table(buffers),
         )
         outputs = FFI._ElocRunOutputs(;
             logpsi=pointer(logpsi),
@@ -34,6 +33,6 @@ function local_energies(
             FFI._ElocRunArguments(; config, n_samples=Int64(n_samples), inputs, outputs, workspace),
         )
     end
-    status == 0 || error("[cuQuantumNaturalfPEPS] qnpeps_eloc_run failed (status $status)")
+    _check(; status, what="qnpeps_eloc_run")
     return (logpsi=reinterpret(ComplexF64, logpsi), e_loc=reinterpret(ComplexF64, e_loc))
 end
