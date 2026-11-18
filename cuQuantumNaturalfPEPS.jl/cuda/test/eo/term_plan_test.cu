@@ -330,16 +330,156 @@ auto run_plaquette_cases() -> void
                 and out.original.front().active_slot < 0
         );
     }
+    record(
+        "routable_accepts_plaquette", qnpeps::eo::is_routable(2, 3, flips({0, 1, 3, 4}).table())
+    );
+}
+
+auto has_box(const qn_eloc::env::TermPiece& piece, int ly, int rows, int columns) -> bool
+{
+    const auto bounds = qn_eloc::env::moving_bounds(piece, ly);
+    const auto row_count = bounds.bottom_row - bounds.top_row + 1;
+    const auto column_count = bounds.right_column - bounds.left_column + 1;
+    return row_count == rows and column_count == columns;
+}
+
+auto run_two_row_cases() -> void
+{
     {
         auto out = TermPlan{};
-        record("plan_reject_triple_beyond_plaquette", not plan(flips({0, 1, 5}), out));
-        record("plan_reject_triple_over_three_rows", not plan(flips({0, 1, 4}), out, 3, 2));
+        const auto ok = plan(flips({0, 1, 5}), out);
+        const auto piece = first_piece(out.original);
         record(
-            "routable_accepts_plaquette", qnpeps::eo::is_routable(2, 3, flips({0, 1, 3, 4}).table())
+            "plan_triple_two_rows_wide",
+            ok and all_fourbody(out) and piece.pass == 0 and piece.row_count == 2
+                and has_box(piece, 3, 2, 3)
         );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(heisenberg(0, 5), out);
+        const auto piece = first_piece(out.original);
         record(
-            "routable_rejects_wide_quadruple",
-            not qnpeps::eo::is_routable(2, 3, flips({0, 1, 2, 5}).table())
+            "plan_knight_row_pass",
+            ok and all_fourbody(out) and piece.row_count == 2 and has_box(piece, 3, 2, 3)
+                and qn_eloc::env::slab_rows(out.original) == 0
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(heisenberg(0, 5), out, 3, 2);
+        const auto piece = first_piece(out.transposed);
+        record(
+            "plan_knight_column_pass",
+            ok and out.original.empty() and out.transposed.size() == 1 and piece.pass == 1
+                and piece.bucket == Bucket::fourbody and piece.row_count == 2
+                and piece.local_state.site[0] == 0 and piece.local_state.site[1] == 5
+                and has_box(piece, 3, 2, 3)
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 1, 4}), out, 3, 2);
+        const auto piece = first_piece(out.transposed);
+        record(
+            "plan_triple_three_rows_transposed",
+            ok and out.original.empty() and piece.pass == 1 and piece.bucket == Bucket::fourbody
+                and piece.local_state.site[0] == 0 and piece.local_state.site[1] == 3
+                and piece.local_state.site[2] == 2
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 7}), out, 2, 4);
+        record(
+            "plan_pair_two_rows_four_columns",
+            ok and all_fourbody(out) and has_box(first_piece(out.original), 4, 2, 4)
+        );
+    }
+    record("routable_accepts_knight", qnpeps::eo::is_routable(2, 3, heisenberg(0, 5).table()));
+    record(
+        "routable_accepts_wide_quadruple",
+        qnpeps::eo::is_routable(2, 3, flips({0, 1, 2, 5}).table())
+    );
+}
+
+auto run_slab_cases() -> void
+{
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(heisenberg(0, 8), out, 3, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_distance_two_diagonal_slab",
+            ok and out.original.size() == 1 and out.transposed.empty()
+                and piece.bucket == Bucket::slab and piece.pass == 0 and piece.row_count == 3
+                and qn_eloc::env::slab_rows(out.original) == 3
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({2, 4, 6}), out, 3, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_antidiagonal_triple_slab",
+            ok and piece.bucket == Bucket::slab and piece.pass == 0 and has_box(piece, 3, 3, 3)
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 5, 10, 15}), out, 4, 4);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_four_diagonal_slab",
+            ok and piece.bucket == Bucket::slab and piece.row_count == 4 and piece.moving_count == 4
+                and qn_eloc::env::slab_rows(out.original) == 4
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 4, 11}), out, 4, 3);
+        const auto piece = first_piece(out.transposed);
+        record(
+            "plan_tall_slab_transposed",
+            ok and out.original.empty() and piece.pass == 1 and piece.bucket == Bucket::slab
+                and piece.row_count == 3 and piece.local_state.site[1] == 5
+                and piece.local_state.site[2] == 11 and qn_eloc::env::slab_rows(out.transposed) == 3
+                and qn_eloc::env::piece_sites_text(config(4, 3), piece) == "(1, 1) (2, 2) (4, 3)"
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(heisenberg(1, 18), out, 4, 5);
+        const auto piece = first_piece(out.transposed);
+        const auto bounds = qn_eloc::env::moving_bounds(piece, 4);
+        record(
+            "plan_tall_slab_between_environments",
+            ok and out.original.empty() and piece.pass == 1 and piece.bucket == Bucket::slab
+                and piece.row_count == 3 and bounds.top_row == 1 and bounds.bottom_row == 3
+                and has_box(piece, 4, 3, 4)
+        );
+    }
+    {
+        auto terms = eo_test::TermTableBuilder{};
+        terms.add_reflection({3, 11}, {2}, {0.5, 0.25}, -1, -1);
+        auto out = TermPlan{};
+        const auto ok = plan(terms, out, 5, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_slab_keeps_spectator",
+            ok and piece.bucket == Bucket::slab and piece.pass == 0 and piece.moving_count == 2
+                and not piece.is_moving[2]
+                and qn_eloc::env::support_position(piece, 2) == qn_eloc::env::k_keep_position
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({1, 3, 8}), out, 3, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_square_tie_stays_original",
+            ok and out.transposed.empty() and piece.pass == 0 and piece.bucket == Bucket::slab
+                and has_box(piece, 3, 3, 3)
         );
     }
 }
@@ -386,14 +526,7 @@ auto run_plan_cases() -> void
                 and out.original.front().bucket == Bucket::longer_horizontal
         );
     }
-    {
-        auto out = TermPlan{};
-        record("plan_reject_knight", not plan(heisenberg(0, 5), out));
-        record(
-            "routable_rejects_knight", not qnpeps::eo::is_routable(2, 3, heisenberg(0, 5).table())
-        );
-        record("routable_accepts_bond", qnpeps::eo::is_routable(2, 3, heisenberg(0, 1).table()));
-    }
+    record("routable_accepts_bond", qnpeps::eo::is_routable(2, 3, heisenberg(0, 1).table()));
     {
         auto terms = eo_test::TermTableBuilder{};
         terms.add_piece(
@@ -468,6 +601,8 @@ auto run_plan_cases() -> void
     }
     run_line_cases();
     run_plaquette_cases();
+    run_two_row_cases();
+    run_slab_cases();
 }
 }
 

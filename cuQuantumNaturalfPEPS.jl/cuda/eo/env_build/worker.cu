@@ -1,5 +1,5 @@
 #include "density_rows.cuh"
-#include "parts.cuh"
+#include "slab.cuh"
 
 namespace qn_eloc::env
 {
@@ -97,7 +97,7 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
     w.f_down = cv.take<f64>(vertical_scales);
     w.f_top = cv.take<f64>(vertical_scales);
     w.f_ov = cv.take<f64>(lanes);
-    if (want_h or want_fb)
+    if (is_full_top_needed(sh, want_h, want_fb))
     {
         w.et_full = grab(w.slot_env, env_cuts);
         w.unit = cv.take<cf>(lanes);
@@ -127,7 +127,7 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         w.f_fbr = cv.take<f64>(fb_scales);
     }
     if (sh.density_batched) carve_density_rows(w, sh, cv);
-    if (want_h or want_fb)
+    if (is_full_top_needed(sh, want_h, want_fb))
     {
         const auto slot_bytes = [&](i64 elems) -> usize
         {
@@ -173,6 +173,7 @@ auto carve_worker(Worker& w, const Shape& sh, bool want_h, bool want_fb, Carver&
         arena_accumulate(reserve, row_slots);
         arena_product({64u, 256u}, tail);
         arena_accumulate(reserve, tail);
+        reserve = std::max(reserve, slab_scratch_bytes(sh));
         auto* const scratch_base = cv.take<char>(reserve);
         w.scratch = Carver::carve(scratch_base, reserve);
     }
@@ -262,7 +263,7 @@ auto worker_setup(
     w.site_off[site_count] = off;
     w.ks_down.assign(static_cast<usize>(sh.lx - 1), {});
     w.ks_top.assign(static_cast<usize>(sh.lx - 1), {});
-    if (want_h or want_fb)
+    if (is_full_top_needed(sh, want_h, want_fb))
     {
         cu_fill_first_one<<<1, 256, 0, w.la.stream()>>>(w.unit, 1, 1, sh.lanes);
         check(cudaGetLastError());
@@ -307,7 +308,8 @@ auto worker_ensure(
     const auto has_same_shape =
         w.sh.lanes == sh.lanes and w.sh.density == sh.density
         and w.sh.density_batched == sh.density_batched and w.sh.density_cutoff == sh.density_cutoff
-        and w.sh.rangefinder == sh.rangefinder and w.sh.svd_cutoff == sh.svd_cutoff;
+        and w.sh.rangefinder == sh.rangefinder and w.sh.svd_cutoff == sh.svd_cutoff
+        and w.sh.slab_rows == sh.slab_rows;
     const auto has_same_outputs = w.want_h == want_h and w.want_fb == want_fb;
     const auto is_reusable = has_same_shape and has_same_outputs;
     if (w.arena and not is_reusable)

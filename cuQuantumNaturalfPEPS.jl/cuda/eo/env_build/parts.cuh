@@ -81,6 +81,7 @@ struct Shape
     RangefinderRoute rangefinder{};
     f64 svd_cutoff{};
     bool density_batched{};
+    int slab_rows{};
 };
 
 inline auto shape_for(const QnpepsElocConfig& cfg, int lanes, bool transposed) -> Shape
@@ -537,9 +538,6 @@ auto launch_dot(
     int dim_batch = 0
 ) -> void;
 
-auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, int dim_batch = 0)
-    -> void;
-
 inline auto fb_left_dims(Worker& w, int upper, int k) -> std::vector<int>
 {
     const auto t = BT{top_bt(w, upper, k)};
@@ -667,6 +665,7 @@ struct RunCache
     bool orig_fb{};
     bool orig_hterms{};
     bool tr_fb{};
+    bool tr_h{};
     bool orig_h{};
     Worker w;
     Worker wt;
@@ -682,6 +681,8 @@ auto cache_alloc(RunCache& state, T*& pointer, usize count) -> void
 {
     pointer = state.context_arena->take<T>(count);
 }
+
+[[nodiscard]] auto pass_shape(const RunCache& state, int lanes, bool transposed) -> Shape;
 
 auto run_cache_teardown(RunCache& state) -> void;
 

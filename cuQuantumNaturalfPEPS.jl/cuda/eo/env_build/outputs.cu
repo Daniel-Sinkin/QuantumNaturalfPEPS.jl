@@ -129,9 +129,11 @@ auto emit_o_rows(
             const auto bot = BT{bot_bt_h(w, i, c)};
             const auto hr =
                 BT{c < ly - 1 ? BT{hr_site(w, i, c), w.slot_h, hr_o_dims(w, i, c)} : unit3(w)};
-            const auto t1 = BT{bcontract(w, frame, hl, {0}, top, {0}, nullptr, 0, 0)};
-            const auto t2 = BT{bcontract(w, frame, t1, {1}, bot, {0}, nullptr, 0, 0)};
-            bcontract(w, frame, t2, {2, 4}, hr, {0, 2}, envblk, static_cast<i64>(slice), 0);
+            const auto left_top = BT{bcontract(w, frame, hl, {0}, top, {0}, nullptr, 0, 0)};
+            const auto bottom_right = BT{bcontract(w, frame, bot, {2}, hr, {2}, nullptr, 0, 0)};
+            bcontract(
+                w, frame, left_top, {1, 3}, bottom_right, {0, 2}, envblk, static_cast<i64>(slice), 0
+            );
 
             auto f_top{i > 0 ? w.f_top + static_cast<i64>(i - 1) * lanes : nullptr};
             auto f_down{i < lx - 1 ? w.f_down + static_cast<i64>(lx - i - 2) * lanes : nullptr};

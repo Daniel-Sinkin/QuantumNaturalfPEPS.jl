@@ -1,4 +1,5 @@
 struct ElocTermBuffers
+    ly::Int
     diagonal::Vector{QnpepsElocDiagonalTerm}
     diagonal_values::Vector{ComplexF64}
     piece::Vector{QnpepsElocOffDiagonalPiece}
@@ -7,7 +8,8 @@ struct ElocTermBuffers
     piece_weights::Vector{ComplexF64}
 end
 
-ElocTermBuffers() = ElocTermBuffers(
+ElocTermBuffers(ly::Integer) = ElocTermBuffers(
+    Int(ly),
     QnpepsElocDiagonalTerm[],
     ComplexF64[],
     QnpepsElocOffDiagonalPiece[],
@@ -226,8 +228,8 @@ function _moving_sites(buffers::ElocTermBuffers, piece::QnpepsElocOffDiagonalPie
     return [piece.site[position] for position in 1:site_count if is_moving[position]]
 end
 
-function _is_routable(moving::Vector{Int32}, ly::Int)::Bool
-    isempty(moving) && return false
+function _is_line_or_plaquette(moving::Vector{Int32}, ly::Int)::Bool
+    isempty(moving) && return true
     rows = div.(moving, ly)
     columns = moving .% ly
     row_span = maximum(rows) - minimum(rows)
@@ -235,27 +237,11 @@ function _is_routable(moving::Vector{Int32}, ly::Int)::Bool
     return row_span == 0 || column_span == 0 || (row_span == 1 && column_span == 1)
 end
 
-function _require_routable_support(
-    terms::OperatorTerms,
-    site_list,
-    support::Vector{Int32},
-    matrix::Matrix{ComplexF64},
-)::Nothing
-    buffers = ElocTermBuffers()
-    _push_pieces!(buffers, support, matrix)
-    for piece in buffers.piece
-        moving = _moving_sites(buffers, piece)
-        _is_routable(moving, terms.ly) && continue
-        changed = Tuple((Int(div(site, terms.ly)) + 1, Int(site % terms.ly) + 1) for site in moving)
-        throw(
-            ArgumentError(
-                "an operator on sites $(Tuple(site_list)) changes sites $changed together. " *
-                "The sites one operator changes together must lie in one row, in one column, " *
-                "or in one 2 x 2 plaquette, and a site it leaves unchanged may lie anywhere",
-            ),
-        )
-    end
-    return nothing
+function _has_piece_beyond_plaquette(buffers::ElocTermBuffers)::Bool
+    return any(
+        piece -> !_is_line_or_plaquette(_moving_sites(buffers, piece), buffers.ly),
+        buffers.piece,
+    )
 end
 
 const _PAIR_OPERATOR_SITES = 2
@@ -269,6 +255,13 @@ function _require_eloc_term_capabilities(buffers::ElocTermBuffers)::Nothing
     (has_wide_piece && !has_plaquette_operators) && throw(
         ArgumentError("the loaded CUDA library does not support operators on three or four sites"),
     )
+    has_slab_operators = (capabilities & ELOC_CAP_SLAB_OPERATORS) != 0
+    (!has_slab_operators && _has_piece_beyond_plaquette(buffers)) && throw(
+        ArgumentError(
+            "the loaded CUDA library supports only operators whose changed sites lie in one row, " *
+            "in one column, or in one 2 x 2 plaquette",
+        ),
+    )
     return nothing
 end
 
@@ -279,7 +272,7 @@ function _eloc_term_buffers(terms::OperatorTerms, config)::ElocTermBuffers
         throw(DimensionMismatch("operator terms ly does not match config"))
     Int(config.dim_phys) == ELOC_LOCAL_DIMENSION ||
         throw(ArgumentError("operator terms require dim_phys equal to two"))
-    buffers = ElocTermBuffers()
+    buffers = ElocTermBuffers(terms.ly)
     for (support, matrix) in zip(terms.supports, terms.matrices)
         _push_diagonal!(buffers, support, matrix)
         _push_pieces!(buffers, support, matrix)

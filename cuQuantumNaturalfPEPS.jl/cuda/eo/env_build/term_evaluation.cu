@@ -1,12 +1,7 @@
-#include "parts.cuh"
+#include "slab.cuh"
 
 namespace qn_eloc::env
 {
-
-auto launch_fourbody(Worker& w, int mid, const cf* cl, const cf* cr, cf* out, int dim_batch) -> void
-{
-    launch_dot(w, mid, cl, mid, cr, mid, out, dim_batch);
-}
 
 auto project_corner_indexed(
     Worker& w,
@@ -115,6 +110,28 @@ struct ChainColumns
     }
     return columns;
 }
+
+[[nodiscard]] auto widest_pair_cut(Worker& w, int top_row, int first_cut, int last_cut) -> i64
+{
+    i64 widest{};
+    const auto first = static_cast<usize>(first_cut);
+    const auto last = static_cast<usize>(last_cut);
+    for (auto cut = first; cut <= last; ++cut)
+        widest = std::max(widest, bt_elems(fb_left_dims(w, top_row, static_cast<int>(cut))));
+    return widest;
+}
+
+[[nodiscard]] auto widest_environment(
+    int first_column, int last_column, const std::function<BT(int)>& environment
+) -> i64
+{
+    i64 widest{};
+    const auto first = static_cast<usize>(first_column);
+    const auto last = static_cast<usize>(last_column);
+    for (auto column = first; column <= last; ++column)
+        widest = std::max(widest, bt_elems(environment(static_cast<int>(column)).dim));
+    return widest;
+}
 }
 
 auto eval_horizontal_compact(
@@ -212,14 +229,19 @@ auto eval_fourbody_compact(
                                       w.slot_fb,
                                       fb_right_dims(w, top_row, right_column)}
                                  : unit4(w)};
-    int mid{};
+    const auto has_inner_columns = right_column - left_column > 1;
+    const auto chain_elems = widest_pair_cut(w, top_row, left_column, right_column - 1);
+    const auto last_cut_dims = std::vector<int>{fb_left_dims(w, top_row, right_column - 1)};
+    int last_cut{};
     arena_int(
-        {static_cast<std::uint64_t>(topL.dim[2]),
-         static_cast<std::uint64_t>(piLd[2]),
-         static_cast<std::uint64_t>(pjLd[2]),
-         static_cast<std::uint64_t>(botL.dim[2])},
-        mid
+        {static_cast<std::uint64_t>(last_cut_dims[0]),
+         static_cast<std::uint64_t>(last_cut_dims[1]),
+         static_cast<std::uint64_t>(last_cut_dims[2]),
+         static_cast<std::uint64_t>(last_cut_dims[3])},
+        last_cut
     );
+    const auto top_of = [&](int column) -> BT { return top_bt(w, top_row, column); };
+    const auto bot_of = [&](int column) -> BT { return bot_bt_fb(w, top_row, column); };
 
     auto frame = Carver{w.scratch};
     auto piL{frame.take_product<cf>(
@@ -235,15 +257,15 @@ auto eval_fourbody_compact(
         {static_cast<std::uint64_t>(pjR_elems), static_cast<std::uint64_t>(active)}
     )};
     auto cl{frame.take_product<cf>(
-        {static_cast<std::uint64_t>(mid), static_cast<std::uint64_t>(active)}
+        {static_cast<std::uint64_t>(chain_elems), static_cast<std::uint64_t>(active)}
     )};
     auto cr{frame.take_product<cf>(
-        {static_cast<std::uint64_t>(mid), static_cast<std::uint64_t>(active)}
+        {static_cast<std::uint64_t>(last_cut), static_cast<std::uint64_t>(active)}
     )};
     auto f_chain{frame.take<f64>(static_cast<usize>(active))};
     const auto fb_elems = i64{std::max(bt_elems(fbL.dim), bt_elems(fbR.dim))};
-    const auto top_elems = i64{std::max(bt_elems(topL.dim), bt_elems(topR.dim))};
-    const auto bot_elems = i64{std::max(bt_elems(botL.dim), bt_elems(botR.dim))};
+    const auto top_elems = widest_environment(left_column, right_column, top_of);
+    const auto bot_elems = widest_environment(left_column, right_column, bot_of);
     auto compact_fb{frame.take_product<cf>(
         {static_cast<std::uint64_t>(fb_elems), static_cast<std::uint64_t>(active)}
     )};
@@ -253,6 +275,21 @@ auto eval_fourbody_compact(
     auto compact_bot{frame.take_product<cf>(
         {static_cast<std::uint64_t>(bot_elems), static_cast<std::uint64_t>(active)}
     )};
+    cf* chain_spare{};
+    cf* inner_pi{};
+    cf* inner_pj{};
+    if (has_inner_columns)
+    {
+        chain_spare = frame.take_product<cf>(
+            {static_cast<std::uint64_t>(chain_elems), static_cast<std::uint64_t>(active)}
+        );
+        inner_pi = frame.take_product<cf>(
+            {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(active)}
+        );
+        inner_pj = frame.take_product<cf>(
+            {static_cast<std::uint64_t>(w.slot_proj), static_cast<std::uint64_t>(active)}
+        );
+    }
 
     const auto projected_pi_l = BT{project_corner_indexed(
         w, piece, top_row, left_column, active_indices, active, piL, piL_elems
@@ -273,18 +310,45 @@ auto eval_fourbody_compact(
     const auto compact_fb_l = BT{compact_tensor(w, fbL, active_indices, active, compact_fb)};
     const auto compact_top_l = BT{compact_tensor(w, topL, active_indices, active, compact_top)};
     const auto compact_bot_l = BT{compact_tensor(w, botL, active_indices, active, compact_bot)};
-    fold_left4(
-        w,
-        frame,
-        compact_fb_l,
-        compact_top_l,
-        projected_pi_l,
-        projected_pj_l,
-        compact_bot_l,
-        cl,
-        static_cast<i64>(mid),
-        active
-    );
+    auto chain =
+        BT{cl,
+           chain_elems,
+           fold_left4(
+               w,
+               frame,
+               compact_fb_l,
+               compact_top_l,
+               projected_pi_l,
+               projected_pj_l,
+               compact_bot_l,
+               cl,
+               chain_elems,
+               active
+           )};
+    const auto inner_first = static_cast<usize>(left_column + 1);
+    const auto inner_end = static_cast<usize>(right_column);
+    for (auto inner = inner_first; inner < inner_end; ++inner)
+    {
+        const auto column = static_cast<int>(inner);
+        chain_normalize_batch(w, chain.p, bt_elems(chain.dim), chain.stride, f_chain, active);
+        const auto pi_elems = bt_elems(proj_dims(w, top_row, column));
+        const auto pj_elems = bt_elems(proj_dims(w, bottom_row, column));
+        const auto projected_pi = BT{project_corner_indexed(
+            w, piece, top_row, column, active_indices, active, inner_pi, pi_elems
+        )};
+        const auto projected_pj = BT{project_corner_indexed(
+            w, piece, bottom_row, column, active_indices, active, inner_pj, pj_elems
+        )};
+        const auto top = BT{compact_tensor(w, top_of(column), active_indices, active, compact_top)};
+        const auto bot = BT{compact_tensor(w, bot_of(column), active_indices, active, compact_bot)};
+        auto* const next = chain.p == cl ? chain_spare : cl;
+        chain =
+            BT{next,
+               chain_elems,
+               fold_left4(
+                   w, frame, chain, top, projected_pi, projected_pj, bot, next, chain_elems, active
+               )};
+    }
 
     const auto compact_fb_r = BT{compact_tensor(w, fbR, active_indices, active, compact_fb)};
     const auto compact_top_r = BT{compact_tensor(w, topR, active_indices, active, compact_top)};
@@ -298,12 +362,12 @@ auto eval_fourbody_compact(
         projected_pj_r,
         compact_bot_r,
         cr,
-        static_cast<i64>(mid),
+        static_cast<i64>(last_cut),
         active
     );
-    chain_normalize_batch(w, cl, mid, mid, f_chain, active);
-    chain_normalize_batch(w, cr, mid, mid, f_chain, active);
-    launch_fourbody(w, mid, cl, cr, value_out, active);
+    chain_normalize_batch(w, chain.p, last_cut, chain.stride, f_chain, active);
+    chain_normalize_batch(w, cr, last_cut, last_cut, f_chain, active);
+    launch_dot(w, last_cut, chain.p, chain.stride, cr, last_cut, value_out, active);
     return f_chain;
 }
 
@@ -342,6 +406,17 @@ auto eval_term_piece(
                                      : nullptr;
         f_rail_l = left_column > 0 ? f_fbl_cut(w, top_row, left_column - 1) : nullptr;
         f_rail_r = right_column < ly - 1 ? f_fbr_cut(w, top_row, right_column) : nullptr;
+    }
+    else if (piece.bucket == Bucket::slab)
+    {
+        f_chain = eval_slab_compact(w, piece, active_indices, active, value_buf);
+        if (f_chain == nullptr) return;
+        const auto bounds = moving_bounds(piece, ly);
+        f_top =
+            bounds.top_row > 0 ? w.f_top + static_cast<i64>(bounds.top_row - 1) * lanes : nullptr;
+        f_down = bounds.bottom_row < lx - 1
+                     ? w.f_down + static_cast<i64>(lx - bounds.bottom_row - 2) * lanes
+                     : nullptr;
     }
     else
     {

@@ -74,6 +74,7 @@ end
 
 const ELOC_CAP_LOCAL_OPERATORS = UInt64(2)
 const ELOC_CAP_PLAQUETTE_OPERATORS = UInt64(4)
+const ELOC_CAP_SLAB_OPERATORS = UInt64(8)
 const ELOC_LOCAL_DIMENSION = 2
 const ELOC_MAX_OPERATOR_SITES = 4
 
@@ -153,7 +154,6 @@ function add_operator!(terms::OperatorTerms, sites, matrix::AbstractMatrix)
     canonical = ComplexF64.(matrix)[permutation, permutation]
     index = get(terms.support_index, support, 0)
     combined = index == 0 ? canonical : terms.matrices[index] .+ canonical
-    _require_routable_support(terms, site_list, support, combined)
     if index == 0
         push!(terms.supports, support)
         push!(terms.matrices, combined)

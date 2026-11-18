@@ -1,4 +1,4 @@
-#include "parts.cuh"
+#include "slab.cuh"
 
 namespace qn_eloc::env
 {
@@ -431,7 +431,7 @@ auto build_fb_rails(Worker& w, int i) -> void
 auto emit_stage_c(Worker& w, bool want_h, bool want_fb) -> void
 {
     const auto& sh = w.sh;
-    if (not want_h and not want_fb) return;
+    if (not is_full_top_needed(w.sh, want_h, want_fb)) return;
     w.ks_full = w.ks_top;
     if (want_h)
     {

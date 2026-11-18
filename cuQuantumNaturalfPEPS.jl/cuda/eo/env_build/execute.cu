@@ -1,5 +1,5 @@
 #include "density_rows.cuh"
-#include "parts.cuh"
+#include "slab.cuh"
 
 #ifdef QNPEPS_GATE_HOOKS
 #    include "test/eo/panel_capture.cuh"
@@ -146,6 +146,7 @@ auto run_cache_execute(
 
     const auto orig_fb = bool{state.orig_fb};
     const auto tr_fb = bool{state.tr_fb};
+    const auto tr_h = bool{state.tr_h};
     const auto orig_h = bool{state.orig_h};
     const std::vector<std::pair<i64, int>>& wave_ranges{state.wave_ranges};
     auto done = i64{0};
@@ -169,14 +170,14 @@ auto run_cache_execute(
              static_cast<std::uint64_t>(compact_count)},
             o_wave_bytes
         );
-        auto sh = shape_for(cfg, lanes, false);
+        const auto sh = pass_shape(state, lanes, false);
         worker_ensure(w, sh, orig_h, orig_fb, peps, samples + so, stream, *state.context_arena);
         prepare_active_lists(orig_active, w.samples, sites, lanes, stream);
         worker_begin_rangefinders(w);
 #ifdef QNPEPS_GATE_HOOKS
         qnpeps::test::enter_panel_pass(qnpeps::test::PanelPass::original, done);
 #endif
-        compute_logpsi(w, logpsi_out + output_offset, orig_h or orig_fb);
+        compute_logpsi(w, logpsi_out + output_offset, is_full_top_needed(sh, orig_h, orig_fb));
 #ifdef QNPEPS_GATE_HOOKS
         qnpeps::test::leave_panel_pass();
 #endif
@@ -225,9 +226,9 @@ auto run_cache_execute(
         report_density_failure(w);
         if (not tr_terms.empty())
         {
-            auto sht = shape_for(cfg, lanes, true);
+            const auto sht = pass_shape(state, lanes, true);
             worker_ensure(
-                wt, sht, true, tr_fb, peps_t, samples_t + so, stream, *state.context_arena
+                wt, sht, tr_h, tr_fb, peps_t, samples_t + so, stream, *state.context_arena
             );
             prepare_active_lists(tr_active, wt.samples, sites, lanes, stream);
             worker_begin_rangefinders(wt);
@@ -238,7 +239,7 @@ auto run_cache_execute(
 #ifdef QNPEPS_GATE_HOOKS
             qnpeps::test::leave_panel_pass();
 #endif
-            emit_stage_c(wt, true, tr_fb);
+            emit_stage_c(wt, tr_h, tr_fb);
             for (const TermPiece& t : tr_terms)
             {
                 const auto active =

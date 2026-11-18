@@ -91,6 +91,7 @@ add_library(qnpeps SHARED
   eo/env_build/planning.cu
   eo/env_build/projection_kernels.cu
   eo/env_build/run_cache.cu
+  eo/env_build/slab.cu
   eo/env_build/tensor_network.cu
   eo/env_build/term_evaluation.cu
   eo/env_build/term_kernels.cu
@@ -136,6 +137,7 @@ set_source_files_properties(
   eo/env_build/planning.cu
   eo/env_build/projection_kernels.cu
   eo/env_build/run_cache.cu
+  eo/env_build/slab.cu
   eo/env_build/tensor_network.cu
   eo/env_build/term_evaluation.cu
   eo/env_build/term_kernels.cu

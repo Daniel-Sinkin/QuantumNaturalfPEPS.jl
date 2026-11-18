@@ -1,4 +1,4 @@
-#include "parts.cuh"
+#include "slab.cuh"
 
 namespace qn_eloc::env
 {
@@ -71,12 +71,13 @@ template <typename T>
 
 [[nodiscard]] auto wave_bytes(const RunCache& state, int lanes) -> usize
 {
-    const auto original = shape_for(state.cfg, lanes, false);
+    const auto original = pass_shape(state, lanes, false);
     const auto original_bytes =
         measured_worker_bytes(state.w.la, original, state.orig_h, state.orig_fb);
     if (state.plan.transposed.empty()) return original_bytes;
-    const auto transposed = shape_for(state.cfg, lanes, true);
-    const auto transposed_bytes = measured_worker_bytes(state.wt.la, transposed, true, state.tr_fb);
+    const auto transposed = pass_shape(state, lanes, true);
+    const auto transposed_bytes =
+        measured_worker_bytes(state.wt.la, transposed, state.tr_h, state.tr_fb);
     usize total{};
     arena_sum(original_bytes, transposed_bytes, total);
     return total;
@@ -111,6 +112,77 @@ template <typename T>
         lanes = (lanes + 1) / 2;
     return lanes;
 }
+
+struct RailNeeds
+{
+    bool horizontal{};
+    bool pair{};
+};
+
+[[nodiscard]] auto rail_needs(const std::vector<TermPiece>& pieces) noexcept -> RailNeeds
+{
+    auto needs = RailNeeds{};
+    for (const auto& piece : pieces)
+    {
+        switch (piece.bucket)
+        {
+            case Bucket::horizontal:
+            case Bucket::longer_horizontal:
+                needs.horizontal = true;
+                break;
+            case Bucket::fourbody:
+                needs.pair = true;
+                break;
+            case Bucket::slab:
+                break;
+        }
+    }
+    return needs;
+}
+
+[[nodiscard]] auto widest_slab_piece(const TermPlan& plan) -> const TermPiece*
+{
+    const TermPiece* widest{};
+    for (const auto* pieces : {&plan.original, &plan.transposed})
+    {
+        for (const auto& piece : *pieces)
+        {
+            const auto is_wider = widest == nullptr or piece.row_count > widest->row_count;
+            if (piece.bucket == Bucket::slab and is_wider) widest = &piece;
+        }
+    }
+    return widest;
+}
+
+auto require_slab_scratch(
+    const RunCache& state, i64 n_samples, int lanes, const ContextArena& context_arena
+) -> void
+{
+    const auto* widest = widest_slab_piece(state.plan);
+    if (widest == nullptr) return;
+    const auto needed = planned_wave_bytes(state, n_samples, lanes);
+    const auto budget = wave_budget(state, context_arena);
+    if (needed <= budget) return;
+    const auto piece_bytes = slab_scratch_bytes(pass_shape(state, lanes, widest->pass == 1));
+    fail(
+        Status::out_of_memory,
+        "local energy operator piece on sites {} spans {} rows and needs {} bytes of slab scratch "
+        "at {} lanes, the wave needs {} bytes and the device arena grants it {}",
+        piece_sites_text(state.cfg, *widest),
+        widest->row_count,
+        piece_bytes,
+        lanes,
+        needed,
+        budget
+    );
+}
+}
+
+auto pass_shape(const RunCache& state, int lanes, bool transposed) -> Shape
+{
+    auto shape = shape_for(state.cfg, lanes, transposed);
+    shape.slab_rows = slab_rows(transposed ? state.plan.transposed : state.plan.original);
+    return shape;
 }
 
 auto run_cache_teardown(RunCache& state) -> void
@@ -204,25 +276,28 @@ auto run_cache_setup(
         );
     }
 
-    for (const auto& piece : state.plan.original)
-        (piece.bucket == Bucket::fourbody ? state.orig_fb : state.orig_hterms) = true;
-    for (const auto& piece : state.plan.transposed)
-        if (piece.bucket == Bucket::fourbody) state.tr_fb = true;
+    const auto original_rails = rail_needs(state.plan.original);
+    const auto transposed_rails = rail_needs(state.plan.transposed);
+    state.orig_hterms = original_rails.horizontal;
+    state.orig_fb = original_rails.pair;
+    state.tr_h = transposed_rails.horizontal;
+    state.tr_fb = transposed_rails.pair;
     state.orig_h = want_o or state.orig_hterms;
     if (is_density_batched_route(cfg.truncation_route))
         state.cfg.meo = density_batched_wave_lanes(state, n_samples, context_arena);
     const auto density = cfg.truncation_route == QNPEPS_TRUNCATION_DENSITY;
     const auto lanes = density ? 1 : static_cast<int>(std::min<i64>(state.cfg.meo, n_samples));
     const auto wave_width = density ? 1 : state.cfg.meo;
-    const auto sh = shape_for(cfg, lanes, false);
+    require_slab_scratch(state, n_samples, lanes, context_arena);
+    const auto sh = pass_shape(state, lanes, false);
     worker_setup(
         state.w, sh, state.orig_h, state.orig_fb, nullptr, nullptr, state.stream, context_arena
     );
     if (not state.plan.transposed.empty())
     {
-        const auto sht = shape_for(cfg, lanes, true);
+        const auto sht = pass_shape(state, lanes, true);
         worker_setup(
-            state.wt, sht, true, state.tr_fb, nullptr, nullptr, state.stream, context_arena
+            state.wt, sht, state.tr_h, state.tr_fb, nullptr, nullptr, state.stream, context_arena
         );
     }
     upload_term_pools(state);

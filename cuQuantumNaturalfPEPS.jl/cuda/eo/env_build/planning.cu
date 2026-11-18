@@ -181,40 +181,59 @@ auto mark_moving_positions(const PieceView& view, TermPiece& piece) -> void
     return bounds;
 }
 
+namespace
+{
+inline constexpr auto k_single_row{1};
+inline constexpr auto k_row_pair{2};
+inline constexpr auto k_neighbour_length{2};
+
+[[nodiscard]] auto route_bucket(int row_count, int length) noexcept -> Bucket
+{
+    if (row_count == k_single_row)
+        return length <= k_neighbour_length ? Bucket::horizontal : Bucket::longer_horizontal;
+    if (row_count == k_row_pair) return Bucket::fourbody;
+    return Bucket::slab;
+}
+}
+
 auto classify_route(const QnpepsElocConfig& cfg, TermPiece& piece) -> bool
 {
     const auto ly = cfg.ly;
     const auto moving_count = static_cast<usize>(piece.moving_count);
     if (moving_count < 1) return false;
     const auto bounds = moving_bounds(piece, ly);
-    const auto row_span = bounds.bottom_row - bounds.top_row;
-    const auto column_span = bounds.right_column - bounds.left_column;
-    const auto is_plaquette = row_span == 1 and column_span == 1;
-    if (moving_count == 1 or row_span == 0)
-    {
-        piece.pass = 0;
-        piece.bucket = column_span <= 1 ? Bucket::horizontal : Bucket::longer_horizontal;
-    }
-    else if (column_span == 0)
-    {
-        piece.pass = 1;
-        piece.bucket = row_span <= 1 ? Bucket::horizontal : Bucket::longer_horizontal;
-    }
-    else if (is_plaquette)
-    {
-        piece.pass = 0;
-        piece.bucket = Bucket::fourbody;
-    }
-    else
-    {
-        return false;
-    }
+    const auto row_count = bounds.bottom_row - bounds.top_row + 1;
+    const auto column_count = bounds.right_column - bounds.left_column + 1;
+    piece.pass = row_count <= column_count ? 0 : 1;
+    piece.row_count = std::min(row_count, column_count);
+    piece.bucket = route_bucket(piece.row_count, std::max(row_count, column_count));
     if (piece.pass == 0) return true;
     for (auto k = 0_uz; k < static_cast<usize>(piece.local_state.site_count); ++k)
         piece.local_state.site[k] = transposed_site(piece.local_state.site[k], cfg.lx, ly);
     for (auto k = 0_uz; k < moving_count; ++k)
         piece.moving[k] = transposed_site(piece.moving[k], cfg.lx, ly);
     return true;
+}
+
+auto piece_sites_text(const QnpepsElocConfig& cfg, const TermPiece& piece) -> std::string
+{
+    auto text = std::string{};
+    for (auto k = 0_uz; k < static_cast<usize>(piece.local_state.site_count); ++k)
+    {
+        const auto pass_site = piece.local_state.site[k];
+        const auto site = piece.pass == 0 ? pass_site : transposed_site(pass_site, cfg.ly, cfg.lx);
+        if (not text.empty()) text += ' ';
+        text += std::format("({}, {})", site / cfg.ly + 1, site % cfg.ly + 1);
+    }
+    return text;
+}
+
+auto slab_rows(const std::vector<TermPiece>& pieces) noexcept -> int
+{
+    auto rows = 0;
+    for (const auto& piece : pieces)
+        if (piece.bucket == Bucket::slab) rows = std::max(rows, piece.row_count);
+    return rows;
 }
 
 auto plan_terms(const QnpepsElocConfig& cfg, const QnpepsElocTermTable& table, TermPlan& plan)

@@ -311,5 +311,6 @@ extern "C" const char* qnpeps_eloc_version(void)
 
 extern "C" uint64_t qnpeps_eloc_capabilities(void)
 {
-    return QNPEPS_ELOC_CAP_LOCAL_OPERATORS | QNPEPS_ELOC_CAP_PLAQUETTE_OPERATORS;
+    return QNPEPS_ELOC_CAP_LOCAL_OPERATORS | QNPEPS_ELOC_CAP_PLAQUETTE_OPERATORS
+           | QNPEPS_ELOC_CAP_SLAB_OPERATORS;
 }

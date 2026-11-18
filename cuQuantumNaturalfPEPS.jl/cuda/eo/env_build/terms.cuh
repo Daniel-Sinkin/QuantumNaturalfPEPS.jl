@@ -7,6 +7,7 @@
 #include "term_validation.cuh"
 
 #include <cuComplex.h>
+#include <string>
 #include <vector>
 
 namespace qn_eloc::env
@@ -20,7 +21,8 @@ enum class Bucket
 {
     horizontal,
     fourbody,
-    longer_horizontal
+    longer_horizontal,
+    slab
 };
 
 struct CuLocalState
@@ -44,6 +46,7 @@ struct TermPiece
 {
     Bucket bucket{};
     int pass{};
+    int row_count{};
     int active_slot{-1};
     CuLocalState local_state{};
     int moving_count{};
@@ -208,6 +211,11 @@ struct MovingBounds
 [[nodiscard]] auto moving_bounds(const TermPiece& piece, int ly) noexcept -> MovingBounds;
 
 [[nodiscard]] auto classify_route(const QnpepsElocConfig& cfg, TermPiece& piece) -> bool;
+
+[[nodiscard]] auto slab_rows(const std::vector<TermPiece>& pieces) noexcept -> int;
+
+[[nodiscard]] auto piece_sites_text(const QnpepsElocConfig& cfg, const TermPiece& piece)
+    -> std::string;
 
 [[nodiscard]] auto plan_terms(
     const QnpepsElocConfig& cfg, const QnpepsElocTermTable& table, TermPlan& plan
