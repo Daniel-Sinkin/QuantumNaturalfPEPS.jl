@@ -18,7 +18,7 @@ export TRUNCATION_DEFAULT, TRUNCATION_SVD, TRUNCATION_HOUSEHOLDER, TRUNCATION_DE
 export TRUNCATION_DENSITY_BATCHED, TRUNCATION_RANGEFINDER
 export QnpepsElocConfig
 export QnpepsElocDiagonalTerm, QnpepsElocOffDiagonalPiece, QnpepsElocTermTable
-export OperatorTerms, add_operator!, ELOC_CAP_LOCAL_OPERATORS
+export OperatorTerms, add_operator!, ELOC_CAP_LOCAL_OPERATORS, ELOC_CAP_PLAQUETTE_OPERATORS
 export QnpepsZipupPepsRowArgs, QnpepsZipupMpoMpsDesc, QnpepsZipupMpoMpsArgs
 export QnpepsDensitySettings, QnpepsDensityRankRecord, QnpepsDensityFilterArgs
 export QnpepsDensityWorkspaceSizes

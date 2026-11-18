@@ -3,6 +3,7 @@
 #include "term_builders.cuh"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdint>
@@ -15,6 +16,8 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+using qnpeps::operator""_uz;
 
 namespace
 {
@@ -623,6 +626,32 @@ auto x_times_x_plus_z(const Bonds& bonds) -> eo_test::TermTableBuilder
     return terms;
 }
 
+auto chirality_terms(int lx, int ly) -> eo_test::TermTableBuilder
+{
+    constexpr auto corner_count = 4_uz;
+    const auto row_count = static_cast<qnpeps::usize>(lx);
+    const auto column_count = static_cast<qnpeps::usize>(ly);
+    eo_test::TermTableBuilder terms{};
+    for (auto row = 0_uz; row + 1 < row_count; ++row)
+    {
+        for (auto col = 0_uz; col + 1 < column_count; ++col)
+        {
+            const auto site = static_cast<int>(row * column_count + col);
+            const auto corners =
+                std::array<int, corner_count>{site, site + ly, site + ly + 1, site + 1};
+            for (auto omitted = 0_uz; omitted < corner_count; ++omitted)
+            {
+                terms.add_chirality(
+                    corners[(omitted + 1) % corner_count],
+                    corners[(omitted + 2) % corner_count],
+                    corners[(omitted + 3) % corner_count]
+                );
+            }
+        }
+    }
+    return terms;
+}
+
 auto reference_terms(const std::string& name, int lx, int ly, bool& known)
     -> eo_test::TermTableBuilder
 {
@@ -632,6 +661,7 @@ auto reference_terms(const std::string& name, int lx, int ly, bool& known)
     if (name == "splus") return one_site_operator(lx * ly, 1.0, 0.0);
     if (name == "xy") return x_times_y(bonds);
     if (name == "weighted") return x_times_x_plus_z(bonds);
+    if (name == "chirality") return chirality_terms(lx, ly);
     eo_test::TermTableBuilder terms{};
     known = name == "j1j2";
     for (const auto& [a, b] : bonds)

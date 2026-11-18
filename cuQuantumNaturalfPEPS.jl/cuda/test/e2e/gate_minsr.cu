@@ -108,7 +108,7 @@ auto build_layout(int lx, int ly, int dim_bond, int dim_phys, long& compact, lon
 
 auto ck(cudaError_t e, const char* what) -> void
 {
-    if (e != cudaSuccess) std::printf("[gate_e2e] CUDA %s: %s\n", what, cudaGetErrorString(e));
+    if (e != cudaSuccess) std::printf("[gate_minsr] CUDA %s %s\n", what, cudaGetErrorString(e));
 }
 
 struct SetResult
@@ -122,7 +122,7 @@ struct SetResult
 auto set_line(const SetResult& r) -> void
 {
     std::printf(
-        "[gate_e2e] SET %-14s maxRel=%.3e worst=%s => %s\n",
+        "[gate_minsr] SET %-14s maxRel=%.3e worst=%s => %s\n",
         r.name.c_str(),
         r.max_rel,
         r.worst.empty() ? "-" : r.worst.c_str(),
@@ -212,7 +212,7 @@ auto run_case(
     qnpeps_eloc_compact_count(&lcfg, &eloc_compact);
 
     std::printf(
-        "[gate_e2e] fixture lx=%d ly=%d D=%d chi=%d n=%d meo=%d compact(e2e=%lld eloc=%lld "
+        "[gate_minsr] fixture lx=%d ly=%d D=%d chi=%d n=%d meo=%d compact(e2e=%lld eloc=%lld "
         "layout=%ld) dense(e2e=%lld layout=%ld)\n",
         lx,
         ly,
@@ -228,7 +228,7 @@ auto run_case(
     );
     if (e2e_compact != eloc_compact or e2e_compact != compact or e2e_dense != dense)
     {
-        std::printf("[gate_e2e] CASE => FAIL (layout mismatch)\n");
+        std::printf("[gate_minsr] CASE => FAIL (layout mismatch)\n");
         return 1;
     }
 
@@ -301,7 +301,7 @@ auto run_case(
     )};
     if (est != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] eloc error: %s\n", qnpeps_last_error());
+        std::printf("[gate_minsr] eloc error %s\n", qnpeps_last_error());
         return 1;
     }
 
@@ -352,7 +352,7 @@ auto run_case(
     )};
     if (s1 != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e device-rows error: %s\n", qnpeps_last_error());
+        std::printf("[gate_minsr] e2e device-rows error %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_dev = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -362,7 +362,7 @@ auto run_case(
        "d2h theta dev");
     const qnpeps::CuArray<double, 4> stats_dev{e_mean_d[0], e_mean_d[1], e_var_d, ess_d};
     std::printf(
-        "[gate_e2e] HASH one_shot theta=%016llx stats=%016llx gram=%016llx rows=%016llx\n",
+        "[gate_minsr] HASH one_shot theta=%016llx stats=%016llx gram=%016llx rows=%016llx\n",
         static_cast<unsigned long long>(
             hash_bytes(theta_dev.data(), theta_dev.size() * sizeof(cf32))
         ),
@@ -409,7 +409,7 @@ auto run_case(
     const qnpeps_status root_status{qnpeps_minsr(&root_desc, &root_args)};
     if (root_status != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] root device-rows error: %s\n", qnpeps_last_error());
+        std::printf("[gate_minsr] root device-rows error %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_root = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -421,7 +421,7 @@ auto run_case(
         root_e_mean[0], root_e_mean[1], root_e_var, root_ess
     };
     std::printf(
-        "[gate_e2e] HASH root_same_input theta=%016llx stats=%016llx\n",
+        "[gate_minsr] HASH root_same_input theta=%016llx stats=%016llx\n",
         static_cast<unsigned long long>(
             hash_bytes(theta_root.data(), theta_root.size() * sizeof(cf32))
         ),
@@ -434,7 +434,7 @@ auto run_case(
         different_words(root_stats.data(), stats_dev.data(), sizeof(root_stats), sizeof(double))
     };
     std::printf(
-        "[gate_e2e] root_vs_e2e theta_words=%zu stats_words=%zu\n",
+        "[gate_minsr] root_vs_e2e theta_words=%zu stats_words=%zu\n",
         root_theta_words,
         root_stats_words
     );
@@ -465,7 +465,7 @@ auto run_case(
     )};
     if (s2 != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e host-rows error: %s\n", qnpeps_last_error());
+        std::printf("[gate_minsr] e2e host-rows error %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_host = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -499,7 +499,7 @@ auto run_case(
     )};
     if (s2b != QNPEPS_OK)
     {
-        std::printf("[gate_e2e] e2e host-rows(default) error: %s\n", qnpeps_last_error());
+        std::printf("[gate_minsr] e2e host-rows(default) error %s\n", qnpeps_last_error());
         return 1;
     }
     auto theta_host0 = std::vector<cf32>(static_cast<std::size_t>(dense));
@@ -823,13 +823,13 @@ auto run_case(
         )
     };
     std::printf(
-        "[gate_e2e] EXACT ctx_first theta_words=%zu stats_words=%zu status=%d\n",
+        "[gate_minsr] EXACT ctx_first theta_words=%zu stats_words=%zu status=%d\n",
         ctx_first_theta_diff,
         ctx_first_stats_diff,
         static_cast<int>(ctx_first_status)
     );
     std::printf(
-        "[gate_e2e] EXACT ctx_changed theta_words=%zu stats_words=%zu status=%d "
+        "[gate_minsr] EXACT ctx_changed theta_words=%zu stats_words=%zu status=%d "
         "fresh_input_words=%zu fresh_output_words=%zu\n",
         ctx_changed_theta_diff,
         ctx_changed_stats_diff,
@@ -838,7 +838,7 @@ auto run_case(
         freshness_theta_words + freshness_stats_words
     );
     std::printf(
-        "[gate_e2e] EXACT ctx_rebuilt theta_words=%zu stats_words=%zu status=%d\n",
+        "[gate_minsr] EXACT ctx_rebuilt theta_words=%zu stats_words=%zu status=%d\n",
         ctx_rebuilt_theta_diff,
         ctx_rebuilt_stats_diff,
         static_cast<int>(ctx_rebuilt_status)
@@ -1241,7 +1241,7 @@ auto run_case(
         if (r.name == "theta_dot") max_td = r.max_rel;
     }
     std::printf(
-        "[gate_e2e] CASE lx=%d ly=%d D=%d chi=%d n=%d meo=%d tolTd=%.1e ess=%.4f sets_failed=%d "
+        "[gate_minsr] CASE lx=%d ly=%d D=%d chi=%d n=%d meo=%d tolTd=%.1e ess=%.4f sets_failed=%d "
         "maxTd=%.3e => %s\n",
         lx,
         ly,

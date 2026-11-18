@@ -188,6 +188,162 @@ auto run_validation_cases() -> void
     );
 }
 
+auto flips(const std::vector<int>& sites) -> eo_test::TermTableBuilder
+{
+    auto terms = eo_test::TermTableBuilder{};
+    terms.add_reflection(sites, {}, {0.5, -0.25}, -1, -1);
+    return terms;
+}
+
+auto run_line_cases() -> void
+{
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 1, 2}), out);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_row_triple",
+            ok and out.original.size() == 1 and out.transposed.empty()
+                and piece.bucket == Bucket::longer_horizontal and piece.moving_count == 3
+                and piece.is_one_hot
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 1, 2, 3}), out, 2, 4);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_row_quadruple",
+            ok and out.original.size() == 1 and piece.bucket == Bucket::longer_horizontal
+                and piece.moving_count == 4
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({0, 2, 3}), out, 2, 4);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_row_triple_with_gap",
+            ok and out.original.size() == 1 and piece.bucket == Bucket::longer_horizontal
+                and piece.moving_count == 3
+                and qn_eloc::env::support_position(piece, 1) == qn_eloc::env::k_keep_position
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({4, 0, 2}), out, 3, 2);
+        const auto piece = first_piece(out.transposed);
+        record(
+            "plan_column_triple_transposed",
+            ok and out.original.empty() and out.transposed.size() == 1 and piece.pass == 1
+                and piece.bucket == Bucket::longer_horizontal and piece.moving_count == 3
+                and piece.local_state.site[0] == 2 and piece.local_state.site[1] == 0
+                and piece.local_state.site[2] == 1
+        );
+    }
+}
+
+auto has_plaquette_at(const qn_eloc::env::TermPiece& piece, int ly, int row, int column) -> bool
+{
+    const auto bounds = qn_eloc::env::moving_bounds(piece, ly);
+    const auto has_rows = bounds.top_row == row and bounds.bottom_row == row + 1;
+    const auto has_columns = bounds.left_column == column and bounds.right_column == column + 1;
+    return has_rows and has_columns;
+}
+
+auto all_fourbody(const TermPlan& out) -> bool
+{
+    auto is_fourbody = not out.original.empty() and out.transposed.empty();
+    for (const auto& piece : out.original)
+        is_fourbody = is_fourbody and piece.bucket == Bucket::fourbody;
+    return is_fourbody;
+}
+
+auto run_plaquette_cases() -> void
+{
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({1, 2, 5}), out);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_triangle_fourbody",
+            ok and all_fourbody(out) and piece.moving_count == 3 and piece.is_one_hot
+                and has_plaquette_at(piece, 3, 0, 1)
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({4, 0, 3, 1}), out);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_plaquette_fourbody",
+            ok and all_fourbody(out) and piece.moving_count == 4
+                and has_plaquette_at(piece, 3, 0, 0)
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(flips({3, 4}), out, 3, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_row_pair_stays_horizontal",
+            ok and out.original.size() == 1 and piece.bucket == Bucket::horizontal
+        );
+    }
+    {
+        auto out = TermPlan{};
+        const auto ok = plan(heisenberg(2, 4), out, 3, 3);
+        const auto piece = first_piece(out.original);
+        record(
+            "plan_antidiagonal_origin",
+            ok and all_fourbody(out) and piece.moving_count == 2
+                and has_plaquette_at(piece, 3, 0, 1)
+        );
+    }
+    {
+        auto terms = eo_test::TermTableBuilder{};
+        terms.add_chirality(4, 1, 0);
+        auto out = TermPlan{};
+        const auto ok = plan(terms, out);
+        auto has_three_moving = false;
+        for (const auto& piece : out.original)
+            has_three_moving = has_three_moving or piece.moving_count == 3;
+        record(
+            "plan_chirality_triangle",
+            ok and all_fourbody(out) and out.original.size() == 4 and has_three_moving
+                and out.diagonal.empty()
+        );
+    }
+    {
+        constexpr auto plaquette_states = std::size_t{16};
+        auto matrix = std::vector<eo_test::Complex>(plaquette_states * plaquette_states);
+        for (auto entry = std::size_t{0}; entry < matrix.size(); ++entry)
+            matrix[entry] = eo_test::Complex{1.0 + 0.125 * static_cast<double>(entry % 7), -0.5};
+        auto terms = eo_test::TermTableBuilder{};
+        terms.add_matrix({0, 1, 3, 4}, matrix);
+        auto out = TermPlan{};
+        const auto ok = plan(terms, out);
+        record(
+            "plan_weighted_plaquette",
+            ok and all_fourbody(out) and out.original.size() == 8
+                and not out.original.front().is_one_hot and out.original.front().moving_count == 4
+                and out.original.front().active_slot < 0
+        );
+    }
+    {
+        auto out = TermPlan{};
+        record("plan_reject_triple_beyond_plaquette", not plan(flips({0, 1, 5}), out));
+        record("plan_reject_triple_over_three_rows", not plan(flips({0, 1, 4}), out, 3, 2));
+        record(
+            "routable_accepts_plaquette", qnpeps::eo::is_routable(2, 3, flips({0, 1, 3, 4}).table())
+        );
+        record(
+            "routable_rejects_wide_quadruple",
+            not qnpeps::eo::is_routable(2, 3, flips({0, 1, 2, 5}).table())
+        );
+    }
+}
+
 auto run_plan_cases() -> void
 {
     {
@@ -310,6 +466,8 @@ auto run_plan_cases() -> void
                 and piece.is_one_hot
         );
     }
+    run_line_cases();
+    run_plaquette_cases();
 }
 }
 

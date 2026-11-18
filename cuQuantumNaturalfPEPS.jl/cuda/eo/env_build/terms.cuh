@@ -195,7 +195,17 @@ __global__ auto cu_reduce_term_indexed(CuReduceTermArgs args) -> void;
 
 __global__ auto cu_build_active_lists(CuActiveListArgs args) -> void;
 
+struct MovingBounds
+{
+    int top_row{};
+    int bottom_row{};
+    int left_column{};
+    int right_column{};
+};
+
 [[nodiscard]] auto support_position(const TermPiece& piece, int site) noexcept -> int;
+
+[[nodiscard]] auto moving_bounds(const TermPiece& piece, int ly) noexcept -> MovingBounds;
 
 [[nodiscard]] auto classify_route(const QnpepsElocConfig& cfg, TermPiece& piece) -> bool;
 

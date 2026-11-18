@@ -4,6 +4,7 @@
 #include "dans_qnpeps_eloc.h"
 
 #include <algorithm>
+#include <array>
 #include <complex>
 #include <cstdint>
 #include <vector>
@@ -13,6 +14,42 @@ namespace eo_test
 using Complex = std::complex<double>;
 
 inline constexpr int k_spin_states{2};
+inline constexpr std::size_t k_triangle_states{8};
+
+using PauliMatrix = std::array<Complex, 4>;
+
+inline const auto k_pauli = std::array<PauliMatrix, 3>{
+    PauliMatrix{0.0, 1.0, 1.0, 0.0},
+    PauliMatrix{0.0, Complex{0.0, -1.0}, Complex{0.0, 1.0}, 0.0},
+    PauliMatrix{1.0, 0.0, 0.0, -1.0},
+};
+
+[[nodiscard]] inline auto chirality_matrix() -> std::vector<Complex>
+{
+    const auto cyclic = std::array<std::array<int, 3>, 3>{{{0, 1, 2}, {1, 2, 0}, {2, 0, 1}}};
+    auto matrix = std::vector<Complex>(k_triangle_states * k_triangle_states, 0.0);
+    for (const auto& order : cyclic)
+    {
+        for (const auto sign : {1.0, -1.0})
+        {
+            const auto& first = k_pauli[static_cast<std::size_t>(order[0])];
+            const auto& second =
+                k_pauli[static_cast<std::size_t>(sign > 0.0 ? order[1] : order[2])];
+            const auto& third = k_pauli[static_cast<std::size_t>(sign > 0.0 ? order[2] : order[1])];
+            for (auto row = std::size_t{0}; row < k_triangle_states; ++row)
+            {
+                for (auto col = std::size_t{0}; col < k_triangle_states; ++col)
+                {
+                    const auto entry = first[(row >> 2) * 2 + (col >> 2)]
+                                       * second[((row >> 1) & 1u) * 2 + ((col >> 1) & 1u)]
+                                       * third[(row & 1u) * 2 + (col & 1u)];
+                    matrix[row * k_triangle_states + col] += sign * entry;
+                }
+            }
+        }
+    }
+    return matrix;
+}
 
 class TermTableBuilder
 {
@@ -112,6 +149,63 @@ class TermTableBuilder
     {
         add_zz(site_a, site_b, coupling);
         add_exchange(site_a, site_b, 2.0 * coupling);
+    }
+
+    auto add_matrix(const std::vector<int>& sites, const std::vector<Complex>& matrix) -> void
+    {
+        const auto site_count = sites.size();
+        const auto state_count = std::size_t{1} << site_count;
+        auto diagonal = std::vector<Complex>(state_count);
+        for (auto state = std::size_t{0}; state < state_count; ++state)
+            diagonal[state] = matrix[state * state_count + state];
+        const auto is_zero = [](const Complex& value) { return value == 0.0; };
+        if (not std::all_of(diagonal.begin(), diagonal.end(), is_zero))
+            add_diagonal(sites, diagonal);
+        const auto prefix_count = state_count / k_spin_states;
+        for (auto prefix = std::size_t{0}; prefix < prefix_count; ++prefix)
+        {
+            auto active = std::vector<std::uint8_t>(state_count, 0);
+            auto coefficients = std::vector<Complex>(state_count, 0.0);
+            auto weights = std::vector<Complex>(state_count * site_count * k_spin_states, 0.0);
+            for (auto state = std::size_t{0}; state < state_count; ++state)
+            {
+                const auto slot = [&](std::size_t position)
+                { return (state * site_count + position) * k_spin_states; };
+                auto has_target = false;
+                for (auto last = std::size_t{0}; last < k_spin_states; ++last)
+                {
+                    const auto target = prefix * k_spin_states + last;
+                    if (target == state) continue;
+                    const auto entry = matrix[state * state_count + target];
+                    weights[slot(site_count - 1) + last] = entry;
+                    has_target = has_target or entry != 0.0;
+                }
+                if (not has_target)
+                {
+                    std::fill_n(
+                        weights.begin() + static_cast<std::ptrdiff_t>(slot(0)),
+                        site_count * k_spin_states,
+                        0.0
+                    );
+                    continue;
+                }
+                active[state] = 1;
+                coefficients[state] = 1.0;
+                for (auto position = std::size_t{0}; position + 1 < site_count; ++position)
+                {
+                    const auto value = (prefix >> (site_count - 2 - position)) & 1u;
+                    weights[slot(position) + value] = 1.0;
+                }
+            }
+            const auto is_set = [](std::uint8_t flag) { return flag != 0; };
+            if (std::any_of(active.begin(), active.end(), is_set))
+                add_piece(sites, active, coefficients, weights);
+        }
+    }
+
+    auto add_chirality(int site_a, int site_b, int site_c) -> void
+    {
+        add_matrix({site_a, site_b, site_c}, chirality_matrix());
     }
 
     [[nodiscard]] auto table() const -> QnpepsElocTermTable

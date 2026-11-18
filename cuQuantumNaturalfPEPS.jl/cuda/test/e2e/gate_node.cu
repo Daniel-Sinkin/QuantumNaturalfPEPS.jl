@@ -1299,7 +1299,12 @@ auto case_e(const Fix& f, int gpus, int ns, std::int64_t dim_batch, double rel, 
         const qnpeps_status s2{node_step_capture(n, ns, rel, abs_cut, f.dense, f.sites, o2)};
         const bool dead_ok{s1 == QNPEPS_ERR_OOM and s2 == QNPEPS_ERR_OOM};
         std::snprintf(
-            note, sizeof(note), "step1=%s step2=%s", qnpeps_last_error(), qnpeps_last_error()
+            note,
+            sizeof(note),
+            "step1=%d step2=%d error=%s",
+            static_cast<int>(s1),
+            static_cast<int>(s2),
+            qnpeps_last_error()
         );
         set_line("e_oom_step_cleanly_dead", dead_ok, note);
         if (not dead_ok) ++fails;

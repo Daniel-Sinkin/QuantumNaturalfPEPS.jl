@@ -15,6 +15,18 @@ const PAULI_Z = ComplexF64[1 0; 0 -1]
 const EXCHANGE = kron(PAULI_X, PAULI_X) .+ kron(PAULI_Y, PAULI_Y) .+ kron(PAULI_Z, PAULI_Z)
 const DM_Z = kron(PAULI_X, PAULI_Y) .- kron(PAULI_Y, PAULI_X)
 
+const PAULIS = (PAULI_X, PAULI_Y, PAULI_Z)
+const LEVI_CIVITA = (
+    (1, 2, 3, 1.0),
+    (2, 3, 1, 1.0),
+    (3, 1, 2, 1.0),
+    (1, 3, 2, -1.0),
+    (3, 2, 1, -1.0),
+    (2, 1, 3, -1.0),
+)
+const CHIRALITY =
+    sum(sign .* kron(PAULIS[i], PAULIS[j], PAULIS[k]) for (i, j, k, sign) in LEVI_CIVITA)
+
 function nearest_neighbor_bonds(lx, ly)
     horizontal = [((row, col), (row, col + 1)) for row in 1:lx for col in 1:(ly-1)]
     vertical = [((row, col), (row + 1, col)) for row in 1:(lx-1) for col in 1:ly]
@@ -45,6 +57,33 @@ function perturbed_heisenberg(lx, ly, strength)::OperatorTerms
     end
     long_range = (strength * LONG_RANGE_COUPLING) .* kron(PAULI_X, PAULI_X)
     add_operator!(terms, long_range_pair(lx, ly), long_range)
+    return terms
+end
+
+function plaquette_triangles(lx, ly)
+    triangles = NTuple{3,NTuple{2,Int}}[]
+    for row in 1:(lx-1), col in 1:(ly-1)
+        corners = ((row, col), (row + 1, col), (row + 1, col + 1), (row, col + 1))
+        for omitted in 0:3
+            push!(triangles, ntuple(k -> corners[mod(omitted + k, 4)+1], 3))
+        end
+    end
+    return triangles
+end
+
+function chirality_terms(lx, ly; exchanged::Bool=false)::OperatorTerms
+    terms = OperatorTerms(lx, ly)
+    for (a, b, c) in plaquette_triangles(lx, ly)
+        add_operator!(terms, exchanged ? (b, a, c) : (a, b, c), CHIRALITY)
+    end
+    return terms
+end
+
+function chirality_from_products(lx, ly)::OperatorTerms
+    terms = OperatorTerms(lx, ly)
+    for (a, b, c) in plaquette_triangles(lx, ly), (i, j, k, sign) in LEVI_CIVITA
+        add_operator!(terms, (c, a, b), sign .* kron(PAULIS[k], PAULIS[i], PAULIS[j]))
+    end
     return terms
 end
 
@@ -81,6 +120,16 @@ function custom_operators_example(arguments=ARGS)::Nothing
     println("[custom_operators] linearity deviation $linearity_deviation")
     linearity_deviation <= OPERATOR_TOLERANCE ||
         error("perturbation energies deviate from linearity by $linearity_deviation")
+
+    chirality = energies(chirality_terms(lx, ly))
+    exchanged = energies(chirality_terms(lx, ly; exchanged=true))
+    from_products = energies(chirality_from_products(lx, ly))
+    chirality_deviation =
+        max(maximum(abs.(exchanged .+ chirality)), maximum(abs.(from_products .- chirality)))
+    println("[custom_operators] chirality energies $(value_preview(chirality))")
+    println("[custom_operators] chirality deviation $chirality_deviation")
+    chirality_deviation <= OPERATOR_TOLERANCE ||
+        error("chirality energies deviate from their exchange or products by $chirality_deviation")
 
     step = vmc_step!(
         tensors;

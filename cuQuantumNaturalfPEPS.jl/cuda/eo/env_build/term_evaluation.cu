@@ -186,37 +186,32 @@ auto eval_fourbody_compact(
     Worker& w, const TermPiece& piece, const int* active_indices, int active, cf* value_out
 ) -> f64*
 {
-    const auto& sh = w.sh;
-    const auto ly = int{sh.ly};
-    const auto r0 = int{piece.moving[0] / ly};
-    const auto c0 = int{piece.moving[0] % ly};
-    const auto r1 = int{piece.moving[1] / ly};
-    const auto c1 = int{piece.moving[1] % ly};
-    const auto minr = int{std::min(r0, r1)};
-    const auto maxr = int{std::max(r0, r1)};
-    const auto miny = int{std::min(c0, c1)};
-    const auto maxy = int{std::max(c0, c1)};
-    const auto upper = int{minr};
+    const auto ly = w.sh.ly;
+    const auto [top_row, bottom_row, left_column, right_column] = moving_bounds(piece, ly);
 
-    const auto piLd = std::vector<int>{proj_dims(w, minr, miny)};
-    const auto pjLd = std::vector<int>{proj_dims(w, maxr, miny)};
-    const auto piRd = std::vector<int>{proj_dims(w, minr, maxy)};
-    const auto pjRd = std::vector<int>{proj_dims(w, maxr, maxy)};
+    const auto piLd = std::vector<int>{proj_dims(w, top_row, left_column)};
+    const auto pjLd = std::vector<int>{proj_dims(w, bottom_row, left_column)};
+    const auto piRd = std::vector<int>{proj_dims(w, top_row, right_column)};
+    const auto pjRd = std::vector<int>{proj_dims(w, bottom_row, right_column)};
     const auto piL_elems = i64{bt_elems(piLd)};
     const auto pjL_elems = i64{bt_elems(pjLd)};
     const auto piR_elems = i64{bt_elems(piRd)};
     const auto pjR_elems = i64{bt_elems(pjRd)};
 
-    const auto topL = BT{top_bt(w, upper, miny)};
-    const auto botL = BT{bot_bt_fb(w, upper, miny)};
-    const auto topR = BT{top_bt(w, upper, maxy)};
-    const auto botR = BT{bot_bt_fb(w, upper, maxy)};
+    const auto topL = BT{top_bt(w, top_row, left_column)};
+    const auto botL = BT{bot_bt_fb(w, top_row, left_column)};
+    const auto topR = BT{top_bt(w, top_row, right_column)};
+    const auto botR = BT{bot_bt_fb(w, top_row, right_column)};
     const auto fbL =
-        BT{miny > 0 ? BT{fbl_site(w, upper, miny - 1), w.slot_fb, fb_left_dims(w, upper, miny - 1)}
-                    : unit4(w)};
+        BT{left_column > 0 ? BT{fbl_site(w, top_row, left_column - 1),
+                                w.slot_fb,
+                                fb_left_dims(w, top_row, left_column - 1)}
+                           : unit4(w)};
     const auto fbR =
-        BT{maxy < ly - 1 ? BT{fbr_site(w, upper, maxy), w.slot_fb, fb_right_dims(w, upper, maxy)}
-                         : unit4(w)};
+        BT{right_column < ly - 1 ? BT{fbr_site(w, top_row, right_column),
+                                      w.slot_fb,
+                                      fb_right_dims(w, top_row, right_column)}
+                                 : unit4(w)};
     int mid{};
     arena_int(
         {static_cast<std::uint64_t>(topL.dim[2]),
@@ -259,14 +254,18 @@ auto eval_fourbody_compact(
         {static_cast<std::uint64_t>(bot_elems), static_cast<std::uint64_t>(active)}
     )};
 
-    const auto projected_pi_l =
-        BT{project_corner_indexed(w, piece, minr, miny, active_indices, active, piL, piL_elems)};
-    const auto projected_pj_l =
-        BT{project_corner_indexed(w, piece, maxr, miny, active_indices, active, pjL, pjL_elems)};
-    const auto projected_pi_r =
-        BT{project_corner_indexed(w, piece, minr, maxy, active_indices, active, piR, piR_elems)};
-    const auto projected_pj_r =
-        BT{project_corner_indexed(w, piece, maxr, maxy, active_indices, active, pjR, pjR_elems)};
+    const auto projected_pi_l = BT{project_corner_indexed(
+        w, piece, top_row, left_column, active_indices, active, piL, piL_elems
+    )};
+    const auto projected_pj_l = BT{project_corner_indexed(
+        w, piece, bottom_row, left_column, active_indices, active, pjL, pjL_elems
+    )};
+    const auto projected_pi_r = BT{project_corner_indexed(
+        w, piece, top_row, right_column, active_indices, active, piR, piR_elems
+    )};
+    const auto projected_pj_r = BT{project_corner_indexed(
+        w, piece, bottom_row, right_column, active_indices, active, pjR, pjR_elems
+    )};
     usize f_chain_bytes{};
     arena_product({sizeof(f64), static_cast<std::uint64_t>(active)}, f_chain_bytes);
     check(cudaMemsetAsync(f_chain, 0, f_chain_bytes, w.la.stream()));
@@ -337,18 +336,12 @@ auto eval_term_piece(
     {
         f_chain = eval_fourbody_compact(w, piece, active_indices, active, value_buf);
         if (f_chain == nullptr) return;
-        const auto r0 = int{piece.moving[0] / ly};
-        const auto r1 = int{piece.moving[1] / ly};
-        const auto minr = int{std::min(r0, r1)};
-        const auto maxr = int{std::max(r0, r1)};
-        const auto c0 = int{piece.moving[0] % ly};
-        const auto c1 = int{piece.moving[1] % ly};
-        const auto miny = int{std::min(c0, c1)};
-        const auto maxy = int{std::max(c0, c1)};
-        f_top = minr > 0 ? w.f_top + static_cast<i64>(minr - 1) * lanes : nullptr;
-        f_down = maxr < lx - 1 ? w.f_down + static_cast<i64>(lx - maxr - 2) * lanes : nullptr;
-        f_rail_l = miny > 0 ? f_fbl_cut(w, minr, miny - 1) : nullptr;
-        f_rail_r = maxy < ly - 1 ? f_fbr_cut(w, minr, maxy) : nullptr;
+        const auto [top_row, bottom_row, left_column, right_column] = moving_bounds(piece, ly);
+        f_top = top_row > 0 ? w.f_top + static_cast<i64>(top_row - 1) * lanes : nullptr;
+        f_down = bottom_row < lx - 1 ? w.f_down + static_cast<i64>(lx - bottom_row - 2) * lanes
+                                     : nullptr;
+        f_rail_l = left_column > 0 ? f_fbl_cut(w, top_row, left_column - 1) : nullptr;
+        f_rail_r = right_column < ly - 1 ? f_fbr_cut(w, top_row, right_column) : nullptr;
     }
     else
     {

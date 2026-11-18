@@ -73,8 +73,9 @@ struct QnpepsElocTermTable
 end
 
 const ELOC_CAP_LOCAL_OPERATORS = UInt64(2)
+const ELOC_CAP_PLAQUETTE_OPERATORS = UInt64(4)
 const ELOC_LOCAL_DIMENSION = 2
-const ELOC_MAX_OPERATOR_SITES = 2
+const ELOC_MAX_OPERATOR_SITES = 4
 
 struct OperatorTerms
     lx::Int
@@ -117,31 +118,48 @@ function _linear_site(terms::OperatorTerms, site::Tuple{Integer,Integer})::Int32
     return Int32((row - 1) * terms.ly + (col - 1))
 end
 
-const _SWAPPED_PAIR_ORDER = [1, 3, 2, 4]
+function _state_values(state::Integer, site_count::Integer)::Vector{Int}
+    return [
+        Int(div(state, ELOC_LOCAL_DIMENSION^(site_count - position)) % ELOC_LOCAL_DIMENSION) for
+        position in 1:site_count
+    ]
+end
+
+function _site_order_permutation(order::Vector{Int})::Vector{Int}
+    count = length(order)
+    states = ELOC_LOCAL_DIMENSION^count
+    place_values = [ELOC_LOCAL_DIMENSION^(count - original) for original in order]
+    permutation = Vector{Int}(undef, states)
+    for state in 0:(states-1)
+        permutation[state+1] = sum(_state_values(state, count) .* place_values) + 1
+    end
+    return permutation
+end
 
 function add_operator!(terms::OperatorTerms, sites, matrix::AbstractMatrix)
     site_list = _operator_sites(sites)
     count = length(site_list)
     1 <= count <= ELOC_MAX_OPERATOR_SITES ||
-        throw(ArgumentError("an operator acts on one or two sites"))
+        throw(ArgumentError("an operator acts on 1 to $ELOC_MAX_OPERATOR_SITES sites"))
     states = ELOC_LOCAL_DIMENSION^count
     size(matrix) == (states, states) ||
         throw(DimensionMismatch("an operator on $count site(s) is a $states x $states matrix"))
     all(isfinite, matrix) || throw(ArgumentError("operator entries must be finite"))
     linear = [_linear_site(terms, site) for site in site_list]
     allunique(linear) || throw(ArgumentError("operator sites must be distinct"))
-    canonical = ComplexF64.(matrix)
-    if count == 2 && linear[1] > linear[2]
-        reverse!(linear)
-        canonical = canonical[_SWAPPED_PAIR_ORDER, _SWAPPED_PAIR_ORDER]
-    end
-    index = get(terms.support_index, linear, 0)
+    order = sortperm(linear)
+    support = linear[order]
+    permutation = _site_order_permutation(order)
+    canonical = ComplexF64.(matrix)[permutation, permutation]
+    index = get(terms.support_index, support, 0)
+    combined = index == 0 ? canonical : terms.matrices[index] .+ canonical
+    _require_routable_support(terms, site_list, support, combined)
     if index == 0
-        push!(terms.supports, linear)
-        push!(terms.matrices, canonical)
-        terms.support_index[linear] = length(terms.supports)
+        push!(terms.supports, support)
+        push!(terms.matrices, combined)
+        terms.support_index[support] = length(terms.supports)
     else
-        terms.matrices[index] .+= canonical
+        terms.matrices[index] = combined
     end
     return terms
 end

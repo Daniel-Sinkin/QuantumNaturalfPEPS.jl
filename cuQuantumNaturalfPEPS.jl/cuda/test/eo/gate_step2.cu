@@ -731,7 +731,10 @@ auto run_case(
         if (st4 != QNPEPS_OK or st8 != QNPEPS_OK)
         {
             std::printf(
-                "[gate2]   E_wave device error: %s / %s\n", qnpeps_last_error(), qnpeps_last_error()
+                "[gate2]   E_wave device error %s status4=%d status8=%d\n",
+                qnpeps_last_error(),
+                static_cast<int>(st4),
+                static_cast<int>(st8)
             );
             r.fail = 1;
         }

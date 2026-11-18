@@ -159,25 +159,37 @@ auto mark_moving_positions(const PieceView& view, TermPiece& piece) -> void
     return k_keep_position;
 }
 
+[[nodiscard]] auto moving_bounds(const TermPiece& piece, int ly) noexcept -> MovingBounds
+{
+    const auto first_row = piece.moving[0] / ly;
+    const auto first_column = piece.moving[0] % ly;
+    auto bounds = MovingBounds{
+        .top_row = first_row,
+        .bottom_row = first_row,
+        .left_column = first_column,
+        .right_column = first_column,
+    };
+    for (auto k = 0_uz; k < static_cast<usize>(piece.moving_count); ++k)
+    {
+        const auto row = piece.moving[k] / ly;
+        const auto column = piece.moving[k] % ly;
+        bounds.top_row = std::min(bounds.top_row, row);
+        bounds.bottom_row = std::max(bounds.bottom_row, row);
+        bounds.left_column = std::min(bounds.left_column, column);
+        bounds.right_column = std::max(bounds.right_column, column);
+    }
+    return bounds;
+}
+
 auto classify_route(const QnpepsElocConfig& cfg, TermPiece& piece) -> bool
 {
     const auto ly = cfg.ly;
     const auto moving_count = static_cast<usize>(piece.moving_count);
     if (moving_count < 1) return false;
-    auto min_row = piece.moving[0] / ly;
-    auto max_row = min_row;
-    auto min_column = piece.moving[0] % ly;
-    auto max_column = min_column;
-    for (auto k = 0_uz; k < moving_count; ++k)
-    {
-        min_row = std::min(min_row, piece.moving[k] / ly);
-        max_row = std::max(max_row, piece.moving[k] / ly);
-        min_column = std::min(min_column, piece.moving[k] % ly);
-        max_column = std::max(max_column, piece.moving[k] % ly);
-    }
-    const auto row_span = max_row - min_row;
-    const auto column_span = max_column - min_column;
-    const auto is_plaquette_diagonal = row_span == 1 and column_span == 1 and moving_count == 2;
+    const auto bounds = moving_bounds(piece, ly);
+    const auto row_span = bounds.bottom_row - bounds.top_row;
+    const auto column_span = bounds.right_column - bounds.left_column;
+    const auto is_plaquette = row_span == 1 and column_span == 1;
     if (moving_count == 1 or row_span == 0)
     {
         piece.pass = 0;
@@ -188,7 +200,7 @@ auto classify_route(const QnpepsElocConfig& cfg, TermPiece& piece) -> bool
         piece.pass = 1;
         piece.bucket = row_span <= 1 ? Bucket::horizontal : Bucket::longer_horizontal;
     }
-    else if (is_plaquette_diagonal)
+    else if (is_plaquette)
     {
         piece.pass = 0;
         piece.bucket = Bucket::fourbody;
