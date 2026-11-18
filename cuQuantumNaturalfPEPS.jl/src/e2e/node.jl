@@ -2,6 +2,7 @@ mutable struct VMCContext
     handle::Ptr{Cvoid}
     config::QnpepsE2eConfig
     ns_capacity::Int
+    ns_ahead::Int
     dense::Int
     compact::Int
     sites::Int
@@ -42,6 +43,7 @@ function VMCContext(
         handle,
         config,
         Int(ns_capacity),
+        Int(ns_ahead),
         dense_count(config),
         compact_count(config),
         Int(config.lx) * Int(config.ly),
@@ -80,6 +82,23 @@ function _validate_node_samples(context::VMCContext, n_samples::Integer)
     2 <= n_samples <= context.ns_capacity ||
         throw(ArgumentError("n_samples must be between 2 and $(context.ns_capacity)"))
     return Int(n_samples)
+end
+
+const _MAX_REDRAWS = 16
+
+function _validate_redraw(redraw_below::Real, redraw_max::Integer, ns_ahead::Integer)
+    0 <= redraw_below <= 1 ||
+        throw(ArgumentError("redraw_below must be between 0 and 1 (got $redraw_below)"))
+    redraw_max >= 0 || throw(ArgumentError("redraw_max must be nonnegative (got $redraw_max)"))
+    redraw_max <= _MAX_REDRAWS ||
+        throw(ArgumentError("redraw_max must be at most $_MAX_REDRAWS (got $redraw_max)"))
+    redraw_below == 0 || ns_ahead == 0 || throw(
+        ArgumentError(
+            "redraw_below needs a context with ns_ahead 0 (got ns_ahead $ns_ahead), " *
+            "the first draw would consume samples predrawn on an earlier state",
+        ),
+    )
+    return Float64(redraw_below), Int(redraw_max)
 end
 
 function submit_peps!(context::VMCContext, peps::CuArray{ComplexF32})
@@ -161,6 +180,9 @@ function _vmc_step_node!(
     want_logpsi::Bool,
     want_e_loc::Bool,
     want_o_rows::Bool,
+    want_weights::Bool,
+    redraw_below::Real,
+    redraw_max::Integer,
 )
     sample_count = max(Int(n_samples), 1)
     dim_batch = config.sample_batch > 0 ? Int(config.sample_batch) : min(sample_count, 2048)
@@ -187,6 +209,9 @@ function _vmc_step_node!(
             want_logpsi,
             want_e_loc,
             want_o_rows,
+            want_weights,
+            redraw_below,
+            redraw_max,
         )
     finally
         close(context)
@@ -204,6 +229,10 @@ function _vmc_step_node!(
     want_logpsi && (output = merge(output, (logpsi=_pack_complex(Array(result.logpsi)),)))
     want_e_loc && (output = merge(output, (e_loc=_pack_complex(Array(result.e_loc)),)))
     want_o_rows && (output = merge(output, (o_rows=result.o_rows,)))
+    want_weights && (output = merge(output, (weights=result.weights,)))
+    if haskey(result, :draws)
+        output = merge(output, (draws=result.draws, draw_ess=result.draw_ess))
+    end
     return output
 end
 
@@ -219,22 +248,52 @@ function vmc_direction!(
     want_e_loc::Bool=false,
     want_o_rows::Bool=false,
     want_epoch::Bool=false,
+    want_weights::Bool=false,
+    redraw_below::Real=0,
+    redraw_max::Integer=2,
 )
-    handle = _require_open(context)
+    _require_open(context)
     context.submitted || throw(ArgumentError("submit_peps! must be called before vmc_direction!"))
     ns = _validate_node_samples(context, n_samples)
+    threshold, further_draws = _validate_redraw(redraw_below, redraw_max, context.ns_ahead)
     buffers = _node_output_buffers(
         context,
         ns;
         want_theta=true,
         want_samples,
-        want_logq,
+        want_logq=want_logq || want_weights,
         want_log_gauge,
-        want_logpsi,
+        want_logpsi=want_logpsi || want_weights,
         want_e_loc,
         want_o_rows,
         want_epoch,
     )
+    draw_direction() = _node_direction_draw!(context, buffers, ns; relative_cut, absolute_cut)
+    result = draw_direction()
+    draw_ess = [result.ess]
+    while length(draw_ess) <= further_draws && result.ess / ns < threshold
+        result = draw_direction()
+        push!(draw_ess, result.ess)
+    end
+    threshold > 0 && (result = merge(result, (draws=length(draw_ess), draw_ess=draw_ess)))
+    want_weights && (result = _attach_weights(result; want_logq, want_logpsi))
+    return result
+end
+
+function _attach_weights(result::NamedTuple; want_logq::Bool, want_logpsi::Bool)
+    weights = importance_weights(result.logpsi, result.logq)
+    is_requested(name) = (name !== :logq || want_logq) && (name !== :logpsi || want_logpsi)
+    requested = NamedTuple{filter(is_requested, keys(result))}(result)
+    return merge(requested, (weights=weights,))
+end
+
+function _node_direction_draw!(
+    context::VMCContext,
+    buffers::NamedTuple,
+    ns::Int;
+    relative_cut::Real,
+    absolute_cut::Real,
+)
     GC.@preserve buffers begin
         cuts =
             FFI._E2eCuts(; relative_cut=Float64(relative_cut), absolute_cut=Float64(absolute_cut))
@@ -254,7 +313,7 @@ function vmc_direction!(
                         Ptr{Cvoid}(pointer(buffers.o_rows)),
         )
         arguments = FFI._E2eNodeStepArguments(;
-            node=handle,
+            node=context.handle,
             n_samples=Int64(ns),
             cuts,
             minsr_outputs,
@@ -283,9 +342,17 @@ function vmc_euler_step!(
     want_e_loc::Bool=false,
     want_o_rows::Bool=false,
     want_epoch::Bool=false,
+    want_weights::Bool=false,
+    redraw_below::Real=0,
 )
     handle = _require_open(context)
     context.submitted || throw(ArgumentError("submit_peps! must be called before vmc_euler_step!"))
+    redraw_below == 0 || throw(
+        ArgumentError(
+            "vmc_euler_step! applies the update inside the node and cannot redraw, " *
+            "use vmc_direction! with redraw_below and apply the update to the PEPS",
+        ),
+    )
     length(peps_f32) == context.dense ||
         throw(DimensionMismatch("PEPS has $(length(peps_f32)) values, expected $(context.dense)"))
     isfinite(learning_rate) || throw(ArgumentError("learning_rate must be finite"))
@@ -310,9 +377,9 @@ function vmc_euler_step!(
         ns;
         want_theta,
         want_samples,
-        want_logq,
+        want_logq=want_logq || want_weights,
         want_log_gauge,
-        want_logpsi,
+        want_logpsi=want_logpsi || want_weights,
         want_e_loc,
         want_o_rows,
         want_epoch,
@@ -352,5 +419,6 @@ function vmc_euler_step!(
         GC.@preserve arguments_ref _ffi_node_step_euler(handle, arguments_ref)
     end
     result = _node_result(buffers; include_theta=want_theta)
+    want_weights && (result = _attach_weights(result; want_logq, want_logpsi))
     return merge(result, (peps=peps_f32, state_f64=state_f64))
 end

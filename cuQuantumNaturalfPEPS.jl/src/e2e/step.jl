@@ -75,6 +75,9 @@ function _vmc_step_device!(
     want_logpsi::Bool=false,
     want_e_loc::Bool=false,
     want_o_rows::Bool=false,
+    want_weights::Bool=false,
+    redraw_below::Real=0,
+    redraw_max::Integer=2,
 )
     ngpu = _validate_gpus(gpus)
     cfg = QnpepsE2eConfig(;
@@ -107,6 +110,9 @@ function _vmc_step_device!(
         want_logpsi,
         want_e_loc,
         want_o_rows,
+        want_weights,
+        redraw_below,
+        redraw_max,
     )
 end
 

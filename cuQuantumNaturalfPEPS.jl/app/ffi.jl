@@ -4,10 +4,6 @@ using CUDA
 
 include(joinpath(@__DIR__, "common.jl"))
 
-raw_void(a)::Ptr{Cvoid} = reinterpret(Ptr{Cvoid}, pointer(a))
-raw_bytes(a)::Ptr{UInt8} = reinterpret(Ptr{UInt8}, pointer(a))
-raw_f64(a)::Ptr{Float64} = reinterpret(Ptr{Float64}, pointer(a))
-
 function ffi(arguments=ARGS)::Nothing
     options = parse_app_options("ffi.jl", arguments)
     app_dry_run("ffi.jl", options) && return nothing
@@ -31,15 +27,15 @@ function ffi(arguments=ARGS)::Nothing
         dim_phys=device_peps.dim_phys,
         seed=SEED_SAMPLE,
     )
-    stream = CUDA.stream().handle
+    stream = Ptr{Cvoid}(CUDA.stream().handle)
 
     dlenv = CUDA.zeros(UInt8, FFI.dlenv_bytes(config))
     row_logs = CUDA.zeros(Float64, device_peps.lx - 1)
     build_status = GC.@preserve peps_data dlenv row_logs FFI.build_dlenv(
         config,
-        raw_void(peps_data);
-        dlenv_out=raw_void(dlenv),
-        cumulative_row_logs=raw_f64(row_logs),
+        pointer(peps_data);
+        dlenv_out=pointer(dlenv),
+        cumulative_row_logs=pointer(row_logs),
         stream=stream,
     )
     @assert build_status == 0
@@ -51,14 +47,14 @@ function ffi(arguments=ARGS)::Nothing
     sample_bufs = (peps_data, dlenv, scratch, samples, log_prob_config, log_gauge)
     sample_status = GC.@preserve sample_bufs FFI.sample(
         config,
-        raw_void(peps_data),
-        raw_void(dlenv);
+        pointer(peps_data),
+        pointer(dlenv);
         gpus=1,
-        scratch=raw_void(scratch),
+        scratch=pointer(scratch),
         scratch_bytes=length(scratch),
-        samples_out=raw_bytes(samples),
-        log_prob_config=raw_f64(log_prob_config),
-        log_gauge=raw_f64(log_gauge),
+        samples_out=pointer(samples),
+        log_prob_config=pointer(log_prob_config),
+        log_gauge=pointer(log_gauge),
         n_samples=n_samples,
         batch_base=0,
         dim_batch,
@@ -78,8 +74,8 @@ function ffi(arguments=ARGS)::Nothing
     ctx_row_logs = CUDA.zeros(Float64, device_peps.lx - 1)
     ctx_build_status = GC.@preserve peps_data ctx_row_logs FFI.ctx_build_dlenv(
         ctx,
-        raw_void(peps_data);
-        cumulative_row_logs=raw_f64(ctx_row_logs),
+        pointer(peps_data);
+        cumulative_row_logs=pointer(ctx_row_logs),
     )
     @assert ctx_build_status == 0
 
@@ -87,9 +83,9 @@ function ffi(arguments=ARGS)::Nothing
     log_prob_base0 = CUDA.zeros(Float64, n_samples)
     status_base0 = GC.@preserve samples_base0 log_prob_base0 FFI.ctx_sample(
         ctx,
-        raw_bytes(samples_base0);
-        log_prob_config=raw_f64(log_prob_base0),
-        log_gauge=C_NULL,
+        pointer(samples_base0);
+        log_prob_config=pointer(log_prob_base0),
+        log_gauge=CuPtr{Float64}(0),
         n_samples=n_samples,
         batch_base=0,
     )
@@ -99,9 +95,9 @@ function ffi(arguments=ARGS)::Nothing
     log_prob_base4096 = CUDA.zeros(Float64, n_samples)
     status_base4096 = GC.@preserve samples_base4096 log_prob_base4096 FFI.ctx_sample(
         ctx,
-        raw_bytes(samples_base4096);
-        log_prob_config=raw_f64(log_prob_base4096),
-        log_gauge=C_NULL,
+        pointer(samples_base4096);
+        log_prob_config=pointer(log_prob_base4096),
+        log_gauge=CuPtr{Float64}(0),
         n_samples=n_samples,
         batch_base=4096,
     )
