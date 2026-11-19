@@ -142,7 +142,7 @@ auto consume_ring(NodeState& state, i64 sample_count, i64* epoch_out) -> void
         }
     );
     if (epoch_out) std::memcpy(epoch_out, state.ring_epoch.data(), sizeof(i64) * sample_count_u);
-    const i64 left{state.ring_count - sample_count};
+    const i64 left{state.ns_ahead == 0 ? 0 : state.ring_count - sample_count};
     if (left > 0)
     {
         const usize left_u{static_cast<usize>(left)};
