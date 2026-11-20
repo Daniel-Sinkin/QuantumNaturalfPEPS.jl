@@ -180,13 +180,20 @@ target_compile_options(qnpeps PRIVATE
 )
 target_link_options(qnpeps PRIVATE -Wl,--no-undefined)
 
-foreach(probe_name common_probe error_channel_test arena_reading_test)
+foreach(probe_name common_probe error_channel_test arena_reading_test permutation_test)
   if(probe_name STREQUAL "common_probe")
     set(probe_source core/common_probe.cu)
   else()
     set(probe_source test/${probe_name}.cu)
   endif()
   add_executable(qnpeps_${probe_name} ${probe_source} core/error.cu)
+  if(probe_name STREQUAL "permutation_test")
+    target_sources(qnpeps_${probe_name} PRIVATE
+      tensor/kernels.cu
+      tensor/permutation.cu
+      tensor/tensor.cu
+    )
+  endif()
   target_include_directories(qnpeps_${probe_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(qnpeps_${probe_name} PRIVATE CUDA::cudart CUDA::cublas Threads::Threads)
   target_compile_options(qnpeps_${probe_name} PRIVATE
@@ -247,6 +254,7 @@ if(QNPEPS_BUILD_NATIVE_GATES)
 
   add_test(NAME qnpeps_error_channel_test COMMAND qnpeps_error_channel_test)
   add_test(NAME qnpeps_arena_reading_test COMMAND qnpeps_arena_reading_test)
+  add_test(NAME qnpeps_permutation_test COMMAND qnpeps_permutation_test)
 
   add_executable(qnpeps_error_channel_gate test/error_channel_gate.cu)
   target_include_directories(qnpeps_error_channel_gate PRIVATE

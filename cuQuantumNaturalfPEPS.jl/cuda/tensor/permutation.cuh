@@ -151,6 +151,8 @@ auto permute_axes(
     cudaStream_t stream
 ) -> DeviceTensor;
 
+inline constexpr usize k_max_cached_index_map_elements{1_uz << 20};
+
 class PermutationCache
 {
   public:
@@ -162,6 +164,7 @@ class PermutationCache
 
     auto get_or_create(const Shape& shape, const Permutation& permutation) -> int*;
     auto release() -> void;
+    [[nodiscard]] auto size() const noexcept -> usize { return entries_.size(); }
 
   private:
     struct Key
@@ -190,6 +193,8 @@ struct PermuteOp
 
 auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, cudaStream_t stream)
     -> void;
+
+auto permute_batched_strided(const PermuteOp& op, cudaStream_t stream) -> void;
 }
 
 #endif

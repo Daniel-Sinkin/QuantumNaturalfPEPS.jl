@@ -4,6 +4,7 @@ using CUDA
 include(joinpath(@__DIR__, "common.jl"))
 
 const OPERATOR_TOLERANCE = 1.0e-9
+const TERM_SHIFT_FLOOR = 1.0e-6
 const TRANSVERSE_FIELD = 0.4
 const DM_COUPLING = 0.3
 const LONG_RANGE_COUPLING = 0.2
@@ -58,6 +59,26 @@ function perturbed_heisenberg(lx, ly, strength)::OperatorTerms
     long_range = (strength * LONG_RANGE_COUPLING) .* kron(PAULI_X, PAULI_X)
     add_operator!(terms, long_range_pair(lx, ly), long_range)
     return terms
+end
+
+function lone_operator(lx, ly, sites, matrix)::OperatorTerms
+    return add_operator!(OperatorTerms(lx, ly), sites, matrix)
+end
+
+function separate_perturbation_terms(lx, ly)::Vector{Tuple{Float64,OperatorTerms}}
+    field = [
+        (TRANSVERSE_FIELD, lone_operator(lx, ly, (row, col), PAULI_X)) for row in 1:lx for
+        col in 1:ly
+    ]
+    dm = [
+        (DM_COUPLING, lone_operator(lx, ly, bond, DM_Z)) for
+        bond in nearest_neighbor_bonds(lx, ly)
+    ]
+    long_range = (
+        LONG_RANGE_COUPLING,
+        lone_operator(lx, ly, long_range_pair(lx, ly), kron(PAULI_X, PAULI_X)),
+    )
+    return vcat(field, dm, [long_range])
 end
 
 function plaquette_triangles(lx, ly)
@@ -120,6 +141,24 @@ function custom_operators_example(arguments=ARGS)::Nothing
     println("[custom_operators] linearity deviation $linearity_deviation")
     linearity_deviation <= OPERATOR_TOLERANCE ||
         error("perturbation energies deviate from linearity by $linearity_deviation")
+
+    term_shifts = [
+        coefficient .* energies(terms) for
+        (coefficient, terms) in separate_perturbation_terms(lx, ly)
+    ]
+    decomposition_deviation = maximum(abs.(single .- sum(term_shifts)))
+    smallest_term_shift = minimum(maximum(abs.(shift)) for shift in term_shifts)
+    println("[custom_operators] decomposition deviation $decomposition_deviation")
+    term_count = length(term_shifts)
+    println("[custom_operators] smallest term shift $smallest_term_shift over $term_count terms")
+    decomposition_deviation <= OPERATOR_TOLERANCE || error(
+        "perturbation energies deviate from the sum of separately evaluated terms by " *
+        "$decomposition_deviation",
+    )
+    smallest_term_shift >= TERM_SHIFT_FLOOR || error(
+        "a perturbation term shifts the energies by at most $smallest_term_shift, " *
+        "below $TERM_SHIFT_FLOOR, the decomposition cannot see it",
+    )
 
     chirality = energies(chirality_terms(lx, ly))
     exchanged = energies(chirality_terms(lx, ly; exchanged=true))

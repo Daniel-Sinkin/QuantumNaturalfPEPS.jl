@@ -1,4 +1,3 @@
-# Goes through the FFI (= Foreign Function Interface) endpoints.
 using cuQuantumNaturalfPEPS
 using CUDA
 

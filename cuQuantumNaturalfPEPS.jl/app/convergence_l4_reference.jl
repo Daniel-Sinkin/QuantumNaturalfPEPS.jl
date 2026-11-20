@@ -10,7 +10,6 @@ using Statistics
 include(joinpath(@__DIR__, "common.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "io.jl"))
 include(joinpath(@__DIR__, "convergence_l4_reference", "state.jl"))
-include(joinpath(@__DIR__, "convergence_l4_reference", "ranks.jl"))
 
 const CONVERGENCE_ROUTES = Dict(
     "default" => (route=:default, svd_cutoff=1.0e-13),
@@ -79,9 +78,8 @@ end
 
 function convergence_output_directory(options)
     options[:output] !== nothing && return abspath(options[:output])
-    root = normpath(joinpath(@__DIR__, "..", ".."))
     name = "$(options[:route])-$(options[:precision])-chi$(options[:chi])-steps$(options[:steps])"
-    return joinpath(root, "private", "convergence_l4_reference", name)
+    return joinpath(pwd(), "convergence_l4_reference", name)
 end
 
 function stationary_statistics(energies, errors, variances, exact)
@@ -148,12 +146,16 @@ function write_convergence_summary(path, options, statistics, reference_statisti
 end
 
 function make_convergence_figure(trajectory, ranks, output)
-    root = normpath(joinpath(@__DIR__, "..", ".."))
-    script = joinpath(root, "documentation", "dossier_figures", "make_figures.py")
+    script = get(ENV, "QNPEPS_FIGURE_SCRIPT", "")
+    if isempty(script)
+        println("[convergence] figure skipped, QNPEPS_FIGURE_SCRIPT is not set")
+        return false
+    end
+    isfile(script) || error("figure script is absent at $script")
     python = Sys.which("python3")
     python === nothing && error("python3 is required to write the PNG")
     run(`$python $script --convergence-l4 $trajectory $ranks $output`)
-    return nothing
+    return true
 end
 
 function convergence_config(options, seed)
@@ -239,8 +241,7 @@ function render_convergence_figure(output)
     figure = joinpath(output, "convergence_l4_reference.png")
     isfile(trajectory) || error("trajectory CSV is absent at $trajectory")
     isfile(ranks) || error("rank CSV is absent at $ranks")
-    make_convergence_figure(trajectory, ranks, figure)
-    println("[convergence] figure=$figure")
+    make_convergence_figure(trajectory, ranks, figure) && println("[convergence] figure=$figure")
     return nothing
 end
 
@@ -271,10 +272,8 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
     mkpath(output)
     trajectory_path = joinpath(output, "convergence_l4_reference.csv")
     rank_path = joinpath(output, "convergence_l4_reference_ranks.csv")
-    raw_profile = joinpath(output, "eo_rank_telemetry_raw.csv")
     summary_path = joinpath(output, "convergence_l4_reference_summary.csv")
     figure_path = joinpath(output, "convergence_l4_reference.png")
-    ENV["QNPEPS_ELOC_PROF"] = raw_profile
 
     tensors = map(tensor -> ComplexF32.(real.(tensor)), fixture.tensors)
     packed = pack_convergence_peps(tensors)
@@ -284,7 +283,6 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
     energies = Float64[]
     errors = Float64[]
     variances = Float64[]
-    telemetry_offset = Int64(0)
     trajectory_io = open(trajectory_path, "w")
     ranks_io = open(rank_path, "w")
     println(trajectory_io, CONVERGENCE_TRAJECTORY_HEADER)
@@ -333,8 +331,6 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
                     @sprintf("%.9f", wall),
                 ),
             )
-            telemetry, telemetry_offset = telemetry_rows(raw_profile, telemetry_offset, step)
-            write_rank_rows(ranks_io, telemetry)
             println(
                 "[convergence] step=$step energy=$(real(energy)) reference=$ref_energy " *
                 "ess=$(result.ess) wall_s=$wall",
@@ -368,8 +364,8 @@ function convergence_l4_reference(arguments=ARGS)::Nothing
     println("[convergence] summary=$summary_path")
     println("[convergence] final_state_overlap=$overlap r1=$(statistics.r1)")
     try
-        make_convergence_figure(trajectory_path, rank_path, figure_path)
-        println("[convergence] figure=$figure_path")
+        make_convergence_figure(trajectory_path, rank_path, figure_path) &&
+            println("[convergence] figure=$figure_path")
     catch exception
         print(stderr, "[convergence] figure unavailable ")
         showerror(stderr, exception)

@@ -168,7 +168,7 @@ function parse_app_options(name::AbstractString, arguments)
         :output => nothing,
         :figure_only => false,
         :jsonl => nothing,
-        :checkpoint => joinpath("private", "runner_demo", "checkpoint.json"),
+        :checkpoint => joinpath(pwd(), "runner_demo", "checkpoint.json"),
         :resume => false,
         :interactive => false,
         :checkpoint_every => 0,

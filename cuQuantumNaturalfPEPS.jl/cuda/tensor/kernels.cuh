@@ -35,8 +35,22 @@ struct CuGatherArgs
     int batch_count{};
 };
 
+struct CuPermuteBatchedArgs
+{
+    cuFloatComplex* output{};
+    const cuFloatComplex* input{};
+    PermutationPlan plan{};
+    int rank{};
+    i64 element_count{};
+    i64 output_stride{};
+    i64 input_stride{};
+    int conjugate{};
+    int batch_count{};
+};
+
 __global__ auto cu_gather(CuGatherArgs args) -> void;
 __global__ auto cu_permute(CuPermuteArgs args) -> void;
+__global__ auto cu_permute_batched(CuPermuteBatchedArgs args) -> void;
 
 }
 

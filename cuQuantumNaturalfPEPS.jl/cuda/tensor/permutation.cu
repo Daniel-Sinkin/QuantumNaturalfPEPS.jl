@@ -69,6 +69,67 @@ namespace
     return index_map;
 }
 
+[[nodiscard]] auto permutation_plan(const Shape& input_shape, const Permutation& permutation)
+    -> PermutationPlan
+{
+    const auto output_shape = permutation.apply(input_shape);
+    const auto input_strides = column_major_strides(input_shape);
+    PermutationPlan plan{};
+    for (auto output_axis = 0_uz; output_axis < permutation.size(); ++output_axis)
+    {
+        plan.output_extents[output_axis] = output_shape[output_axis];
+        const auto input_axis = static_cast<usize>(permutation[output_axis]);
+        plan.input_strides[output_axis] = input_strides[input_axis];
+    }
+    return plan;
+}
+
+[[nodiscard]] auto _permute_batched_check(const PermuteOp& op) -> bool
+{
+    const auto num_elements = op.dims_in.num_elems();
+    const auto permutation_applies = op.perm.can_apply_to(op.dims_in);
+    const auto index_map_size_valid = std::in_range<int>(num_elements);
+    const auto batch_count_valid = op.batch_count > 0;
+    const auto pointers_valid = op.dst.p and op.src.p;
+    const auto stride_valid = [&](i64 stride)
+    { return std::cmp_greater_equal(stride, num_elements); };
+    const auto dst_valid = stride_valid(op.dst.stride);
+    const auto src_valid = op.src.stride == 0 or stride_valid(op.src.stride);
+    return permutation_applies and index_map_size_valid and batch_count_valid and pointers_valid
+           and dst_valid and src_valid;
+}
+
+auto require_batched_permutation(const PermuteOp& op) -> void
+{
+    require(
+        _permute_batched_check(op),
+        "batched permutation rejects {} elements over {} lanes with strides {} and {}",
+        op.dims_in.num_elems(),
+        op.batch_count,
+        op.dst.stride,
+        op.src.stride
+    );
+}
+
+auto launch_strided_permutation(const PermuteOp& op, cudaStream_t stream) -> void
+{
+    const auto element_count = static_cast<i64>(op.dims_in.num_elems());
+    const CuPermuteBatchedArgs permute_args{
+        .output = op.dst.p,
+        .input = op.src.p,
+        .plan = permutation_plan(op.dims_in, op.perm),
+        .rank = static_cast<int>(op.perm.size()),
+        .element_count = element_count,
+        .output_stride = op.dst.stride,
+        .input_stride = op.src.stride,
+        .conjugate = op.conjugate ? 1 : 0,
+        .batch_count = op.batch_count,
+    };
+    const auto blocks = grid_blocks_capped(element_count);
+    cu_permute_batched<<<blocks, k_threads_per_block, 0, stream>>>(permute_args);
+    check(cudaGetLastError());
+}
+
 }
 
 auto PermutationCache::get_or_create(const Shape& shape, const Permutation& permutation) -> int*
@@ -132,21 +193,12 @@ auto permute_axes(
         "permutation of {} elements exceeds the i64 range",
         num_elements
     );
-    const auto input_strides = column_major_strides(tensor.dim);
-    PermutationPlan permutation_plan{};
-    for (auto output_axis = 0_uz; output_axis < rank; ++output_axis)
-    {
-        permutation_plan.output_extents[output_axis] = output_shape[output_axis];
-        const auto input_axis = static_cast<usize>(permutation[output_axis]);
-        const auto input_stride = input_strides[input_axis];
-        permutation_plan.input_strides[output_axis] = input_stride;
-    }
     const auto element_count = static_cast<i64>(num_elements);
     assert(element_count == static_cast<i64>(tensor.num_elems()));
     const CuPermuteArgs args{
         .output = output,
         .input = tensor.d,
-        .plan = permutation_plan,
+        .plan = permutation_plan(tensor.dim, permutation),
         .rank = static_cast<int>(rank),
         .element_count = element_count,
         .conjugate = conjugate ? 1 : 0,
@@ -171,27 +223,13 @@ auto permute_axes(
 auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, cudaStream_t stream)
     -> void
 {
-
+    require_batched_permutation(op);
     const auto num_elements = op.dims_in.num_elems();
-    const auto permutation_applies = op.perm.can_apply_to(op.dims_in);
-    const auto index_map_size_valid = std::in_range<int>(num_elements);
-    const auto batch_count_valid = op.batch_count > 0;
-    const auto pointers_valid = op.dst.p and op.src.p;
-    const auto stride_valid = [&](i64 stride)
-    { return std::cmp_greater_equal(stride, num_elements); };
-    const auto dst_valid = stride_valid(op.dst.stride);
-    const auto src_valid = op.src.stride == 0 or stride_valid(op.src.stride);
-
-    const auto valid = permutation_applies and index_map_size_valid and batch_count_valid
-                       and pointers_valid and dst_valid and src_valid;
-    require(
-        valid,
-        "batched permutation rejects {} elements over {} lanes with strides {} and {}",
-        num_elements,
-        op.batch_count,
-        op.dst.stride,
-        op.src.stride
-    );
+    if (num_elements > k_max_cached_index_map_elements)
+    {
+        launch_strided_permutation(op, stream);
+        return;
+    }
     const auto element_count = static_cast<i64>(num_elements);
     auto* gather_indices = permutation_cache.get_or_create(op.dims_in, op.perm);
     const auto blocks = grid_blocks_capped(element_count * op.batch_count);
@@ -207,5 +245,11 @@ auto permute_batched(PermutationCache& permutation_cache, const PermuteOp& op, c
     };
     cu_gather<<<blocks, k_threads_per_block, 0, stream>>>(gather_args);
     check(cudaGetLastError());
+}
+
+auto permute_batched_strided(const PermuteOp& op, cudaStream_t stream) -> void
+{
+    require_batched_permutation(op);
+    launch_strided_permutation(op, stream);
 }
 }

@@ -42,4 +42,33 @@ __global__ auto cu_permute(CuPermuteArgs args) -> void
     args.output[flat_index] = value;
 }
 
+__global__ auto cu_permute_batched(CuPermuteBatchedArgs args) -> void
+{
+    const auto rank = static_cast<usize>(args.rank);
+    const auto batch_count = static_cast<usize>(args.batch_count);
+    for (auto output_element = global_lane(); output_element < args.element_count;
+         output_element += grid_stride())
+    {
+        i64 input_element{};
+        i64 output_stride{1};
+        for (auto axis = 0_uz; axis < rank; ++axis)
+        {
+            const auto output_extent = args.plan.output_extents[axis];
+            const auto coordinate = (output_element / output_stride) % output_extent;
+            input_element += coordinate * args.plan.input_strides[axis];
+            output_stride *= output_extent;
+        }
+        auto input_index = input_element;
+        auto output_index = output_element;
+        for (auto lane = 0_uz; lane < batch_count; ++lane)
+        {
+            auto value = args.input[input_index];
+            if (args.conjugate) value = cuConjf(value);
+            args.output[output_index] = value;
+            input_index += args.input_stride;
+            output_index += args.output_stride;
+        }
+    }
+}
+
 }
