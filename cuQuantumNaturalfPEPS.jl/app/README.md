@@ -16,6 +16,12 @@ energies and to a VMC step, run
 ```
 julia --project=cuQuantumNaturalfPEPS.jl cuQuantumNaturalfPEPS.jl/app/custom_operators.jl
 ```
+To build operators from bras and kets at local dimension 2, such as the singlet projector
+`(|1,0> - |0,1>)(<1,0| - <0,1|)`, with a different complex coefficient on every bond, on a row of
+three sites and on an L-shaped triple, and to check them on the device against Pauli forms, run
+```
+julia --project=cuQuantumNaturalfPEPS.jl cuQuantumNaturalfPEPS.jl/app/bra_ket_operators.jl
+```
 `convergence_l4_reference.jl` compares a run against stored reference data, which is not part of
 this repository. `QNPEPS_CONVERGENCE_REFERENCE_ROOT` names the directory with the start state
 under `fixtures/`, and `QNPEPS_CONVERGENCE_REFERENCE_WINDOW` names the directory with the
